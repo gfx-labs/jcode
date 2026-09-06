@@ -83,8 +83,12 @@ fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
 
 #[test]
 fn test_alt_shift_i_toggles_inline_images_and_persists() {
-    let _render_lock = scroll_render_test_lock();
+    // Lock order matters: every other test takes the storage env lock first
+    // (`with_temp_jcode_home`) and the render-state lock second
+    // (`create_test_app`). Taking them the other way round here deadlocked the
+    // whole suite under parallel execution (ABBA with any env-then-render test).
     let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
     let temp = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
