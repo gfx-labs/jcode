@@ -114,8 +114,12 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show/toggle dimmed technical details on tool rows with an intent",
     ),
     RegisteredCommand::public(
+        "/compact-transcript",
+        "Fold tool results and thinking to one-line rows that expand on click",
+    ),
+    RegisteredCommand::public(
         "/thinking-display",
-        "Show/hide the model's thinking text (off/full/current)",
+        "Show/hide the model's thinking text (off/full/collapsed/current)",
     ),
     RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
     RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),
@@ -1072,6 +1076,30 @@ impl App {
             );
         }
 
+        if prefix.starts_with("/compact-transcript ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/compact-transcript status".into(),
+                        "Show whether the compact transcript is on",
+                    ),
+                    (
+                        "/compact-transcript on".into(),
+                        "Fold tool results and thinking to one-line rows",
+                    ),
+                    (
+                        "/compact-transcript off".into(),
+                        "Show tool previews and thinking inline as before",
+                    ),
+                    (
+                        "/compact-transcript expand".into(),
+                        "Toggle the most recent tool result or thinking row",
+                    ),
+                ],
+            );
+        }
+
         if prefix.starts_with("/show-agentgrep-output ") {
             return self.rank_suggestions(
                 input,
@@ -1671,6 +1699,7 @@ impl App {
                 | "/compact mode"
                 | "/alignment"
                 | "/compact-notifications"
+                | "/compact-transcript"
                 | "/show-agentgrep-output"
                 | "/reasoning"
                 | "/thinking"

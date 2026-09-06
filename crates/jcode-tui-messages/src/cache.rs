@@ -18,6 +18,9 @@ struct MessageCacheKey {
     show_agentgrep_output: bool,
     show_bash_output: bool,
     tool_call_details: bool,
+    compact_transcript: bool,
+    reasoning_display: jcode_config_types::ReasoningDisplayMode,
+    transcript_expand_epoch: u64,
 }
 
 #[derive(Default)]
@@ -69,6 +72,11 @@ pub struct MessageCacheContext {
     pub show_agentgrep_output: bool,
     pub show_bash_output: bool,
     pub tool_call_details: bool,
+    /// Compact transcript folds tool/thinking rows; flipping it changes every
+    /// such row without touching message content.
+    pub compact_transcript: bool,
+    /// Reasoning display mode decides whether thinking folds or renders inline.
+    pub reasoning_display: jcode_config_types::ReasoningDisplayMode,
 }
 
 pub fn left_pad_lines_for_centered_mode(lines: &mut [Line<'static>], width: u16) {
@@ -120,6 +128,11 @@ where
         show_agentgrep_output: context.show_agentgrep_output,
         show_bash_output: context.show_bash_output,
         tool_call_details: context.tool_call_details,
+        compact_transcript: context.compact_transcript,
+        reasoning_display: context.reasoning_display,
+        // Expand/collapse toggles do not change message content, so the
+        // process-wide epoch stands in for that state.
+        transcript_expand_epoch: crate::transcript_expand_epoch(),
     };
 
     let mut cache = match message_cache().lock() {

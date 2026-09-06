@@ -31,6 +31,7 @@ impl App {
             }
         }
         self.reasoning_streaming = true;
+        self.reasoning_region_started = Some(std::time::Instant::now());
         self.reasoning_pending_line.clear();
         self.reasoning_partial_len = 0;
         // Remember where this reasoning block starts in the stream so `current`
@@ -110,6 +111,9 @@ impl App {
                 .push_str(&jcode_tui_markdown::reasoning_line_markup(&pending));
         }
         self.reasoning_streaming = false;
+        if let Some(started) = self.reasoning_region_started.take() {
+            self.reasoning_secs_accumulated += started.elapsed().as_secs_f32();
+        }
 
         // In `current` mode, reasoning is ephemeral: it is never written to the
         // persistent transcript. The closed block is sliced out of the live
@@ -141,6 +145,20 @@ impl App {
             crate::config::config().display.reasoning_display(),
             crate::config::ReasoningDisplayMode::Current
         )
+    }
+
+    /// Record the thinking time accumulated so far against `message` (keyed by
+    /// its stable hash) and reset the accumulator. Call right before the
+    /// message that carries the reasoning is pushed to the transcript. A no-op
+    /// when no reasoning streamed since the last commit.
+    pub(in crate::tui::app) fn attach_thinking_secs(&mut self, message: &DisplayMessage) {
+        let mut secs = std::mem::take(&mut self.reasoning_secs_accumulated);
+        if let Some(started) = self.reasoning_region_started.take() {
+            secs += started.elapsed().as_secs_f32();
+        }
+        if secs > 0.0 {
+            jcode_tui_messages::record_thinking_secs(message.stable_cache_hash(), secs);
+        }
     }
 
     /// Slice the just-closed reasoning block out of `streaming_text` and anchor
@@ -187,7 +205,9 @@ impl App {
                 // (while tail-following) and can be GC'd without visible motion.
                 wrapped_lines_at_anchor: crate::tui::ui::last_total_wrapped_lines(),
             });
-        self.push_display_message(DisplayMessage::reasoning(block));
+        let trace = DisplayMessage::reasoning(block);
+        self.attach_thinking_secs(&trace);
+        self.push_display_message(trace);
         self.refresh_split_view_if_needed();
     }
 

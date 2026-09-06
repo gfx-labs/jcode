@@ -89,6 +89,12 @@ pub struct DisplayConfig {
     /// always fall back to the technical detail.
     #[serde(default)]
     pub tool_call_details: bool,
+    /// Compact transcript: every tool result and thinking trace folds to a
+    /// single summary row that expands in place when clicked (default: false).
+    /// Reasoning also folds to a `thinking` row with duration/size metrics
+    /// when `reasoning_display` is `collapsed`.
+    #[serde(default)]
+    pub compact_transcript: bool,
     /// Native terminal scrollbar configuration for scrollable panes
     pub native_scrollbars: NativeScrollbarConfig,
     /// Surface occasional "learn this keybinding" nudges when the user keeps
@@ -158,6 +164,7 @@ impl Default for DisplayConfig {
             show_agentgrep_output: false,
             show_bash_output: false,
             tool_call_details: false,
+            compact_transcript: false,
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),

@@ -2898,6 +2898,63 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+fn handle_compact_transcript_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/compact-transcript" && !trimmed.starts_with("/compact-transcript ") {
+        return false;
+    }
+
+    let rest = trimmed
+        .strip_prefix("/compact-transcript")
+        .unwrap_or_default()
+        .trim();
+
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        let current = crate::config::config().display.compact_transcript;
+        app.push_display_message(DisplayMessage::system(format!(
+            "Compact transcript is currently {}.\n\nWhen on, every tool result and thinking trace folds to a single summary row. Click a row (or run /compact-transcript expand for the latest one) to expand it in place and see the full output; click again to fold it back.\n\nUse /compact-transcript on or /compact-transcript off to change it.",
+            if current { "on" } else { "off" }
+        )));
+        return true;
+    }
+
+    if matches!(rest, "expand" | "toggle") {
+        if !app.toggle_latest_transcript_expand() {
+            app.set_status_notice("No tool result or thinking trace to expand");
+        }
+        return true;
+    }
+
+    let Some(enabled) = parse_on_off_value(rest) else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /compact-transcript (show), /compact-transcript on, /compact-transcript off, or /compact-transcript expand"
+                .to_string(),
+        ));
+        return true;
+    };
+
+    app.set_status_notice(format!(
+        "Compact transcript: {}",
+        if enabled { "on" } else { "off" }
+    ));
+    match crate::config::Config::set_compact_transcript(enabled) {
+        Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+            "Saved compact transcript: {}. Applied to this session immediately.",
+            if enabled { "on" } else { "off" }
+        ))),
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Applied compact transcript {} for this session, but failed to save it as the default: {}",
+            if enabled { "on" } else { "off" },
+            error
+        ))),
+    }
+    // Row geometry changed for every tool/thinking message; force a rebuild.
+    jcode_tui_messages::bump_transcript_expand_epoch();
+    app.bump_display_messages_version_no_stats();
+    app.request_full_repaint();
+
+    true
+}
+
 fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed != "/show-agentgrep-output" && !trimmed.starts_with("/show-agentgrep-output ") {
         return false;
@@ -3269,8 +3326,9 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
              Modes:\n\
              • off - never show thinking text\n\
              • full - keep every thinking trace in the transcript\n\
+             • collapsed - keep every trace, folded to a one-line `thinking` row with duration and size; click it to expand\n\
              • current - show only the live thinking, then collapse it once a tool runs or the answer commits\n\n\
-             Use /thinking-display <off|full|current> to change it. To change how hard the model thinks, use /effort.",
+             Use /thinking-display <off|full|collapsed|current> to change it. To change how hard the model thinks, use /effort.",
             current.label()
         )));
         return true;
@@ -3278,7 +3336,7 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(mode) = crate::config::ReasoningDisplayMode::parse(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /thinking-display (show), then off, full, or current".to_string(),
+            "Usage: /thinking-display (show), then off, full, collapsed, or current".to_string(),
         ));
         return true;
     };
@@ -3295,6 +3353,10 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
             error
         ))),
     }
+    // Every message with reasoning re-renders under the new mode.
+    jcode_tui_messages::bump_transcript_expand_epoch();
+    app.bump_display_messages_version_no_stats();
+    app.request_full_repaint();
 
     true
 }
@@ -3317,6 +3379,10 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if handle_tool_call_details_command(app, trimmed) {
+        return true;
+    }
+
+    if handle_compact_transcript_command(app, trimmed) {
         return true;
     }
 

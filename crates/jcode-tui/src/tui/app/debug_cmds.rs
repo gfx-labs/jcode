@@ -334,6 +334,112 @@ impl App {
                 "display_messages": self.display_messages.len(),
             })
             .to_string()
+        } else if cmd == "compact-transcript-fixture" {
+            // A realistic mixed transcript for eyeballing the compact rows:
+            // thinking, a bash call with multi-line output, a read, an edit.
+            let thinking = [
+                "The user wants collapsible tool rows.",
+                "I should check how swarm cards do it and reuse the badge.",
+                "Then wire a click hit-test on the summary row.",
+            ]
+            .iter()
+            .map(|line| jcode_tui_markdown::reasoning_line_markup(line))
+            .collect::<String>();
+            let bash_output = (1..=12)
+                .map(|idx| format!("crates/jcode-tui/src/tui/file_{idx}.rs: match {idx}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let old_string = (0..6)
+                .map(|idx| format!("old line {idx}\n"))
+                .collect::<String>();
+            let new_string = (0..6)
+                .map(|idx| format!("new line {idx}\n"))
+                .collect::<String>();
+            self.display_messages = vec![
+                DisplayMessage::user("make tool calls collapsible"),
+                DisplayMessage::assistant(format!(
+                    "{thinking}\nI'll check the existing collapse mechanism first."
+                )),
+                DisplayMessage::tool(
+                    bash_output,
+                    crate::message::ToolCall {
+                        id: "debug_compact_bash".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "rg -n collapse crates/"}),
+                        intent: Some("Find collapse handling".to_string()),
+                        thought_signature: None,
+                    },
+                ),
+                DisplayMessage::tool(
+                    "fn main() {\n    println!(\"hi\");\n}\n".to_string(),
+                    crate::message::ToolCall {
+                        id: "debug_compact_read".to_string(),
+                        name: "read".to_string(),
+                        input: serde_json::json!({"file_path": "src/main.rs"}),
+                        intent: Some("Read entry point".to_string()),
+                        thought_signature: None,
+                    },
+                ),
+                DisplayMessage::tool(
+                    "Edited demo.txt".to_string(),
+                    crate::message::ToolCall {
+                        id: "debug_compact_edit".to_string(),
+                        name: "edit".to_string(),
+                        input: serde_json::json!({
+                            "file_path": "demo.txt",
+                            "old_string": old_string,
+                            "new_string": new_string,
+                        }),
+                        intent: Some("Apply the fix".to_string()),
+                        thought_signature: None,
+                    },
+                ),
+                DisplayMessage::tool(
+                    "Command completed successfully (no output)".to_string(),
+                    crate::message::ToolCall {
+                        id: "debug_compact_silent".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "touch done"}),
+                        intent: Some("Mark done".to_string()),
+                        thought_signature: None,
+                    },
+                ),
+                DisplayMessage::assistant("Done. Rows fold to one line each.".to_string()),
+            ];
+            if let Some(msg) = self.display_messages.get(1) {
+                jcode_tui_messages::record_thinking_secs(msg.stable_cache_hash(), 3.4);
+            }
+            jcode_tui_messages::clear_transcript_expanded();
+            self.bump_display_messages_version();
+            self.diff_mode = crate::config::DiffDisplayMode::Inline;
+            self.scroll_offset = 0;
+            self.auto_scroll_paused = false;
+            self.input.clear();
+            self.cursor_pos = 0;
+            self.request_full_repaint();
+            self.set_status_notice("Debug compact transcript fixture ready");
+            serde_json::json!({
+                "ok": true,
+                "compact_transcript": crate::config::config().display.compact_transcript,
+                "reasoning_display": crate::config::config().display.reasoning_display().label(),
+                "display_messages": self.display_messages.len(),
+            })
+            .to_string()
+        } else if cmd.starts_with("transcript-click-target:") {
+            // Probe the compact-row hit-test at screen coords.
+            let raw = cmd.strip_prefix("transcript-click-target:").unwrap_or("");
+            let (col, row) = match raw.split_once(',').and_then(|(c, r)| {
+                Some((c.trim().parse::<u16>().ok()?, r.trim().parse::<u16>().ok()?))
+            }) {
+                Some(pair) => pair,
+                None => return "transcript-click-target error: expected <col>,<row>".to_string(),
+            };
+            serde_json::json!({
+                "col": col,
+                "row": row,
+                "transcript_expand_target": crate::tui::ui::transcript_expand_target_from_screen(col, row),
+            })
+            .to_string()
         } else if cmd == "gmail-draft-fixture" {
             self.display_messages = vec![
                 DisplayMessage::user("Draft a launch update for the team"),

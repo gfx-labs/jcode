@@ -1027,6 +1027,12 @@ pub struct App {
     thinking_prefix_emitted: bool,
     // Whether we are currently streaming reasoning (dim+italic) text
     reasoning_streaming: bool,
+    // When the open reasoning region started streaming, plus the seconds
+    // accumulated by earlier regions in the same not-yet-committed message.
+    // Attached to the message on commit so the folded `thinking` row can show
+    // the real thinking time.
+    reasoning_region_started: Option<Instant>,
+    reasoning_secs_accumulated: f32,
     // Incomplete trailing reasoning line awaiting a newline. Rendered live as the
     // streaming buffer's tail (dim+italic) so reasoning trickles in token-by-token;
     // promoted to a committed line once its newline arrives.

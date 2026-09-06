@@ -278,6 +278,17 @@ impl Config {
         Ok(())
     }
 
+    pub fn set_compact_transcript(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.compact_transcript = enabled;
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved display.compact_transcript to config: {}",
+            enabled
+        ));
+        Ok(())
+    }
+
     /// Persist the baked global launch-hotkey mapping.
     ///
     /// Auto-import calls this once with the per-repo chord -> directory layout it

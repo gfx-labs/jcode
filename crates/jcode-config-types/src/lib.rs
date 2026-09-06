@@ -243,6 +243,10 @@ pub enum ReasoningDisplayMode {
     /// Show only the *current* reasoning live; collapse it once the model
     /// commits an assistant message or tool call, then show the next one.
     Current,
+    /// Keep every reasoning trace in the transcript, but fold each one to a
+    /// single `thinking` summary row (duration, size) that expands on click.
+    /// Live reasoning still streams in full while the model thinks.
+    Collapsed,
 }
 
 impl ReasoningDisplayMode {
@@ -251,13 +255,15 @@ impl ReasoningDisplayMode {
             Self::Off => "Off",
             Self::Full => "Full",
             Self::Current => "Current",
+            Self::Collapsed => "Collapsed",
         }
     }
 
     pub fn cycle(self) -> Self {
         match self {
             Self::Off => Self::Current,
-            Self::Current => Self::Full,
+            Self::Current => Self::Collapsed,
+            Self::Collapsed => Self::Full,
             Self::Full => Self::Off,
         }
     }
@@ -266,9 +272,16 @@ impl ReasoningDisplayMode {
         match value.trim().to_lowercase().as_str() {
             "off" | "none" | "false" | "0" | "no" => Some(Self::Off),
             "full" | "all" | "true" | "1" | "yes" | "on" => Some(Self::Full),
-            "current" | "live" | "ephemeral" | "collapse" => Some(Self::Current),
+            "current" | "live" | "ephemeral" => Some(Self::Current),
+            "collapsed" | "collapse" | "compact" | "folded" | "summary" => Some(Self::Collapsed),
             _ => None,
         }
+    }
+
+    /// Whether persisted reasoning traces stay in the transcript (as opposed
+    /// to being ephemeral or hidden).
+    pub fn retains_traces(self) -> bool {
+        matches!(self, Self::Full | Self::Collapsed)
     }
 }
 

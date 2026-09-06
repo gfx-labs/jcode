@@ -192,6 +192,12 @@ impl App {
             "tool-call-details" => {
                 "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
             }
+            "compact-transcript" => {
+                "/compact-transcript\nShow whether the compact transcript is on.\n\n/compact-transcript on\nFold every tool result and thinking trace to a single summary row. Click a row to expand it in place and see the full output (edit tools expand to their full diff); click again to fold it back. Expanded state is remembered per message.\n\n/compact-transcript off\nRestore the inline previews (bash output tail, inline diffs, full thinking text).\n\n/compact-transcript expand\nToggle the most recent tool result or thinking row without the mouse."
+            }
+            "thinking-display" | "thinking" | "reasoning" => {
+                "/thinking-display\nShow the current thinking display mode.\n\n/thinking-display off\nNever show thinking text.\n\n/thinking-display full\nKeep every thinking trace in the transcript, rendered inline.\n\n/thinking-display collapsed\nKeep every thinking trace, folded to a one-line `thinking` row with duration and size metrics. Click the row to read the full thought.\n\n/thinking-display current\nShow only the live thinking, then collapse it once a tool runs or the answer commits."
+            }
             "auth" | "login" => {
                 "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions.\n\nUse /login jcode for pay-as-you-go hosted models through the Jcode router. Set a monthly spending limit in the browser; no API key is pasted into the terminal."
             }
