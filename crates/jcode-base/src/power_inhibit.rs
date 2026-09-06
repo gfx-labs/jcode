@@ -37,6 +37,27 @@ const INHIBIT_TTL: Duration = Duration::from_secs(150);
 /// below `INHIBIT_TTL` so coverage never lapses between reconcile ticks.
 const INHIBIT_REFRESH_AFTER: Duration = Duration::from_secs(90);
 
+/// The daemon's single inhibitor, shared so the reload path can release it
+/// before `exec`. `exec` runs no destructors, so a helper still holding the
+/// lock at that moment would otherwise be orphaned into the new image with no
+/// handle to reap it: it exits when its TTL lapses and sits as a zombie.
+static GLOBAL: std::sync::OnceLock<std::sync::Mutex<PowerInhibitor>> = std::sync::OnceLock::new();
+
+/// Process-wide inhibitor, created on first use.
+pub fn global() -> &'static std::sync::Mutex<PowerInhibitor> {
+    GLOBAL.get_or_init(|| std::sync::Mutex::new(PowerInhibitor::new()))
+}
+
+/// Release the process-wide inhibitor (kill + reap its helper) if one exists.
+/// Safe to call when it was never created or is already idle.
+pub fn release_global() {
+    if let Some(inhibitor) = GLOBAL.get()
+        && let Ok(mut inhibitor) = inhibitor.lock()
+    {
+        inhibitor.release();
+    }
+}
+
 /// Best-effort inhibitor that keeps the machine awake while jcode is actively
 /// streaming/processing.
 pub struct PowerInhibitor {

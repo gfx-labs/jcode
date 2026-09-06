@@ -172,6 +172,36 @@ pub(super) async fn await_reload_signal(
             serde_json::json!({ "count": aborted }),
         );
 
+        // Same reasoning as the background tasks above: a systemd-inhibit /
+        // caffeinate helper alive at exec time is orphaned into the new image
+        // with no handle, and becomes a zombie when its TTL lapses. Kill and
+        // reap it here; the new image re-acquires on its first reconcile tick.
+        crate::power_inhibit::release_global();
+
+        // MCP servers likewise survive exec as unowned children and turn into
+        // zombies when they exit. The shared pool gets a polite shutdown; then
+        // every remaining MCP child this process owns (per-session owned
+        // servers live inside each session's tool registry, with no single
+        // handle to reach them from here) is killed and reaped by PID. The new
+        // image reconnects on demand.
+        if let Some(pool) = crate::mcp::get_shared_pool() {
+            let disconnect = pool.disconnect_all();
+            if tokio::time::timeout(Duration::from_secs(3), disconnect)
+                .await
+                .is_err()
+            {
+                crate::logging::warn(
+                    "Server: MCP disconnect before reload exec timed out; proceeding",
+                );
+            }
+        }
+        let reaped = crate::mcp::kill_and_reap_all_owned();
+        if reaped > 0 {
+            crate::logging::info(&format!(
+                "Server: killed and reaped {reaped} MCP server process(es) before reload exec"
+            ));
+        }
+
         let prefers_selfdev = signal.prefer_selfdev_binary;
 
         if let Some((binary, label)) = super::reload_exec_target(prefers_selfdev) {

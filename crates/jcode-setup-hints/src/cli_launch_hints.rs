@@ -315,6 +315,28 @@ fn quote_hook_executable(path: &Path) -> String {
     }
 }
 
+/// Wait on a detached child on a helper thread.
+///
+/// `Drop for Child` deliberately does not reap, so a fire-and-forget `spawn()`
+/// leaves a zombie until the parent exits. These notification helpers run in
+/// long-lived processes, so the zombies would otherwise accumulate forever.
+#[cfg(unix)]
+fn reap_detached(child: std::io::Result<std::process::Child>) {
+    if let Ok(mut child) = child {
+        let _ = std::thread::Builder::new()
+            .name("jcode-notify-reaper".to_string())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+    }
+}
+
+#[cfg(not(unix))]
+fn reap_detached(child: std::io::Result<std::process::Child>) {
+    // Windows does not create zombies; dropping the handle is sufficient.
+    let _ = child;
+}
+
 fn send_desktop_notification(title: &str, body: &str) {
     #[cfg(target_os = "macos")]
     {
@@ -326,24 +348,28 @@ fn send_desktop_notification(title: &str, body: &str) {
             escape(body),
             escape(title)
         );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        reap_detached(
+            std::process::Command::new("osascript")
+                .args(["-e", &script])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn(),
+        );
     }
 
     #[cfg(target_os = "linux")]
     {
-        let _ = std::process::Command::new("notify-send")
-            .arg("--app-name=jcode")
-            .arg(title)
-            .arg(body)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+        reap_detached(
+            std::process::Command::new("notify-send")
+                .arg("--app-name=jcode")
+                .arg(title)
+                .arg(body)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn(),
+        );
     }
 
     #[cfg(windows)]

@@ -1901,8 +1901,9 @@ impl Server {
         // (a read lock + a scan) so it adds no meaningful load.
         const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
-        let mut inhibitor = crate::power_inhibit::PowerInhibitor::new();
-        if !inhibitor.is_available() {
+        let inhibitor = crate::power_inhibit::global();
+        let available = inhibitor.lock().map(|i| i.is_available()).unwrap_or(false);
+        if !available {
             // Disabled via the legacy env escape hatch, or unsupported platform.
             crate::logging::info(
                 "power_inhibit: unavailable (unsupported platform or JCODE_DISABLE_POWER_INHIBIT set); not monitoring",
@@ -1934,7 +1935,9 @@ impl Server {
                     ));
                     last_active = Some(active);
                 }
-                inhibitor.set_active(active);
+                if let Ok(mut inhibitor) = inhibitor.lock() {
+                    inhibitor.set_active(active);
+                }
             }
         });
     }
@@ -2281,6 +2284,17 @@ impl Server {
 
     /// Start the server (both main and debug sockets)
     pub async fn run(&self) -> Result<()> {
+        // A self-reload `exec`s in place, so children of the previous image
+        // (tool shells, MCP servers, power-inhibit helpers) are still ours but
+        // the old runtime's reaping state is gone. Collect whatever already
+        // exited so they do not linger as zombies for the daemon's lifetime.
+        let reaped = crate::platform::reap_exited_children();
+        if reaped > 0 {
+            crate::logging::info(&format!(
+                "Reaped {reaped} exited child process(es) inherited across reload"
+            ));
+        }
+
         // Ensure socket directory exists (for named sockets like /run/user/1000/jcode/)
         if let Some(parent) = self.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
