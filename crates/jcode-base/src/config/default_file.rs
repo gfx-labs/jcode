@@ -166,6 +166,8 @@ show_thinking = true
 # How to display reasoning/thinking content: "off", "full", or "current".
 #   off     - never show reasoning
 #   full    - keep every reasoning trace in the transcript
+#   collapsed - keep every trace, folded to a one-line `thinking` row with
+#             duration and size metrics; click the row to read it
 #   current - show only the live reasoning; collapse it once the model commits
 #             an assistant message or runs a tool, then show the next one
 # When unset, falls back to show_thinking (true => full, false => off).
@@ -203,6 +205,12 @@ prompt_entry_animation = true
 # with an intent show just the intent; rows without an intent still show the
 # technical detail.
 # tool_call_details = false
+
+# Compact transcript: fold every tool result and thinking trace to a single
+# summary row. Click a row to expand it in place and read the full output
+# (edit tools expand to their full diff); click again to fold it. Toggle at
+# runtime with /compact-transcript (default: false).
+# compact_transcript = false
 
 # Occasionally surface a "learn this keybinding" nudge (in a distinct color)
 # when you keep doing something the slow way (e.g. /resume) instead of using

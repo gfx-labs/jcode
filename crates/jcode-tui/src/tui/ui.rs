@@ -2518,6 +2518,49 @@ pub(crate) fn inline_image_expand_target_from_screen(column: u16, row: u16) -> O
     snapshot.inline_image_id_for_label_line(point.abs_line)
 }
 
+/// If a screen click landed on a compact transcript row (a folded tool result
+/// or `thinking` summary carrying a `▸ expand` / `▾ collapse` badge), return the
+/// transcript message index so the caller can toggle it. The whole summary row
+/// is the click target: clicking the tool name or the badge both work, since the
+/// row is a single-purpose control. Only the first line of the message counts,
+/// so clicks inside an expanded body stay selectable text.
+pub(crate) fn transcript_expand_target_from_screen(column: u16, row: u16) -> Option<usize> {
+    let point = copy_point_from_screen(column, row)?;
+    if point.pane != crate::tui::CopySelectionPane::Chat {
+        return None;
+    }
+    let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let prepared = match &snapshot.data {
+        CopyViewportData::ChatFrame { prepared } => prepared.clone(),
+        CopyViewportData::Dense { .. } => return None,
+    };
+    let text = snapshot.wrapped_plain_line(point.abs_line)?;
+    if !transcript_row_is_expand_control(text) {
+        return None;
+    }
+    prepared.message_index_at_line(point.abs_line)
+}
+
+/// Whether a rendered transcript line is a compact tool/thinking summary row:
+/// it ends with an expand/collapse badge and starts with a tool status icon or
+/// the `thinking` fold glyph. Swarm cards share the badge text but have a
+/// different leading shape, so they are excluded here and handled by
+/// `swarm_expand_target_from_screen`.
+pub(crate) fn transcript_row_is_expand_control(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    let has_badge = trimmed.ends_with(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE)
+        || trimmed.ends_with(jcode_tui_messages::TRANSCRIPT_COLLAPSE_BADGE);
+    if !has_badge {
+        return false;
+    }
+    let head = trimmed.trim_start();
+    head.starts_with('✓')
+        || head.starts_with('✗')
+        || head.starts_with('⚠')
+        || head.starts_with(&format!("▸ {}", messages::THINKING_ROW_LABEL))
+        || head.starts_with(&format!("▾ {}", messages::THINKING_ROW_LABEL))
+}
+
 /// If a screen click landed on a collapsed/expanded swarm notification's
 /// `▸ expand` / `▾ collapse` badge, return the transcript message index so the
 /// caller can toggle that notification. Only clicks on the trailing badge

@@ -685,7 +685,12 @@ pub(super) fn prepare_messages(
             (0, 0)
         },
         inline_images_visible: app.inline_images_visible(),
-        expanded_images_version: app.expanded_images_version(),
+        // Per-image expand levels and per-row transcript expand/collapse both
+        // change body geometry without touching message content; fold them
+        // into one version so either invalidates the frame.
+        expanded_images_version: app
+            .expanded_images_version()
+            .wrapping_add(jcode_tui_messages::transcript_expand_epoch().wrapping_mul(0x9e37_79b9)),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
     };
 
@@ -1124,7 +1129,11 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         pin_images: app.pin_images(),
         inline_images_visible: app.inline_images_visible(),
         images_signature: app.side_pane_images_signature(),
-        expanded_images_version: app.expanded_images_version(),
+        // See the full-prep key: image expand levels and transcript row
+        // expand/collapse share one version.
+        expanded_images_version: app
+            .expanded_images_version()
+            .wrapping_add(jcode_tui_messages::transcript_expand_epoch().wrapping_mul(0x9e37_79b9)),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
     };
     let msg_count = app.display_messages().len();

@@ -33,8 +33,9 @@ pub use model::{
 };
 pub use preprocess::{escape_currency_dollars, normalize_latex_math};
 pub use reasoning::{
-    REASONING_SENTINEL, reasoning_line_markup, reasoning_partial_markup,
-    reasoning_summary_line_markup,
+    REASONING_SENTINEL, ReasoningBlock, content_is_reasoning_only, extract_reasoning_blocks,
+    reasoning_line_markup, reasoning_partial_markup, reasoning_summary_line_markup,
+    unescape_reasoning_line,
 };
 pub use wrap::{ColumnWidth, WidthMeasure, wrap_line, wrap_lines};
 

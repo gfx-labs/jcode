@@ -92,3 +92,165 @@ pub fn reasoning_summary_line_markup(line_count: usize) -> String {
     };
     reasoning_line_markup(&label)
 }
+
+/// Undo [`reasoning_line_markup`] for one line: strip the emphasis wrapper,
+/// the sentinels, the trailing hard break, and the inline-markdown escapes so
+/// the original reasoning text comes back out. Returns `None` when the line is
+/// not a reasoning line (no sentinel).
+pub fn unescape_reasoning_line(line: &str) -> Option<String> {
+    if !line.contains(REASONING_SENTINEL) {
+        return None;
+    }
+    let trimmed = line.trim_end();
+    let trimmed = trimmed.strip_prefix('*').unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix('*').unwrap_or(trimmed);
+    let stripped = trimmed.replace(REASONING_SENTINEL, "");
+    let mut out = String::with_capacity(stripped.len());
+    let mut chars = stripped.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\'
+            && let Some(&next) = chars.peek()
+            && matches!(
+                next,
+                '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '>' | '&' | '~' | '|' | '$'
+            )
+        {
+            out.push(next);
+            chars.next();
+            continue;
+        }
+        out.push(ch);
+    }
+    Some(out)
+}
+
+/// A contiguous run of reasoning lines inside a committed message body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningBlock {
+    /// Byte range of the block within the source content (start of the first
+    /// reasoning line through the end of the last one, including its newline).
+    pub start: usize,
+    pub end: usize,
+    /// Reasoning text with markup removed, one entry per line.
+    pub lines: Vec<String>,
+}
+
+impl ReasoningBlock {
+    /// Plain reasoning text, lines joined with `\n`.
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// Approximate word count of the reasoning text.
+    pub fn word_count(&self) -> usize {
+        self.lines
+            .iter()
+            .map(|line| line.split_whitespace().count())
+            .sum()
+    }
+}
+
+/// Split committed content into its reasoning blocks. Reasoning lines are
+/// those carrying [`REASONING_SENTINEL`]; consecutive ones (blank lines in
+/// between allowed) form one block. Returns an empty vec for content with no
+/// reasoning.
+pub fn extract_reasoning_blocks(content: &str) -> Vec<ReasoningBlock> {
+    let mut blocks: Vec<ReasoningBlock> = Vec::new();
+    let mut current: Option<ReasoningBlock> = None;
+    let mut offset = 0usize;
+    for raw in content.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some(text) = unescape_reasoning_line(line) {
+            match current.as_mut() {
+                Some(block) => {
+                    block.end = offset;
+                    block.lines.push(text);
+                }
+                None => {
+                    current = Some(ReasoningBlock {
+                        start,
+                        end: offset,
+                        lines: vec![text],
+                    });
+                }
+            }
+        } else if !line.trim().is_empty()
+            && let Some(block) = current.take()
+        {
+            // Blank lines inside a run do not end it; any other text does.
+            blocks.push(block);
+        }
+    }
+    if let Some(block) = current.take() {
+        blocks.push(block);
+    }
+    blocks
+}
+
+/// Whether the content consists only of reasoning lines and whitespace.
+pub fn content_is_reasoning_only(content: &str) -> bool {
+    let mut saw_reasoning = false;
+    for line in content.lines() {
+        if line.contains(REASONING_SENTINEL) {
+            saw_reasoning = true;
+        } else if !line.trim().is_empty() {
+            return false;
+        }
+    }
+    saw_reasoning
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unescape_round_trips_reasoning_line_markup() {
+        let original = "Use `cargo test` on *this* [thing] <tag> & 100% | $x";
+        let markup = reasoning_line_markup(original);
+        let line = markup.trim_end_matches('\n');
+        assert_eq!(unescape_reasoning_line(line).as_deref(), Some(original));
+        assert_eq!(unescape_reasoning_line("plain text"), None);
+    }
+
+    #[test]
+    fn extract_reasoning_blocks_splits_on_answer_text_and_spans_blanks() {
+        let mut content = String::new();
+        content.push_str(&reasoning_line_markup("first"));
+        content.push('\n');
+        content.push_str(&reasoning_line_markup("second"));
+        content.push_str("\nThe answer.\n");
+        content.push_str(&reasoning_line_markup("third"));
+
+        let blocks = extract_reasoning_blocks(&content);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[0].lines, vec!["first", "second"]);
+        assert_eq!(blocks[1].lines, vec!["third"]);
+        assert_eq!(blocks[0].word_count(), 2);
+
+        // Splicing the blocks out leaves only the answer.
+        let mut answer = String::new();
+        let mut cursor = 0;
+        for block in &blocks {
+            answer.push_str(&content[cursor..block.start]);
+            cursor = block.end;
+        }
+        answer.push_str(&content[cursor..]);
+        assert_eq!(answer.trim(), "The answer.");
+    }
+
+    #[test]
+    fn content_is_reasoning_only_detects_pure_traces() {
+        let pure = format!(
+            "{}{}",
+            reasoning_line_markup("a"),
+            reasoning_line_markup("b")
+        );
+        assert!(content_is_reasoning_only(&pure));
+        assert!(!content_is_reasoning_only(&format!("{pure}answer")));
+        assert!(!content_is_reasoning_only("no reasoning here"));
+        assert!(!content_is_reasoning_only(""));
+    }
+}

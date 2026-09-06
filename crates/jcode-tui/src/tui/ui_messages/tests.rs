@@ -3323,3 +3323,264 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
     assert!(!plain.contains("No tasks yet"), "{plain}");
     assert!(plain.contains("no tasks"), "{plain}");
 }
+
+// --- compact transcript (click-to-expand tool rows and thinking rows) ---
+
+fn compact_bash_message(id: &str, content: &str) -> DisplayMessage {
+    DisplayMessage {
+        role: "tool".to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(crate::message::ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({"command": "printf output"}),
+            intent: Some("Print output".to_string()),
+            thought_signature: None,
+        }),
+    }
+}
+
+#[test]
+fn compact_tool_row_is_one_line_with_expand_badge() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_compact_transcript_override::set(true);
+    crate::tui::ui::tools_ui::tests_show_bash_output_override::set(true);
+
+    let msg = compact_bash_message("call_compact_collapsed", "one\ntwo\nthree\nfour");
+    jcode_tui_messages::set_transcript_message_expanded(msg.stable_cache_hash(), false);
+    let rendered = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+
+    assert_eq!(rendered.len(), 1, "{rendered:?}");
+    assert!(
+        rendered[0]
+            .trim_end()
+            .ends_with(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE),
+        "{rendered:?}"
+    );
+    assert!(
+        crate::tui::ui::transcript_row_is_expand_control(&rendered[0]),
+        "row must be recognised as a click target: {rendered:?}"
+    );
+    // The bash tail preview is suppressed even though show_bash_output is on.
+    assert!(!rendered[0].contains("four"), "{rendered:?}");
+
+    crate::tui::ui::tools_ui::tests_show_bash_output_override::set(false);
+    super::tests_compact_transcript_override::set(false);
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
+fn compact_tool_row_expanded_shows_full_output_and_collapse_badge() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_compact_transcript_override::set(true);
+
+    let msg = compact_bash_message("call_compact_expanded", "one\ntwo\nthree\nfour");
+    let hash = msg.stable_cache_hash();
+    jcode_tui_messages::set_transcript_message_expanded(hash, true);
+    let rendered = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+
+    assert_eq!(rendered.len(), 5, "{rendered:?}");
+    assert!(
+        rendered[0]
+            .trim_end()
+            .ends_with(jcode_tui_messages::TRANSCRIPT_COLLAPSE_BADGE),
+        "{rendered:?}"
+    );
+    for expected in ["one", "two", "three", "four"] {
+        assert!(
+            rendered
+                .iter()
+                .skip(1)
+                .any(|line| line.trim_start_matches([' ', '│']).trim() == expected),
+            "missing {expected}: {rendered:?}"
+        );
+    }
+    // Body lines are not click targets.
+    assert!(!crate::tui::ui::transcript_row_is_expand_control(
+        &rendered[1]
+    ));
+
+    jcode_tui_messages::set_transcript_message_expanded(hash, false);
+    super::tests_compact_transcript_override::set(false);
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
+fn compact_tool_row_without_output_has_no_badge() {
+    super::tests_compact_transcript_override::set(true);
+    let msg = compact_bash_message(
+        "call_compact_no_output",
+        "Command completed successfully (no output)",
+    );
+    let rendered = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+    assert_eq!(rendered.len(), 1);
+    assert!(
+        !rendered[0].contains(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE),
+        "{rendered:?}"
+    );
+    super::tests_compact_transcript_override::set(false);
+}
+
+#[test]
+fn compact_off_leaves_tool_rows_unchanged() {
+    super::tests_compact_transcript_override::set(false);
+    let msg = compact_bash_message("call_compact_off", "one\ntwo");
+    let rendered = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| line.contains(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE)),
+        "{rendered:?}"
+    );
+}
+
+fn reasoning_markup(lines: &[&str]) -> String {
+    lines
+        .iter()
+        .map(|line| jcode_tui_markdown::reasoning_line_markup(line))
+        .collect::<String>()
+}
+
+#[test]
+fn collapsed_reasoning_mode_folds_thinking_to_summary_row() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Collapsed);
+
+    let msg = DisplayMessage::reasoning(reasoning_markup(&[
+        "First I should look at the config.",
+        "Then wire the click handler.",
+    ]));
+    let hash = msg.stable_cache_hash();
+    jcode_tui_messages::set_transcript_message_expanded(hash, false);
+    jcode_tui_messages::record_thinking_secs(hash, 4.0);
+
+    let rendered = render_reasoning_message(&msg, 100, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+
+    assert_eq!(rendered.len(), 1, "{rendered:?}");
+    let row = &rendered[0];
+    assert!(row.contains(super::THINKING_ROW_LABEL), "{row}");
+    assert!(row.contains("4.0s"), "duration metric missing: {row}");
+    assert!(row.contains("12 words"), "size metric missing: {row}");
+    assert!(row.contains("3 w/s"), "speed metric missing: {row}");
+    assert!(
+        row.trim_end()
+            .ends_with(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE),
+        "{row}"
+    );
+    assert!(
+        crate::tui::ui::transcript_row_is_expand_control(row),
+        "{row}"
+    );
+    assert!(!row.contains("look at the config"), "{row}");
+
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Full);
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
+fn collapsed_reasoning_expanded_shows_original_text() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Collapsed);
+
+    let msg = DisplayMessage::reasoning(reasoning_markup(&[
+        "Escaped chars like *stars* and _under_ should round trip.",
+    ]));
+    let hash = msg.stable_cache_hash();
+    jcode_tui_messages::set_transcript_message_expanded(hash, true);
+
+    let rendered = render_reasoning_message(&msg, 100, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+
+    assert!(rendered.len() >= 2, "{rendered:?}");
+    assert!(
+        rendered[0]
+            .trim_end()
+            .ends_with(jcode_tui_messages::TRANSCRIPT_COLLAPSE_BADGE),
+        "{rendered:?}"
+    );
+    let body = rendered[1..].join("\n");
+    assert!(
+        body.contains("Escaped chars like *stars* and _under_ should round trip."),
+        "{body}"
+    );
+
+    jcode_tui_messages::set_transcript_message_expanded(hash, false);
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Full);
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
+fn collapsed_reasoning_in_assistant_message_keeps_answer_visible() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Collapsed);
+
+    let content = format!(
+        "{}\nThe answer is **forty-two**.",
+        reasoning_markup(&["Let me think about the number."])
+    );
+    let msg = DisplayMessage::assistant(content);
+    jcode_tui_messages::set_transcript_message_expanded(msg.stable_cache_hash(), false);
+
+    let rendered = render_assistant_message(&msg, 100, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>();
+    let plain = rendered.join("\n");
+
+    assert!(plain.contains(super::THINKING_ROW_LABEL), "{plain}");
+    assert!(plain.contains("The answer is forty-two."), "{plain}");
+    assert!(!plain.contains("think about the number"), "{plain}");
+
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Full);
+    crate::tui::markdown::set_center_code_blocks(saved);
+}
+
+#[test]
+fn full_reasoning_mode_without_compact_renders_thinking_inline() {
+    let saved = crate::tui::markdown::center_code_blocks();
+    crate::tui::markdown::set_center_code_blocks(false);
+    super::tests_reasoning_display_override::set(crate::config::ReasoningDisplayMode::Full);
+    super::tests_compact_transcript_override::set(false);
+
+    let msg = DisplayMessage::assistant(format!(
+        "{}\nAnswer.",
+        reasoning_markup(&["Inline thought here."])
+    ));
+    let plain = render_assistant_message(&msg, 100, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(plain.contains("Inline thought here."), "{plain}");
+    assert!(
+        !plain.contains(jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE),
+        "{plain}"
+    );
+
+    crate::tui::markdown::set_center_code_blocks(saved);
+}

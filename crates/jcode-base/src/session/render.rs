@@ -26,6 +26,8 @@ pub const DEFAULT_VISIBLE_COMPACTED_HISTORY_MESSAGES: usize = 64;
 ///   reasoning is hidden on re-render (the live block already streamed and was
 ///   discarded once the model answered), matching the ephemeral live behavior.
 /// - `Full`: every reasoning line is shown (classic behavior).
+/// - `Collapsed`: every reasoning line is emitted (the TUI folds the block to
+///   a summary row and expands it on click).
 fn format_reasoning_markup(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
@@ -36,7 +38,7 @@ fn format_reasoning_markup(text: &str) -> String {
         // `Current` only ever shows the live block, which is discarded once the
         // model answers, so reloaded history shows no past reasoning.
         ReasoningDisplayMode::Off | ReasoningDisplayMode::Current => return String::new(),
-        ReasoningDisplayMode::Full => {}
+        ReasoningDisplayMode::Full | ReasoningDisplayMode::Collapsed => {}
     }
     let mut out = String::new();
     for line in text.split('\n') {

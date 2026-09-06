@@ -111,6 +111,15 @@ impl App {
         // proves earlier assistant messages belong to completed work.
         if message.role == "assistant" {
             self.attempt_committed_assistant_messages += 1;
+            // An assistant message that carries reasoning lines is where the
+            // measured thinking time lands (the folded `thinking` row reads it
+            // back by message hash). Reasoning-only traces attach their own.
+            if message
+                .content
+                .contains(jcode_tui_markdown::REASONING_SENTINEL)
+            {
+                self.attach_thinking_secs(&message);
+            }
         } else {
             self.attempt_committed_assistant_messages = 0;
         }

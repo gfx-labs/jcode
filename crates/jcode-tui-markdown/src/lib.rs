@@ -151,6 +151,12 @@ pub use jcode_render_core::{REASONING_SENTINEL, reasoning_line_markup, reasoning
 /// `jcode_tui_markdown::reasoning_summary_line_markup` path keeps working.
 pub use jcode_render_core::reasoning_summary_line_markup;
 
+/// Committed-reasoning inspection helpers used to fold thinking blocks into a
+/// one-line summary row in the transcript.
+pub use jcode_render_core::{
+    ReasoningBlock, content_is_reasoning_only, extract_reasoning_blocks, unescape_reasoning_line,
+};
+
 use render_support::{
     highlight_code_cached, line_plain_text, placeholder_code_block, ranges_overlap,
     render_table_aligned,

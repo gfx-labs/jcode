@@ -2,6 +2,7 @@ mod cache;
 mod message;
 mod prepared;
 mod swarm_collapse;
+mod transcript_collapse;
 mod wrapped_line_map;
 
 pub use cache::{
@@ -20,5 +21,11 @@ pub use prepared::{
 pub use swarm_collapse::{
     CollapsibleSwarmContent, encode_collapsible_swarm_content, parse_collapsible_swarm_content,
     toggle_collapsible_swarm_content,
+};
+pub use transcript_collapse::{
+    TRANSCRIPT_COLLAPSE_BADGE, TRANSCRIPT_EXPAND_BADGE, bump_transcript_expand_epoch,
+    clear_transcript_expanded, record_thinking_secs, set_transcript_message_expanded,
+    thinking_secs_for, toggle_transcript_message_expanded, transcript_expand_epoch,
+    transcript_message_expanded,
 };
 pub use wrapped_line_map::WrappedLineMap;

@@ -225,6 +225,56 @@ impl App {
         true
     }
 
+    /// If a left-click landed on a compact transcript row (folded tool result
+    /// or `thinking` summary), toggle it between the one-line summary and its
+    /// full body. Returns `false` when the click was elsewhere.
+    pub(super) fn try_toggle_transcript_expand_at(&mut self, column: u16, row: u16) -> bool {
+        let Some(msg_idx) = super::super::ui::transcript_expand_target_from_screen(column, row)
+        else {
+            return false;
+        };
+        self.toggle_transcript_message_expand(msg_idx)
+    }
+
+    /// Toggle the expanded state of the compact transcript row at `msg_idx`.
+    /// The state is keyed by the message's stable hash (see
+    /// `jcode_tui_messages::transcript_collapse`), so this only bumps the
+    /// display version to force a re-prepare; the message itself is untouched.
+    pub(super) fn toggle_transcript_message_expand(&mut self, msg_idx: usize) -> bool {
+        let Some(message) = self.display_messages.get(msg_idx) else {
+            return false;
+        };
+        if !matches!(message.role.as_str(), "tool" | "reasoning" | "assistant") {
+            return false;
+        }
+        let expanded =
+            jcode_tui_messages::toggle_transcript_message_expanded(message.stable_cache_hash());
+        self.bump_display_messages_version_no_stats();
+        self.request_full_repaint();
+        self.set_status_notice(if expanded { "Expanded" } else { "Collapsed" });
+        true
+    }
+
+    /// Toggle the most recent compact transcript row (tool result or thinking
+    /// summary). Keyboard path for the same action as clicking the row.
+    pub(super) fn toggle_latest_transcript_expand(&mut self) -> bool {
+        let Some(idx) =
+            self.display_messages
+                .iter()
+                .rposition(|message| match message.role.as_str() {
+                    "tool" => true,
+                    "reasoning" => true,
+                    "assistant" => jcode_tui_markdown::extract_reasoning_blocks(&message.content)
+                        .iter()
+                        .any(|block| !block.lines.is_empty()),
+                    _ => false,
+                })
+        else {
+            return false;
+        };
+        self.toggle_transcript_message_expand(idx)
+    }
+
     /// If a left-click landed on a swarm notification's `▸ expand` /
     /// `▾ collapse` badge, toggle that notification between its tldr line and
     /// its full body. Returns `false` when the click was elsewhere.
@@ -1700,6 +1750,12 @@ impl App {
             && self.try_cycle_image_expand_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "cycle_image_expand");
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && self.try_toggle_transcript_expand_at(mouse.column, mouse.row)
+        {
+            finish_mouse_event!(false, "toggle_transcript_expand");
         }
 
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))

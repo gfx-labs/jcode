@@ -86,11 +86,14 @@ pub(crate) fn render_assistant_message(
 ) -> Vec<Line<'static>> {
     let centered = markdown::center_code_blocks();
     let wrap_width = centered_wrap_width(width, centered, 96);
-    let mut lines = if let Some(segments) = split_plan_segments(&msg.content) {
-        render_assistant_segments(&segments, width, wrap_width)
-    } else {
-        markdown::render_markdown_with_width(&msg.content, Some(wrap_width))
-    };
+    let mut lines =
+        if let Some(folded) = render_assistant_with_folded_reasoning(msg, width, wrap_width) {
+            folded
+        } else if let Some(segments) = split_plan_segments(&msg.content) {
+            render_assistant_segments(&segments, width, wrap_width)
+        } else {
+            markdown::render_markdown_with_width(&msg.content, Some(wrap_width))
+        };
     if centered {
         markdown::recenter_structured_blocks_for_display(&mut lines, width as usize);
     }
@@ -307,11 +310,275 @@ pub(crate) fn render_reasoning_message(
 ) -> Vec<Line<'static>> {
     let centered = markdown::center_code_blocks();
     let wrap_width = centered_wrap_width(width, centered, 96);
+    if reasoning_folds_to_summary() {
+        let hash = msg.stable_cache_hash();
+        let expanded = jcode_tui_messages::transcript_message_expanded(hash);
+        let thinking_secs = jcode_tui_messages::thinking_secs_for(hash);
+        let mut lines =
+            render_folded_reasoning_lines(&msg.content, thinking_secs, wrap_width, expanded);
+        if centered {
+            left_pad_lines_for_centered_mode(&mut lines, width);
+        }
+        return lines;
+    }
     let mut lines = markdown::render_markdown_with_width(&msg.content, Some(wrap_width));
     if centered {
         left_pad_lines_for_centered_mode(&mut lines, width);
     }
     lines
+}
+
+/// Whether committed reasoning blocks fold to a one-line `thinking` summary
+/// that expands on click. On when the reasoning display mode is `collapsed`,
+/// or when the compact transcript is on and reasoning is shown at all.
+pub(crate) fn reasoning_folds_to_summary() -> bool {
+    let mode = reasoning_display_mode();
+    match mode {
+        crate::config::ReasoningDisplayMode::Collapsed => true,
+        crate::config::ReasoningDisplayMode::Off => false,
+        crate::config::ReasoningDisplayMode::Full
+        | crate::config::ReasoningDisplayMode::Current => compact_transcript_enabled(),
+    }
+}
+
+#[cfg(not(test))]
+fn reasoning_display_mode() -> crate::config::ReasoningDisplayMode {
+    crate::config::config().display.reasoning_display()
+}
+
+#[cfg(test)]
+fn reasoning_display_mode() -> crate::config::ReasoningDisplayMode {
+    tests_reasoning_display_override::get()
+}
+
+#[cfg(test)]
+pub(crate) mod tests_reasoning_display_override {
+    use std::cell::Cell;
+
+    thread_local! {
+        static MODE: Cell<crate::config::ReasoningDisplayMode> =
+            const { Cell::new(crate::config::ReasoningDisplayMode::Full) };
+    }
+
+    pub(crate) fn get() -> crate::config::ReasoningDisplayMode {
+        MODE.with(Cell::get)
+    }
+
+    pub(crate) fn set(value: crate::config::ReasoningDisplayMode) {
+        MODE.with(|cell| cell.set(value));
+    }
+}
+
+/// Trailing label on a folded reasoning row. Kept as constants so the click
+/// hit-test (`transcript_expand_target_from_screen`) matches the render.
+pub(crate) const THINKING_ROW_LABEL: &str = "thinking";
+
+/// Metrics shown on a folded `thinking` row: how long the model thought, and
+/// how much it produced. Duration comes from the display message when the
+/// turn recorded one; size is derived from the text.
+struct ThinkingRowMetrics {
+    words: usize,
+    lines: usize,
+    duration_secs: Option<f32>,
+}
+
+impl ThinkingRowMetrics {
+    fn from_blocks(
+        blocks: &[jcode_tui_markdown::ReasoningBlock],
+        duration_secs: Option<f32>,
+    ) -> Self {
+        let words = blocks.iter().map(|b| b.word_count()).sum();
+        let lines = blocks.iter().map(|b| b.lines.len()).sum();
+        Self {
+            words,
+            lines,
+            duration_secs,
+        }
+    }
+
+    fn label(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(secs) = self.duration_secs.filter(|s| *s > 0.0) {
+            parts.push(if secs >= 60.0 {
+                format!("{}m {:.0}s", (secs / 60.0) as u32, secs % 60.0)
+            } else {
+                format!("{:.1}s", secs)
+            });
+        }
+        if self.words > 0 {
+            parts.push(format!("{} words", self.words));
+        } else if self.lines > 0 {
+            parts.push(format!("{} lines", self.lines));
+        }
+        if let (Some(secs), true) = (self.duration_secs, self.words > 0)
+            && secs >= 1.0
+        {
+            let wps = self.words as f32 / secs;
+            parts.push(format!("{:.0} w/s", wps));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// Build the single folded `thinking` row plus, when expanded, the full
+/// reasoning text beneath it as dim italic lines with a left rail.
+fn render_folded_reasoning_block(
+    blocks: &[jcode_tui_markdown::ReasoningBlock],
+    duration_secs: Option<f32>,
+    wrap_width: usize,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let metrics = ThinkingRowMetrics::from_blocks(blocks, duration_secs);
+    let badge = if expanded {
+        jcode_tui_messages::TRANSCRIPT_COLLAPSE_BADGE
+    } else {
+        jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE
+    };
+    let dim = Style::default().fg(dim_color());
+    let mut head = vec![
+        Span::styled("  ", dim),
+        Span::styled(
+            if expanded { "▾ " } else { "▸ " },
+            Style::default().fg(dim_color()).dim(),
+        ),
+        Span::styled(
+            THINKING_ROW_LABEL,
+            Style::default().fg(dim_color()).italic(),
+        ),
+    ];
+    let metrics_label = metrics.label();
+    if !metrics_label.is_empty() {
+        head.push(Span::styled(format!(" · {}", metrics_label), dim.dim()));
+    }
+    // The badge is supplied as the preserved suffix (not pushed onto `head`)
+    // so truncation trims the metrics rather than the click target.
+    let mut lines = vec![super::truncate_line_preserving_suffix_to_width(
+        &Line::from(head),
+        &Line::from(Span::styled(format!("  {}", badge), dim.dim())),
+        wrap_width.max(1),
+    )];
+    if !expanded {
+        return lines;
+    }
+    let border = "    │ ";
+    let border_width = UnicodeWidthStr::width(border);
+    let avail = wrap_width.saturating_sub(border_width).max(1);
+    let text_style = Style::default().fg(dim_color()).italic();
+    for (block_idx, block) in blocks.iter().enumerate() {
+        if block_idx > 0 {
+            lines.push(Line::from(Span::styled(border.to_string(), dim)));
+        }
+        for text in &block.lines {
+            if text.trim().is_empty() {
+                lines.push(Line::from(Span::styled(border.to_string(), dim)));
+                continue;
+            }
+            for chunk in wrap_plain_words(text, avail) {
+                lines.push(Line::from(vec![
+                    Span::styled(border.to_string(), dim),
+                    Span::styled(chunk, text_style),
+                ]));
+            }
+        }
+    }
+    lines
+}
+
+/// Fold every reasoning block in `content` into a `thinking` row. Used for
+/// the standalone reasoning role, whose content is reasoning-only.
+fn render_folded_reasoning_lines(
+    content: &str,
+    thinking_secs: Option<f32>,
+    wrap_width: usize,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let blocks = jcode_tui_markdown::extract_reasoning_blocks(content);
+    if blocks.is_empty() {
+        return markdown::render_markdown_with_width(content, Some(wrap_width));
+    }
+    render_folded_reasoning_block(&blocks, thinking_secs, wrap_width, expanded)
+}
+
+/// Assistant messages in `full`/`collapsed` reasoning modes carry their
+/// reasoning inline (sentinel-marked lines before the answer). When reasoning
+/// folds, render those blocks as one `thinking` row and the rest of the
+/// content as normal markdown. Returns `None` when there is nothing to fold,
+/// so the caller falls back to the regular render path.
+fn render_assistant_with_folded_reasoning(
+    msg: &DisplayMessage,
+    width: u16,
+    wrap_width: usize,
+) -> Option<Vec<Line<'static>>> {
+    if !reasoning_folds_to_summary() {
+        return None;
+    }
+    let blocks = jcode_tui_markdown::extract_reasoning_blocks(&msg.content);
+    if blocks.is_empty() {
+        return None;
+    }
+    let hash = msg.stable_cache_hash();
+    let expanded = jcode_tui_messages::transcript_message_expanded(hash);
+    // Prefer the measured thinking time; the message's own duration is the
+    // whole turn, which overstates it.
+    let thinking_secs = jcode_tui_messages::thinking_secs_for(hash);
+    let mut lines = render_folded_reasoning_block(&blocks, thinking_secs, wrap_width, expanded);
+
+    // Everything outside the reasoning blocks is the answer. Splice the
+    // blocks out so the remaining markdown renders as if the reasoning were
+    // never there (matching `strip_reasoning_lines` in `current` mode).
+    let mut answer = String::with_capacity(msg.content.len());
+    let mut cursor = 0usize;
+    for block in &blocks {
+        answer.push_str(&msg.content[cursor..block.start]);
+        cursor = block.end;
+    }
+    answer.push_str(&msg.content[cursor..]);
+    let answer = answer.trim_matches('\n');
+    if !answer.trim().is_empty() {
+        lines.push(Line::default().alignment(ratatui::layout::Alignment::Left));
+        let rendered = if let Some(segments) = split_plan_segments(answer) {
+            render_assistant_segments(&segments, width, wrap_width)
+        } else {
+            markdown::render_markdown_with_width(answer, Some(wrap_width))
+        };
+        lines.extend(rendered);
+    }
+    Some(lines)
+}
+
+/// Word-wrap plain text to `width`, hard-splitting tokens wider than the line.
+fn wrap_plain_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for word in text.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
+        if current_width > 0 && current_width + 1 + word_width > width {
+            out.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+        if word_width > width {
+            if current_width > 0 {
+                out.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            for chunk in split_by_display_width(word, width) {
+                out.push(chunk);
+            }
+            continue;
+        }
+        if current_width > 0 {
+            current.push(' ');
+            current_width += 1;
+        }
+        current.push_str(word);
+        current_width += word_width;
+    }
+    if !current.is_empty() || out.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 fn render_assistant_tool_call_lines(
@@ -4115,6 +4382,28 @@ pub(crate) fn render_tool_message(
         Span::styled(token_badge.label, Style::default().fg(token_badge.color)),
     ]);
 
+    // Compact transcript: the row carries a trailing `▸ expand` / `▾ collapse`
+    // badge that toggles the full tool output beneath it. The badge must stay
+    // the trailing token of the line (see `transcript_expand_target_from_screen`).
+    let compact = compact_transcript_enabled();
+    let expanded =
+        compact && jcode_tui_messages::transcript_message_expanded(msg.stable_cache_hash());
+    let token_suffix = if compact && tool_output_is_expandable(&msg.content) {
+        let badge = if expanded {
+            jcode_tui_messages::TRANSCRIPT_COLLAPSE_BADGE
+        } else {
+            jcode_tui_messages::TRANSCRIPT_EXPAND_BADGE
+        };
+        let mut spans = token_suffix.spans;
+        spans.push(Span::styled(
+            format!("  {}", badge),
+            Style::default().fg(dim_color()).dim(),
+        ));
+        Line::from(spans)
+    } else {
+        token_suffix
+    };
+
     let rendered_tool_line = super::truncate_line_preserving_suffix_to_width(
         &Line::from(tool_line),
         &token_suffix,
@@ -4122,6 +4411,42 @@ pub(crate) fn render_tool_message(
     );
     let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
     lines.push(rendered_tool_line);
+
+    // Expanded compact row: show the full raw tool output as a nested block.
+    // The normal per-tool previews below (bash tail, agentgrep body) are
+    // skipped since the raw output supersedes them. Edit tools instead expand
+    // to their full inline diff, which is the useful view of that output.
+    let expanded_edit_diff = expanded
+        && is_edit_tool
+        && edit_tool_inline_diff_lines(tc, &msg.content).is_some_and(|lines| !lines.is_empty());
+    let diff_mode = if expanded_edit_diff {
+        crate::config::DiffDisplayMode::FullInline
+    } else {
+        diff_mode
+    };
+    if expanded && !expanded_edit_diff {
+        lines.extend(render_expanded_tool_output_body(&msg.content, row_width));
+        if centered {
+            super::left_pad_lines_to_block_width(&mut lines, width, block_width);
+        }
+        return lines;
+    }
+    if compact && !expanded {
+        // Collapsed compact row: keep it to the single summary line plus any
+        // structured cards that are themselves a summary (gmail draft,
+        // discovery), but drop the raw previews that add height.
+        if let Some(draft_lines) = render_gmail_draft_card(tc, &msg.content, is_error, row_width) {
+            lines.extend(draft_lines);
+        }
+        if let Some(discovery_lines) = render_discovery_card(tc, &msg.content, is_error, row_width)
+        {
+            lines.extend(discovery_lines);
+        }
+        if centered {
+            super::left_pad_lines_to_block_width(&mut lines, width, block_width);
+        }
+        return lines;
+    }
     if let Some(draft_lines) = render_gmail_draft_card(tc, &msg.content, is_error, row_width) {
         lines.extend(draft_lines);
     }
@@ -4458,6 +4783,98 @@ pub(crate) fn render_tool_message(
 struct ToolOutputTokenBadge {
     label: String,
     color: Color,
+}
+
+/// Whether the compact transcript (one row per tool/thinking, click to expand)
+/// is active. Tests default to off and can override via the thread-local.
+#[cfg(not(test))]
+pub(crate) fn compact_transcript_enabled() -> bool {
+    crate::config::config().display.compact_transcript
+}
+
+#[cfg(test)]
+pub(crate) fn compact_transcript_enabled() -> bool {
+    tests_compact_transcript_override::get()
+}
+
+#[cfg(test)]
+pub(crate) mod tests_compact_transcript_override {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COMPACT: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(crate) fn get() -> bool {
+        COMPACT.with(Cell::get)
+    }
+
+    pub(crate) fn set(value: bool) {
+        COMPACT.with(|cell| cell.set(value));
+    }
+}
+
+/// Whether a tool result has any output worth expanding. Empty results and
+/// the bash "no output" sentinel get no badge, so the row stays inert.
+fn tool_output_is_expandable(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && trimmed != "Command completed successfully (no output)"
+}
+
+/// Render the full raw tool output beneath an expanded compact tool row. Each
+/// line is prefixed with a dim left rail so it reads as a nested block. Long
+/// lines are hard-split to the available width and the block is capped so a
+/// giant result cannot flood the transcript; the cap is generous because the
+/// user asked for this one explicitly.
+fn render_expanded_tool_output_body(content: &str, row_width: usize) -> Vec<Line<'static>> {
+    const MAX_BODY_LINES: usize = 2000;
+    let border = "    │ ";
+    let border_width = UnicodeWidthStr::width(border);
+    let avail = row_width.saturating_sub(border_width).max(1);
+    let border_style = Style::default().fg(dim_color());
+    let text_style = Style::default().fg(dim_color());
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let source_lines: Vec<&str> = content.trim_end().split('\n').collect();
+    let total = source_lines.len();
+    let mut truncated_extra = 0usize;
+
+    for raw_line in source_lines {
+        if out.len() >= MAX_BODY_LINES {
+            truncated_extra = total.saturating_sub(out.len());
+            break;
+        }
+        let raw_line = raw_line.trim_end_matches('\r').replace('\t', "    ");
+        if raw_line.trim().is_empty() {
+            out.push(Line::from(Span::styled(border.to_string(), border_style)));
+            continue;
+        }
+        if UnicodeWidthStr::width(raw_line.as_str()) <= avail {
+            out.push(Line::from(vec![
+                Span::styled(border.to_string(), border_style),
+                Span::styled(raw_line, text_style),
+            ]));
+        } else {
+            for chunk in split_by_display_width(&raw_line, avail) {
+                if out.len() >= MAX_BODY_LINES {
+                    break;
+                }
+                out.push(Line::from(vec![
+                    Span::styled(border.to_string(), border_style),
+                    Span::styled(chunk, text_style),
+                ]));
+            }
+        }
+    }
+
+    if truncated_extra > 0 {
+        out.push(Line::from(Span::styled(
+            format!("    │ … {} more lines …", truncated_extra),
+            border_style,
+        )));
+    }
+
+    out
 }
 
 fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
