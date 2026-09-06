@@ -11,6 +11,54 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+/// PIDs of every MCP server process this jcode process currently owns,
+/// regardless of which session/pool holds the `McpClient`. The reload path
+/// uses this to kill and reap all of them before `exec`, since children that
+/// survive the handoff become unowned and turn into zombies when they exit.
+static LIVE_CHILD_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+fn track_child(pid: u32) {
+    if let Ok(mut pids) = LIVE_CHILD_PIDS.lock() {
+        pids.push(pid);
+    }
+}
+
+fn untrack_child(pid: u32) {
+    if let Ok(mut pids) = LIVE_CHILD_PIDS.lock() {
+        pids.retain(|p| *p != pid);
+    }
+}
+
+/// Kill and reap every MCP server process owned by this jcode process.
+/// Returns how many were collected. Intended for the moment before an
+/// in-place `exec` reload; the new image reconnects servers on demand.
+#[cfg(unix)]
+pub fn kill_and_reap_all_owned() -> usize {
+    let pids: Vec<u32> = LIVE_CHILD_PIDS
+        .lock()
+        .map(|mut pids| std::mem::take(&mut *pids))
+        .unwrap_or_default();
+    let mut reaped = 0usize;
+    for pid in pids {
+        // SIGKILL rather than SIGTERM: these are stdio servers with no state
+        // to flush, and the handoff must not wait on a slow shutdown hook.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+        let mut status = 0;
+        let rc = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+        if rc == pid as i32 {
+            reaped += 1;
+        }
+    }
+    reaped
+}
+
+#[cfg(not(unix))]
+pub fn kill_and_reap_all_owned() -> usize {
+    0
+}
+
 /// Shared communication handle for an MCP server.
 /// Multiple sessions can hold clones of this and send concurrent requests.
 /// Request/response correlation by ID ensures no interference.
@@ -139,7 +187,8 @@ impl McpHandle {
 /// clones can be distributed to different sessions.
 pub struct McpClient {
     handle: McpHandle,
-    child: Child,
+    /// `None` only after `Drop` has handed the process to a reaper task.
+    child: Option<Child>,
 }
 
 impl McpClient {
@@ -184,6 +233,9 @@ impl McpClient {
             .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {}", config.command))?;
 
+        if let Some(pid) = child.id() {
+            track_child(pid);
+        }
         let stdin = child.stdin.take().context("No stdin")?;
         let stdout = child.stdout.take().context("No stdout")?;
         let stderr = child.stderr.take().context("No stderr")?;
@@ -279,7 +331,10 @@ impl McpClient {
             request_timeout: request_timeout_for(config),
         };
 
-        let mut client = Self { handle, child };
+        let mut client = Self {
+            handle,
+            child: Some(child),
+        };
 
         client
             .initialize()
@@ -346,10 +401,9 @@ impl McpClient {
 
     /// Check if server is still running
     pub fn is_running(&mut self) -> bool {
-        match self.child.try_wait() {
-            Ok(None) => true,
-            Ok(Some(_)) => false,
-            Err(_) => false,
+        match self.child.as_mut().map(Child::try_wait) {
+            Some(Ok(None)) => true,
+            Some(Ok(Some(_))) | Some(Err(_)) | None => false,
         }
     }
 
@@ -363,7 +417,13 @@ impl McpClient {
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let _ = self.child.kill().await;
+        if let Some(child) = self.child.as_mut() {
+            if let Some(pid) = child.id() {
+                untrack_child(pid);
+            }
+            // `kill` awaits the exit, so the process is reaped here.
+            let _ = child.kill().await;
+        }
     }
 
     // === Legacy compatibility methods that delegate to handle ===
@@ -419,7 +479,26 @@ fn mcp_child_env(
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if let Some(pid) = child.id() {
+            untrack_child(pid);
+        }
+        let _ = child.start_kill();
+        // A dropped tokio `Child` is only reaped when the runtime next drains
+        // its orphan queue (on SIGCHLD, best effort). In the long-lived daemon
+        // that left every replaced MCP server as a zombie until the next
+        // reload. Wait for it on a detached task when a runtime is available;
+        // without one, dropping falls back to the orphan queue.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+            Err(_) => drop(child),
+        }
     }
 }
 
@@ -529,5 +608,52 @@ done
 
         let reported = client.server_info().expect("server info").name;
         assert!(!reported.is_empty());
+    }
+
+    /// Dropping the client must not leave the server as a zombie. `Drop`
+    /// waits on the killed child from a detached task rather than handing it
+    /// to tokio's orphan queue, which is only drained when the runtime parks
+    /// and is discarded outright by an in-place `exec` reload. Inside one
+    /// test runtime the orphan queue also drains promptly, so this guards the
+    /// contract (no `<defunct>` after drop) rather than distinguishing the
+    /// two mechanisms.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn dropping_client_reaps_server_process() {
+        let client =
+            McpClient::connect_in_dir("drop-reap-test".to_string(), &fake_server_config(), None)
+                .await
+                .expect("connect");
+        let pid = client
+            .child
+            .as_ref()
+            .and_then(|c| c.id())
+            .expect("child pid");
+
+        drop(client);
+
+        let stat_path = format!("/proc/{pid}/stat");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let stat = std::fs::read_to_string(&stat_path).ok();
+            let state = stat.as_deref().and_then(|s| {
+                s.rsplit(')')
+                    .next()?
+                    .split_whitespace()
+                    .next()
+                    .map(str::to_string)
+            });
+            match state.as_deref() {
+                // Reaped: the /proc entry is gone.
+                None => break,
+                Some("Z") if std::time::Instant::now() >= deadline => {
+                    panic!("MCP server {pid} left as a zombie after McpClient drop");
+                }
+                Some(_) if std::time::Instant::now() >= deadline => {
+                    panic!("MCP server {pid} still alive after McpClient drop");
+                }
+                Some(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
     }
 }

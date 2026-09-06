@@ -1321,9 +1321,16 @@ impl BackgroundTaskManager {
         task_id: &str,
         _graceful_timeout: std::time::Duration,
     ) -> Result<bool> {
-        let mut tasks = self.tasks.write().await;
-        if let Some(task) = tasks.remove(task_id) {
+        let removed = self.tasks.write().await.remove(task_id);
+        if let Some(mut task) = removed {
             task.handle.abort();
+            // Aborting drops the future, which SIGKILLs the kill_on_drop child,
+            // but nothing awaits its exit: the tokio `Child` lands in the
+            // best-effort orphan queue and, if the daemon `exec`s a reload
+            // first, becomes a zombie with no owner. Wait (bounded) for the
+            // aborted task to finish dropping so the child is reaped here,
+            // the same as `abort_live_tasks_for_reload` does.
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut task.handle).await;
 
             // Update status file
             let (notify_flag, wake_flag) = *task.delivery_flags.borrow();
@@ -1361,8 +1368,6 @@ impl BackgroundTaskManager {
 
             Ok(true)
         } else {
-            drop(tasks);
-
             let status_path = self.status_path_for(task_id);
             let Some(mut status) = self.read_status_file(&status_path).await else {
                 return Ok(false);

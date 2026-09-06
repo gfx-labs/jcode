@@ -373,6 +373,35 @@ pub fn try_reap_child_process(pid: u32) -> std::io::Result<Option<i32>> {
     }
 }
 
+/// Reap every already-exited child of this process without blocking.
+///
+/// Returns how many zombies were collected. Intended for the moment right
+/// after an in-place `exec` reload: the previous process image's tokio runtime
+/// tracked its children (bash tools, MCP servers, inhibit helpers) in memory,
+/// and that bookkeeping is gone after `execv` while the PID, and therefore the
+/// parent relationship, survives. Anything that exited around the handoff is
+/// a zombie nobody will ever `wait` on unless we sweep here. Children still
+/// running are left alone (`WNOHANG`), so this is safe to call at startup.
+pub fn reap_exited_children() -> usize {
+    #[cfg(unix)]
+    {
+        let mut reaped = 0usize;
+        loop {
+            let mut status = 0;
+            let rc = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if rc <= 0 {
+                break;
+            }
+            reaped += 1;
+        }
+        reaped
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 /// Atomically swap a symlink by creating a temp symlink and renaming.
 ///
 /// On Unix: creates temp symlink, then renames over target (atomic).

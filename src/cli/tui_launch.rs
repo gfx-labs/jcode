@@ -91,6 +91,15 @@ pub async fn run_tui_client(
     update_sim: bool,
 ) -> Result<()> {
     startup_profile::mark("tui_client_enter");
+    // A TUI reload `exec`s in place with `--resume`, so children of the
+    // previous image (notifiers, openers) are still ours but nothing in this
+    // image will ever wait on them. Collect the already-exited ones now.
+    let reaped = crate::platform::reap_exited_children();
+    if reaped > 0 {
+        crate::logging::info(&format!(
+            "Reaped {reaped} exited child process(es) inherited across reload"
+        ));
+    }
     let (terminal, tui_runtime) = init_tui_runtime()?;
     startup_profile::mark("tui_terminal_init");
     startup_profile::mark("mermaid_picker");

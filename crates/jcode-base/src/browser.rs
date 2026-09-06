@@ -1043,6 +1043,16 @@ pub async fn try_launch_firefox_for_bridge(
     Ok(Some(ensure_browser_ready_noninteractive().await?))
 }
 
+/// Await a fire-and-forget tokio child on a detached task so it is reaped
+/// promptly instead of sitting in tokio's best-effort orphan queue.
+fn reap_detached_tokio(child: std::io::Result<tokio::process::Child>) {
+    if let Ok(mut child) = child {
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+    }
+}
+
 async fn install_extension() -> Result<String> {
     let xpi = xpi_path();
     let mut msg = String::new();
@@ -1058,9 +1068,14 @@ async fn install_extension() -> Result<String> {
 
     #[cfg(target_os = "linux")]
     {
-        let _ = tokio::process::Command::new("xdg-open")
-            .arg(&xpi_url)
-            .spawn();
+        // Fire-and-forget, but hand the child to the reaper: a dropped tokio
+        // `Child` is only reaped opportunistically, so an `xdg-open` that
+        // exits after handing off to Firefox otherwise lingers as a zombie.
+        reap_detached_tokio(
+            tokio::process::Command::new("xdg-open")
+                .arg(&xpi_url)
+                .spawn(),
+        );
     }
     #[cfg(target_os = "macos")]
     {
@@ -1085,15 +1100,17 @@ async fn install_extension() -> Result<String> {
             if !opened_by_id {
                 // Last resort: let Launch Services pick a handler. This likely
                 // fails for `.xpi`, but keeps the previous behavior as a fallback.
-                let _ = tokio::process::Command::new("open").arg(&xpi_url).spawn();
+                reap_detached_tokio(tokio::process::Command::new("open").arg(&xpi_url).spawn());
             }
         }
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = tokio::process::Command::new("cmd")
-            .args(["/C", "start", "", &xpi_url])
-            .spawn();
+        reap_detached_tokio(
+            tokio::process::Command::new("cmd")
+                .args(["/C", "start", "", &xpi_url])
+                .spawn(),
+        );
     }
 
     msg.push_str("       Opened Firefox with extension install prompt.\n");
