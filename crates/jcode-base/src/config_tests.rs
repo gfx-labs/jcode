@@ -254,6 +254,59 @@ fn swarm_effort_parses_from_toml_and_env_override() {
 }
 
 #[test]
+fn swarm_openai_service_tier_roundtrips_defaults_and_env_clears() {
+    let _guard = crate::storage::lock_test_env();
+    let prev = std::env::var_os("JCODE_SWARM_OPENAI_SERVICE_TIER");
+    restore_env_var("JCODE_SWARM_OPENAI_SERVICE_TIER", None);
+
+    let cfg: Config = toml::from_str("[agents]\nswarm_openai_service_tier = \"flex\"\n")
+        .expect("worker OpenAI service tier parses from TOML");
+    let encoded = toml::to_string(&cfg).expect("worker OpenAI service tier serializes");
+    let roundtripped: Config = toml::from_str(&encoded).expect("roundtrip config parses");
+    assert_eq!(
+        roundtripped.agents.swarm_openai_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(Config::default().agents.swarm_openai_service_tier, None);
+
+    crate::env::set_var("JCODE_SWARM_OPENAI_SERVICE_TIER", " priority ");
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+    assert_eq!(
+        cfg.agents.swarm_openai_service_tier.as_deref(),
+        Some("priority")
+    );
+
+    crate::env::set_var("JCODE_SWARM_OPENAI_SERVICE_TIER", "  ");
+    cfg.agents.swarm_openai_service_tier = Some("preset".to_string());
+    cfg.apply_env_overrides();
+    assert_eq!(cfg.agents.swarm_openai_service_tier, None);
+
+    restore_env_var("JCODE_SWARM_OPENAI_SERVICE_TIER", prev);
+}
+
+#[test]
+fn main_and_worker_openai_service_tiers_are_independent() {
+    let mut cfg: Config = toml::from_str(
+        "[provider]\nopenai_service_tier = \"off\"\n[agents]\nswarm_openai_service_tier = \"priority\"\n",
+    )
+    .expect("independent OpenAI service tiers parse");
+    assert_eq!(cfg.provider.openai_service_tier.as_deref(), Some("off"));
+    assert_eq!(
+        cfg.agents.swarm_openai_service_tier.as_deref(),
+        Some("priority")
+    );
+
+    cfg.provider.openai_service_tier = Some("priority".to_string());
+    cfg.agents.swarm_openai_service_tier = Some("off".to_string());
+    assert_eq!(
+        cfg.provider.openai_service_tier.as_deref(),
+        Some("priority")
+    );
+    assert_eq!(cfg.agents.swarm_openai_service_tier.as_deref(), Some("off"));
+}
+
+#[test]
 fn wake_mode_defaults_parses_and_env_overrides() {
     let _guard = crate::storage::lock_test_env();
     let prev = std::env::var_os("JCODE_WAKE_MODE");

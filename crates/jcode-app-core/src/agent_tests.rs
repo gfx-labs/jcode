@@ -2230,3 +2230,5 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
         "{text:?}"
     );
 }
+#[path = "agent_tests/worker_tier.rs"]
+mod worker_tier;

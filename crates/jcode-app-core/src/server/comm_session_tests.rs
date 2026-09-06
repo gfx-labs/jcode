@@ -422,6 +422,76 @@ fn prepare_visible_spawn_session_persists_requested_effort() {
 }
 
 #[test]
+fn prepare_visible_spawn_session_persists_worker_service_tier_before_launch() {
+    let _guard = crate::storage::lock_test_env();
+    let temp_home = tempfile::TempDir::new().expect("temp home");
+
+    struct RestoreWorkerTierEnv {
+        home: Option<std::ffi::OsString>,
+        worker_tier: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RestoreWorkerTierEnv {
+        fn drop(&mut self) {
+            match self.home.take() {
+                Some(value) => crate::env::set_var("JCODE_HOME", value),
+                None => crate::env::remove_var("JCODE_HOME"),
+            }
+            match self.worker_tier.take() {
+                Some(value) => crate::env::set_var("JCODE_SWARM_OPENAI_SERVICE_TIER", value),
+                None => crate::env::remove_var("JCODE_SWARM_OPENAI_SERVICE_TIER"),
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+
+    let _restore_env = RestoreWorkerTierEnv {
+        home: std::env::var_os("JCODE_HOME"),
+        worker_tier: std::env::var_os("JCODE_SWARM_OPENAI_SERVICE_TIER"),
+    };
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+    crate::env::remove_var("JCODE_SWARM_OPENAI_SERVICE_TIER");
+    crate::config::Config::invalidate_cache();
+    std::fs::write(
+        temp_home.path().join("config.toml"),
+        "[agents]\nswarm_openai_service_tier = \"flex\"\n",
+    )
+    .expect("worker tier config should be written");
+
+    let worktree = tempfile::TempDir::new().expect("temp worktree");
+    let (session_id, launched) = prepare_visible_spawn_session(
+        Some(worktree.path().to_str().expect("utf8 worktree path")),
+        Some("gpt-5.5"),
+        None,
+        None,
+        None,
+        false,
+        None,
+        |session_id, _cwd: &std::path::Path, _selfdev, _provider_key| {
+            let session = crate::session::Session::load(session_id)
+                .expect("visible session should be persisted before launch");
+            assert_eq!(session.title.as_deref(), Some("Swarm worker"));
+            assert_eq!(
+                session.spawn_openai_service_tier.as_deref(),
+                Some("flex"),
+                "worker service tier must be durable before the headed client starts",
+            );
+            Ok(true)
+        },
+    )
+    .expect("visible spawn preparation should succeed");
+
+    assert!(launched);
+    assert_eq!(
+        crate::session::Session::load(&session_id)
+            .expect("prepared session should save")
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("flex")
+    );
+}
+
+#[test]
 fn prepare_visible_spawn_session_prefers_parent_provider_key_over_model_guess() {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("temp home");

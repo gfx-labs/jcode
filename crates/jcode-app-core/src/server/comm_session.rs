@@ -76,7 +76,12 @@ fn create_visible_spawn_session(
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let mut session = Session::create(None, None);
+    // A headed worker needs a resumable identity before it has a prompt.
+    // Empty untitled root sessions are deliberately not persisted by save().
+    let mut session = Session::create(None, Some("Swarm worker".to_string()));
+    // The visible client may attach before swarm membership is registered.
+    // Persist the policy in the session rather than inferring role on attach.
+    session.spawn_openai_service_tier = Agent::configured_spawn_openai_service_tier()?;
     session.working_dir = Some(cwd.display().to_string());
     if let Some(model) = model_override {
         session.model = Some(model.to_string());

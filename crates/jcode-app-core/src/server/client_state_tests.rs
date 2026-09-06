@@ -169,12 +169,19 @@ async fn assert_busy_history_service_tier(tier: Option<&'static str>) {
     let (_reader_a, writer_a) = stream_a.into_split();
     let writer = Arc::new(Mutex::new(writer_a));
 
+    // After a resume, the connection may still carry its original provider.
+    // The busy target's live tier must win, including temporary local overrides.
+    let stale_provider: Arc<dyn Provider> = Arc::new(MockProvider(if tier.is_some() {
+        None
+    } else {
+        Some("priority")
+    }));
     handle_get_history(
         42,
         session_id,
         true,
         &agent,
-        &provider,
+        &stale_provider,
         &sessions,
         &client_connections,
         &client_count,
@@ -273,9 +280,14 @@ async fn assert_model_catalog_service_tier(tier: Option<&'static str>, busy: boo
     let (_reader_a, writer_a) = stream_a.into_split();
     let writer = Arc::new(Mutex::new(writer_a));
 
+    let stale_provider: Arc<dyn Provider> = Arc::new(MockProvider(if tier.is_some() {
+        None
+    } else {
+        Some("priority")
+    }));
     tokio::time::timeout(
         std::time::Duration::from_millis(100),
-        handle_get_model_catalog(43, session_id, &agent, &provider, &writer),
+        handle_get_model_catalog(43, session_id, &agent, &stale_provider, &writer),
     )
     .await
     .expect("model catalog must not wait for busy agent mutex")

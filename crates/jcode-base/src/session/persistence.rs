@@ -396,6 +396,7 @@ impl Session {
             && self.custom_title.is_none()
             && self.title.is_none()
             && self.parent_id.is_none()
+            && self.spawn_openai_service_tier.is_none()
         {
             return Ok(());
         }

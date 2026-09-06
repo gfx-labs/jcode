@@ -201,6 +201,9 @@ impl Agent {
 
     /// Clear conversation history
     pub fn clear(&mut self) {
+        if let Err(error) = self.reset_spawn_openai_service_tier() {
+            logging::error(&format!("Failed to restore main OpenAI tier: {error}"));
+        }
         let preserve_canary = self.session.is_canary;
         let preserve_testing_build = self.session.testing_build.clone();
         let preserve_debug = self.session.is_debug;
@@ -221,6 +224,7 @@ impl Agent {
         new_session.ensure_initial_session_context_message();
 
         self.session = new_session;
+        self.refresh_provider_registration();
         self.begin_concurrency_tracking();
         self._tool_policy_registration = crate::tool::register_session_tool_policy(
             &self.session.id,
@@ -731,6 +735,11 @@ impl Agent {
             session.status.display()
         ));
         let previous_status = session.status.clone();
+        // Reset before changing model/session, while the old worker's OpenAI
+        // slot is still active. Otherwise a non-OpenAI target can hide it.
+        if let Err(error) = self.reset_spawn_openai_service_tier() {
+            logging::error(&format!("Failed to restore main OpenAI tier: {error}"));
+        }
 
         let assign_start = Instant::now();
         // A failed load must leave the current Agent and its concurrency lease
@@ -739,6 +748,7 @@ impl Agent {
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
+        self.refresh_provider_registration();
         self.refresh_agents_md_snapshot();
         self._tool_policy_registration = crate::tool::register_session_tool_policy(
             &self.session.id,
@@ -774,6 +784,9 @@ impl Agent {
             self.session.model = Some(self.provider_model());
         }
         self.restore_reasoning_effort_from_session();
+        if let Err(error) = self.restore_spawn_openai_service_tier() {
+            logging::error(&format!("Failed to restore worker OpenAI tier: {error}"));
+        }
         let model_ms = model_start.elapsed().as_millis();
 
         let mark_active_start = Instant::now();
