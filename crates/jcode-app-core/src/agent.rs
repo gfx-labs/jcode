@@ -188,6 +188,7 @@ pub struct Agent {
     disabled_tools: HashSet<String>,
     /// Generation-scoped ownership of this Agent's global tool-policy entry.
     _tool_policy_registration: crate::tool::SessionToolPolicyRegistration,
+    _provider_registration: provider::SessionProviderRegistration,
     /// MCP top-level definition exposure policy captured when the session starts.
     mcp_tools_mode: crate::config::McpToolsMode,
     /// Auto-mode token estimate above which MCP definitions are deferred.
@@ -303,6 +304,8 @@ impl Agent {
             allowed_tools.clone(),
             disabled_tools.clone(),
         );
+        let provider_registration =
+            provider::SessionProviderRegistration::new(&session.id, &provider);
         Self {
             provider,
             registry,
@@ -312,6 +315,7 @@ impl Agent {
             allowed_tools,
             disabled_tools,
             _tool_policy_registration: tool_policy_registration,
+            _provider_registration: provider_registration,
             mcp_tools_mode: tool_config.mcp_tools,
             mcp_tools_token_threshold: tool_config.mcp_tools_token_threshold,
             provider_session_id: None,
@@ -499,6 +503,9 @@ impl Agent {
             agent.session.model = Some(agent.provider_model());
         }
         agent.restore_reasoning_effort_from_session();
+        if let Err(error) = agent.restore_spawn_openai_service_tier() {
+            logging::error(&format!("Failed to restore worker OpenAI tier: {error}"));
+        }
         agent.session.ensure_initial_session_context_message();
         agent.sync_memory_dedup_state_from_session();
         agent.seed_compaction_from_session();

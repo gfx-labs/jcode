@@ -184,6 +184,8 @@ pub(super) async fn handle_get_model_catalog(
     provider: &Arc<dyn Provider>,
     writer: &Arc<Mutex<WriteHalf>>,
 ) -> Result<()> {
+    let live_provider = Agent::provider_handle_for_session(session_id);
+    let provider = live_provider.as_ref().unwrap_or(provider);
     let started = Instant::now();
     let build_started = Instant::now();
     let (
@@ -488,6 +490,8 @@ async fn send_history_from_persisted_session(
     was_interrupted: Option<bool>,
     activity: Option<SessionActivitySnapshot>,
 ) -> Result<()> {
+    let live_provider = Agent::provider_handle_for_session(session_id);
+    let provider = live_provider.as_ref().unwrap_or(provider);
     let session = crate::session::Session::load_for_remote_startup(session_id)
         .or_else(|_| crate::session::Session::load_startup_stub(session_id))?;
     let token_usage_totals = session.token_usage_totals();

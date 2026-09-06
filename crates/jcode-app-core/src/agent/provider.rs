@@ -1,6 +1,115 @@
 use super::*;
 
+struct RegisteredSessionProvider {
+    token: u64,
+    provider: std::sync::Weak<dyn Provider>,
+}
+
+static SESSION_PROVIDERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, RegisteredSessionProvider>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static NEXT_PROVIDER_REGISTRATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// RAII-owned weak lookup. It cannot keep a closed Agent/provider alive, and
+/// dropping an older attachment cannot erase a newer registration of the ID.
+pub(super) struct SessionProviderRegistration {
+    session_id: String,
+    token: u64,
+}
+
+impl SessionProviderRegistration {
+    pub(super) fn new(session_id: &str, provider: &Arc<dyn Provider>) -> Self {
+        let token = NEXT_PROVIDER_REGISTRATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        SESSION_PROVIDERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                session_id.to_string(),
+                RegisteredSessionProvider {
+                    token,
+                    provider: Arc::downgrade(provider),
+                },
+            );
+        Self {
+            session_id: session_id.to_string(),
+            token,
+        }
+    }
+}
+
+impl Drop for SessionProviderRegistration {
+    fn drop(&mut self) {
+        let mut providers = SESSION_PROVIDERS.lock().unwrap_or_else(|e| e.into_inner());
+        if providers
+            .get(&self.session_id)
+            .is_some_and(|entry| entry.token == self.token)
+        {
+            providers.remove(&self.session_id);
+        }
+    }
+}
+
 impl Agent {
+    /// The connection's original provider may belong to a different session
+    /// after resume. Metadata fallback must resolve the live target provider.
+    pub(crate) fn provider_handle_for_session(session_id: &str) -> Option<Arc<dyn Provider>> {
+        SESSION_PROVIDERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .and_then(|entry| entry.provider.upgrade())
+    }
+
+    pub(super) fn refresh_provider_registration(&mut self) {
+        self._provider_registration =
+            SessionProviderRegistration::new(&self.session.id, &self.provider);
+    }
+
+    /// Snapshot the worker-only OpenAI policy. Keep `off` explicit: `None`
+    /// means preserve the provider default, not disable priority.
+    pub(crate) fn configured_spawn_openai_service_tier() -> Result<Option<String>> {
+        let config = crate::config::config();
+        normalize_spawn_openai_service_tier(config.agents.swarm_openai_service_tier.as_deref())
+    }
+
+    pub(crate) fn initialize_spawn_openai_service_tier(&mut self) -> Result<()> {
+        self.session.spawn_openai_service_tier = Self::configured_spawn_openai_service_tier()?;
+        self.restore_spawn_openai_service_tier()?;
+        self.session.save()?;
+        Ok(())
+    }
+
+    /// Apply only an explicitly persisted worker policy, and only to OpenAI.
+    /// Parent IDs cannot identify workers: normal user forks also have parents.
+    pub(crate) fn restore_spawn_openai_service_tier(&self) -> Result<()> {
+        if self.provider.name().eq_ignore_ascii_case("openai")
+            && let Some(tier) = self.session.spawn_openai_service_tier.as_deref()
+        {
+            self.provider.set_service_tier(tier)?;
+        }
+        Ok(())
+    }
+
+    /// Clear the active worker override before parking an OpenAI provider slot
+    /// or changing sessions. A later main session must not inherit that slot's
+    /// worker-only tier. Invalid main defaults behave like the OpenAI loader:
+    /// warn there and fall back to standard service here.
+    pub(crate) fn reset_spawn_openai_service_tier(&self) -> Result<()> {
+        if self.session.spawn_openai_service_tier.is_some()
+            && self.provider.name().eq_ignore_ascii_case("openai")
+        {
+            let config = crate::config::config();
+            let tier =
+                normalize_spawn_openai_service_tier(config.provider.openai_service_tier.as_deref())
+                    .ok()
+                    .flatten();
+            self.provider
+                .set_service_tier(tier.as_deref().unwrap_or("off"))?;
+        }
+        Ok(())
+    }
+
     pub fn set_premium_mode(&self, mode: crate::provider::copilot::PremiumMode) {
         self.provider.set_premium_mode(mode);
     }
@@ -108,7 +217,10 @@ impl Agent {
         selection: &crate::provider::RouteSelection,
         source: crate::provider::ProviderModelSelectionSource,
     ) -> Result<()> {
-        self.provider.set_route_selection(selection)?;
+        self.reset_spawn_openai_service_tier()?;
+        let switch_result = self.provider.set_route_selection(selection);
+        self.restore_spawn_openai_service_tier()?;
+        switch_result?;
         let resolved_model = self.provider.model();
         self.session.provider_key = Some(selection.runtime_key.stable_id());
         self.session.route_api_method = Some(selection.api_method.clone());
@@ -133,7 +245,11 @@ impl Agent {
         model: &str,
         source: crate::provider::ProviderModelSelectionSource,
     ) -> Result<()> {
-        crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model)?;
+        self.reset_spawn_openai_service_tier()?;
+        let switch_result =
+            crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model);
+        self.restore_spawn_openai_service_tier()?;
+        switch_result?;
         let resolved_model = self.provider.model();
         self.session.provider_key =
             crate::provider::MultiProvider::session_provider_key_after_model_switch(
@@ -272,5 +388,20 @@ impl Agent {
     /// Get the stored messages (for transcript export)
     pub fn messages(&self) -> &[StoredMessage] {
         &self.session.messages
+    }
+}
+
+fn normalize_spawn_openai_service_tier(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "inherit" => Ok(None),
+        "priority" | "fast" => Ok(Some("priority".to_string())),
+        "flex" => Ok(Some("flex".to_string())),
+        "off" | "standard" | "default" | "auto" | "none" => Ok(Some("off".to_string())),
+        _ => anyhow::bail!(
+            "Invalid agents.swarm_openai_service_tier '{value}': use priority, flex, off, or inherit"
+        ),
     }
 }

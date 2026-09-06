@@ -468,6 +468,7 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> 
     );
     session.model = Some("gpt-5.4".to_string());
     session.reasoning_effort = Some("high".to_string());
+    session.spawn_openai_service_tier = Some("flex".to_string());
     session.provider_key = Some("openai".to_string());
     session.route_api_method = Some("openai-api".to_string());
     session.set_canary("self-dev");
@@ -518,6 +519,7 @@ fn load_startup_stub_preserves_metadata_but_skips_heavy_vectors() -> Result<()> 
     assert_eq!(stub.title.as_deref(), Some("startup stub"));
     assert_eq!(stub.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(stub.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(stub.spawn_openai_service_tier.as_deref(), Some("flex"));
     assert_eq!(stub.provider_key.as_deref(), Some("openai"));
     assert_eq!(stub.route_api_method.as_deref(), Some("openai-api"));
     assert!(stub.is_canary);
@@ -545,6 +547,7 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
     );
     session.model = Some("gpt-5.4".to_string());
     session.reasoning_effort = Some("medium".to_string());
+    session.spawn_openai_service_tier = Some("priority".to_string());
     session.append_stored_message(StoredMessage {
         id: "msg_remote_1".to_string(),
         role: Role::Assistant,
@@ -591,10 +594,100 @@ fn load_for_remote_startup_preserves_messages_and_replay_but_skips_heavy_vectors
     assert_eq!(loaded.parent_id.as_deref(), Some("parent_remote"));
     assert_eq!(loaded.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(loaded.reasoning_effort.as_deref(), Some("medium"));
+    assert_eq!(
+        loaded.spawn_openai_service_tier.as_deref(),
+        Some("priority")
+    );
     assert_eq!(loaded.messages.len(), 1);
     assert!(loaded.replay_events.is_empty());
     assert!(loaded.env_snapshots.is_empty());
     assert!(loaded.memory_injections.is_empty());
+    Ok(())
+}
+
+#[test]
+fn spawn_openai_service_tier_roundtrips_snapshot_and_journal() -> Result<()> {
+    let _env_lock = lock_env();
+    let temp_home = tempfile::Builder::new()
+        .prefix("jcode-session-spawn-tier-test-")
+        .tempdir()
+        .map_err(|e| anyhow!(e))?;
+    let _home = EnvVarGuard::set("JCODE_HOME", temp_home.path().as_os_str());
+
+    let session_id = "session_spawn_tier_roundtrip";
+    let mut session = Session::create_with_id(
+        session_id.to_string(),
+        Some("coordinator".to_string()),
+        Some("worker".to_string()),
+    );
+    session.spawn_openai_service_tier = Some("flex".to_string());
+    session.save()?;
+
+    assert_eq!(
+        Session::load(session_id)?
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("flex")
+    );
+    assert_eq!(
+        Session::load_startup_stub(session_id)?
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("flex")
+    );
+    assert_eq!(
+        Session::load_for_remote_startup(session_id)?
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("flex")
+    );
+
+    // A tier change checkpoints metadata for startup readers.
+    session.spawn_openai_service_tier = Some("priority".to_string());
+    session.save()?;
+    assert_eq!(
+        Session::load_startup_stub(session_id)?
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("priority")
+    );
+    // Subsequent messages must also carry that tier in the append-only journal.
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "worker prompt".to_string(),
+            cache_control: None,
+        }],
+    );
+    session.save()?;
+    assert_eq!(
+        Session::load(session_id)?
+            .spawn_openai_service_tier
+            .as_deref(),
+        Some("priority")
+    );
+
+    let journal = std::fs::read_to_string(session_journal_path(session_id)?)?;
+    assert!(journal.contains("spawn_openai_service_tier"));
+    assert!(journal.contains("priority"));
+    Ok(())
+}
+
+#[test]
+fn old_session_snapshot_without_spawn_openai_service_tier_defaults_to_none() -> Result<()> {
+    let session = Session::create_with_id(
+        "session_spawn_tier_legacy".to_string(),
+        Some("parent".to_string()),
+        Some("legacy".to_string()),
+    );
+    let mut value = serde_json::to_value(&session)?;
+    value
+        .as_object_mut()
+        .expect("session serializes as an object")
+        .remove("spawn_openai_service_tier");
+
+    let restored: Session = serde_json::from_value(value)?;
+    assert!(restored.spawn_openai_service_tier.is_none());
     Ok(())
 }
 

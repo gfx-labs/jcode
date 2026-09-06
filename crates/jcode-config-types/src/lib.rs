@@ -567,6 +567,13 @@ pub struct AgentsConfig {
     /// call does not pass an explicit `effort`. Leave unset to let workers
     /// inherit the provider-wide reasoning effort.
     pub swarm_effort: Option<String>,
+    /// Optional OpenAI service tier for spawned swarm/subagent sessions.
+    ///
+    /// Supported values are provider-specific (`"priority"`, `"flex"`, or
+    /// `"off"`). Leave unset to preserve the worker's existing behavior. This
+    /// only affects OpenAI sessions spawned as swarm workers or subagents, not
+    /// the main provider setting, other providers, or memory sidecars.
+    pub swarm_openai_service_tier: Option<String>,
     /// Default terminal mode for swarm-created agents.
     pub swarm_spawn_mode: SwarmSpawnMode,
     /// Maximum percentage (1-90) of the chat column height the inline swarm
@@ -669,6 +676,7 @@ impl Default for AgentsConfig {
         Self {
             swarm_model: None,
             swarm_effort: None,
+            swarm_openai_service_tier: None,
             swarm_spawn_mode: SwarmSpawnMode::default(),
             swarm_gallery_max_pct: None,
             swarm_strip_layout: SwarmStripLayout::default(),

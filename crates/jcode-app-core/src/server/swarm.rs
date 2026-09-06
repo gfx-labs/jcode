@@ -1550,6 +1550,7 @@ pub(super) async fn run_swarm_task(
         Some(format!("{} (@{} swarm)", description, subagent_type)),
     );
     let child_session_id = session.id.clone();
+    session.spawn_openai_service_tier = Agent::configured_spawn_openai_service_tier()?;
     session.model = Some(coordinator_model);
     // Inherit the coordinator's exact auth identity so the forked worker keeps
     // the same provider/auth route (OAuth vs API, openai-compatible profile)
@@ -1722,6 +1723,10 @@ fn parse_swarm_tasks(text: &str) -> Vec<SwarmTaskSpec> {
 
     Vec::new()
 }
+
+#[cfg(test)]
+#[path = "swarm_worker_tier_tests.rs"]
+mod worker_tier_tests;
 
 #[cfg(test)]
 mod tests {

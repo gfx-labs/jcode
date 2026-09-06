@@ -158,6 +158,12 @@ pub(super) async fn create_headless_session(
         ));
     }
 
+    if report_back_to_session_id.is_some() {
+        // Apply after model/auth-route resolution, never to the shared server
+        // template or to an ordinary debug-created main session.
+        new_agent.initialize_spawn_openai_service_tier()?;
+    }
+
     new_agent.set_debug(true);
 
     if selfdev_requested {

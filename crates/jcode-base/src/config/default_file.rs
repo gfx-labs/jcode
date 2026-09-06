@@ -438,6 +438,13 @@ wake_mode = "internal"
 # Env override: JCODE_SWARM_EFFORT
 # swarm_effort = "medium"
 #
+# OpenAI service tier for spawned swarm/subagent sessions. Supported values are
+# "priority", "flex", and "off". Leave unset to preserve existing behavior.
+# This is independent of provider.openai_service_tier and does not affect other
+# providers or memory sidecars.
+# Env override: JCODE_SWARM_OPENAI_SERVICE_TIER
+# swarm_openai_service_tier = "priority"
+#
 # How swarm-created agents are spawned:
 #   "inline"   - in-process (no window), shown as a live gallery viewport in the coordinator (default)
 #   "visible"  - open a headed terminal window (alias: "headed")

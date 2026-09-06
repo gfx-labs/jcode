@@ -19,6 +19,8 @@ pub(super) struct SessionJournalMeta {
     pub(super) model: Option<String>,
     #[serde(default)]
     pub(super) reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) spawn_openai_service_tier: Option<String>,
     pub(super) subagent_model: Option<String>,
     pub(super) improve_mode: Option<SessionImproveMode>,
     pub(super) autoreview_enabled: Option<bool>,
@@ -79,6 +81,7 @@ pub(super) fn metadata_requires_snapshot(
         || prev.custom_title != current.custom_title
         || prev.provider_key != current.provider_key
         || prev.reasoning_effort != current.reasoning_effort
+        || prev.spawn_openai_service_tier != current.spawn_openai_service_tier
         || prev.subagent_model != current.subagent_model
         || prev.improve_mode != current.improve_mode
         || prev.autoreview_enabled != current.autoreview_enabled
