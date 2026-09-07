@@ -206,10 +206,11 @@ prompt_entry_animation = true
 # technical detail.
 # tool_call_details = false
 
-# Compact transcript: fold every tool result and thinking trace to a single
+# Compact transcript: fold every tool result to a single
 # summary row. Click a row to expand it in place and read the full output
 # (edit tools expand to their full diff); click again to fold it. Toggle at
-# runtime with /compact-transcript (default: false).
+# runtime with /compact-transcript (default: false). Thinking is controlled
+# independently by /thinking-display; use collapsed for thinking summary rows.
 # compact_transcript = false
 
 # Occasionally surface a "learn this keybinding" nudge (in a distinct color)

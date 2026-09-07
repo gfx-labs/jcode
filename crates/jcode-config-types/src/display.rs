@@ -89,10 +89,9 @@ pub struct DisplayConfig {
     /// always fall back to the technical detail.
     #[serde(default)]
     pub tool_call_details: bool,
-    /// Compact transcript: every tool result and thinking trace folds to a
+    /// Compact transcript: every tool result folds to a
     /// single summary row that expands in place when clicked (default: false).
-    /// Reasoning also folds to a `thinking` row with duration/size metrics
-    /// when `reasoning_display` is `collapsed`.
+    /// Thinking is controlled independently by `reasoning_display`.
     #[serde(default)]
     pub compact_transcript: bool,
     /// Native terminal scrollbar configuration for scrollable panes

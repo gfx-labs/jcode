@@ -328,17 +328,10 @@ pub(crate) fn render_reasoning_message(
     lines
 }
 
-/// Whether committed reasoning blocks fold to a one-line `thinking` summary
-/// that expands on click. On when the reasoning display mode is `collapsed`,
-/// or when the compact transcript is on and reasoning is shown at all.
+/// Whether committed reasoning blocks fold to a clickable `thinking` summary.
+/// Thinking display is independent of compact tool-output rendering.
 pub(crate) fn reasoning_folds_to_summary() -> bool {
-    let mode = reasoning_display_mode();
-    match mode {
-        crate::config::ReasoningDisplayMode::Collapsed => true,
-        crate::config::ReasoningDisplayMode::Off => false,
-        crate::config::ReasoningDisplayMode::Full
-        | crate::config::ReasoningDisplayMode::Current => compact_transcript_enabled(),
-    }
+    reasoning_display_mode() == crate::config::ReasoningDisplayMode::Collapsed
 }
 
 #[cfg(not(test))]
@@ -4785,7 +4778,7 @@ struct ToolOutputTokenBadge {
     color: Color,
 }
 
-/// Whether the compact transcript (one row per tool/thinking, click to expand)
+/// Whether compact tool output (one row per tool result, click to expand)
 /// is active. Tests default to off and can override via the thread-local.
 #[cfg(not(test))]
 pub(crate) fn compact_transcript_enabled() -> bool {
