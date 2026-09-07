@@ -927,6 +927,14 @@ curl -fsSL https://raw.githubusercontent.com/1jehuang/jcode/master/scripts/unins
 
 Add `--dry-run` to preview what would be removed without deleting anything.
 
+### Telemetry
+
+Use `jcode telemetry status` to inspect reporting and consent settings, or
+`jcode telemetry disable` to opt out. To send telemetry to a local receiver,
+set `JCODE_TELEMETRY_BASE_URL=http://127.0.0.1:8080` in the server's environment.
+See [telemetry reporting destinations](docs/TELEMETRY.md) for receiver paths,
+privacy controls, and daemon setup.
+
 ### Platform Support
 
 | Platform | Status |

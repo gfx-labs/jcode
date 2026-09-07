@@ -1,8 +1,10 @@
 use jcode_logging as logging;
 use jcode_storage as storage;
 mod concurrency;
+mod endpoints;
 mod lifecycle;
 pub use concurrency::{ConcurrencySession, begin_concurrency_session};
+pub use endpoints::{TelemetryEndpoints, reporting_endpoints};
 pub mod onboarding_trace;
 mod state_support;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -25,8 +27,6 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
-const TRANSCRIPT_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/transcript";
 const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKGROUND_QUEUE_CAPACITY: usize = 2048;
 const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
@@ -1288,18 +1288,30 @@ pub fn record_command_family(command: &str) {
     maybe_emit_session_start();
 }
 
-fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
-    if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
-        return false;
-    }
-    let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
+fn telemetry_http_client() -> &'static reqwest::blocking::Client {
+    TELEMETRY_HTTP_CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
+            // A collector must not redirect payloads to another destination.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("telemetry HTTP client should build")
-    });
-    match client
-        .post(TELEMETRY_ENDPOINT)
+    })
+}
+
+fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
+    if !is_enabled() || TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let endpoints = match reporting_endpoints() {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            logging::warn(error);
+            return false;
+        }
+    };
+    match telemetry_http_client()
+        .post(endpoints.event)
         .timeout(timeout)
         .json(&payload)
         .send()
@@ -1344,14 +1356,19 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
 }
 
 fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
-    let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
-        reqwest::blocking::Client::builder()
-            .user_agent(jcode_provider_core::JCODE_USER_AGENT)
-            .build()
-            .expect("telemetry HTTP client should build")
-    });
-    match client
-        .post(TRANSCRIPT_ENDPOINT)
+    // Recheck consent at delivery time, including work already queued.
+    if !content_sharing_enabled() {
+        return false;
+    }
+    let endpoints = match reporting_endpoints() {
+        Ok(endpoints) => endpoints,
+        Err(error) => {
+            logging::warn(error);
+            return false;
+        }
+    };
+    match telemetry_http_client()
+        .post(endpoints.transcript)
         .timeout(timeout)
         .json(&payload)
         .send()

@@ -20,6 +20,7 @@ struct TestEnvironment {
     previous_home: Option<OsString>,
     previous_no_telemetry: Option<OsString>,
     previous_do_not_track: Option<OsString>,
+    previous_base_url: Option<OsString>,
     _lock: MutexGuard<'static, ()>,
 }
 
@@ -28,6 +29,7 @@ impl Drop for TestEnvironment {
         restore_env_var("JCODE_HOME", self.previous_home.take());
         restore_env_var("JCODE_NO_TELEMETRY", self.previous_no_telemetry.take());
         restore_env_var("DO_NOT_TRACK", self.previous_do_not_track.take());
+        restore_env_var("JCODE_TELEMETRY_BASE_URL", self.previous_base_url.take());
     }
 }
 
@@ -49,15 +51,18 @@ fn global_test_lock() -> TestEnvironment {
     let previous_home = std::env::var_os("JCODE_HOME");
     let previous_no_telemetry = std::env::var_os("JCODE_NO_TELEMETRY");
     let previous_do_not_track = std::env::var_os("DO_NOT_TRACK");
+    let previous_base_url = std::env::var_os("JCODE_TELEMETRY_BASE_URL");
     jcode_core::env::set_var("JCODE_HOME", home.path());
     jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
     jcode_core::env::remove_var("DO_NOT_TRACK");
+    jcode_core::env::remove_var("JCODE_TELEMETRY_BASE_URL");
 
     TestEnvironment {
         _home: home,
         previous_home,
         previous_no_telemetry,
         previous_do_not_track,
+        previous_base_url,
         _lock: lock,
     }
 }
@@ -100,10 +105,86 @@ fn background_delivery_queue_is_bounded() {
 
 #[test]
 fn telemetry_endpoint_uses_production_custom_domain() {
-    assert_eq!(TELEMETRY_ENDPOINT, "https://telemetry.jcode.sh/v1/event");
+    let _guard = lock_test_env();
+    let endpoints = reporting_endpoints().unwrap();
     assert_eq!(
-        TRANSCRIPT_ENDPOINT,
+        endpoints.event.as_str(),
+        "https://telemetry.jcode.sh/v1/event"
+    );
+    assert_eq!(
+        endpoints.transcript.as_str(),
         "https://telemetry.jcode.sh/v1/transcript"
+    );
+}
+
+#[test]
+fn explicit_base_url_overrides_both_streams_and_invalid_values_never_fall_back() {
+    let _guard = lock_test_env();
+    jcode_core::env::set_var("JCODE_TELEMETRY_BASE_URL", "http://127.0.0.1:8080/jcode/");
+    let endpoints = reporting_endpoints().unwrap();
+    assert_eq!(
+        endpoints.event.as_str(),
+        "http://127.0.0.1:8080/jcode/v1/event"
+    );
+    assert_eq!(
+        endpoints.transcript.as_str(),
+        "http://127.0.0.1:8080/jcode/v1/transcript"
+    );
+    for invalid in [
+        "",
+        "not-a-url",
+        "ftp://localhost",
+        "http://user:secret@localhost",
+    ] {
+        jcode_core::env::set_var("JCODE_TELEMETRY_BASE_URL", invalid);
+        assert!(reporting_endpoints().is_err());
+        assert!(!post_payload(
+            serde_json::json!({}),
+            Duration::from_millis(50)
+        ));
+        assert!(set_content_sharing_enabled(true));
+        assert!(!post_transcript_payload(
+            serde_json::json!({}),
+            Duration::from_millis(50)
+        ));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn non_unicode_override_does_not_select_public_service() {
+    use std::os::unix::ffi::OsStringExt;
+    let _guard = lock_test_env();
+    jcode_core::env::set_var("JCODE_TELEMETRY_BASE_URL", OsString::from_vec(vec![0xff]));
+    assert!(reporting_endpoints().is_err());
+}
+
+#[test]
+fn local_destination_does_not_bypass_consent_at_delivery_time() {
+    let _guard = lock_test_env();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    jcode_core::env::set_var(
+        "JCODE_TELEMETRY_BASE_URL",
+        format!("http://{}", listener.local_addr().unwrap()),
+    );
+    let timeout = Duration::from_millis(50);
+    assert!(!post_transcript_payload(serde_json::json!({}), timeout));
+    assert!(set_content_sharing_enabled(true));
+    jcode_core::env::set_var("DO_NOT_TRACK", "1");
+    assert!(!post_payload(serde_json::json!({}), timeout));
+    assert!(!post_transcript_payload(serde_json::json!({}), timeout));
+    jcode_core::env::remove_var("DO_NOT_TRACK");
+    jcode_core::env::set_var("JCODE_NO_TELEMETRY", "1");
+    assert!(!post_payload(serde_json::json!({}), timeout));
+    assert!(!post_transcript_payload(serde_json::json!({}), timeout));
+    jcode_core::env::remove_var("JCODE_NO_TELEMETRY");
+    std::fs::write(opt_out_marker_path().unwrap(), "1").unwrap();
+    assert!(!post_payload(serde_json::json!({}), timeout));
+    assert!(!post_transcript_payload(serde_json::json!({}), timeout));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
     );
 }
 
