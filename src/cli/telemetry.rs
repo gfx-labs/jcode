@@ -13,6 +13,10 @@ pub(crate) fn run(action: TelemetryCommand) -> Result<()> {
 fn run_status(json: bool) -> Result<()> {
     let status = crate::telemetry::status();
     let source = status.opt_out_source.map(|source| source.as_str());
+    let endpoints = crate::telemetry::reporting_endpoints();
+    let event_endpoint = endpoints.as_ref().ok().map(|e| e.event.as_str());
+    let transcript_endpoint = endpoints.as_ref().ok().map(|e| e.transcript.as_str());
+    let endpoint_error = endpoints.as_ref().err().copied();
 
     if json {
         println!(
@@ -22,6 +26,9 @@ fn run_status(json: bool) -> Result<()> {
                 "content_sharing_enabled": status.content_sharing_enabled,
                 "opt_out_source": source,
                 "telemetry_id": status.telemetry_id,
+                "event_endpoint": event_endpoint,
+                "transcript_endpoint": transcript_endpoint,
+                "endpoint_error": endpoint_error,
             }))?
         );
         return Ok(());
@@ -45,6 +52,12 @@ fn run_status(json: bool) -> Result<()> {
     );
     if let Some(source) = source {
         println!("Opt-out source: {source}");
+    }
+    if let Some(error) = endpoint_error {
+        println!("Reporting destination: invalid ({error}); delivery disabled");
+    } else {
+        println!("Event endpoint: {}", event_endpoint.unwrap());
+        println!("Transcript endpoint: {}", transcript_endpoint.unwrap());
     }
     println!(
         "Anonymous telemetry ID: {}",
