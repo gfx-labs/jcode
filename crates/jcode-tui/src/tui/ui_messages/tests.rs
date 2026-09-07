@@ -3326,6 +3326,66 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
 
 // --- compact transcript (click-to-expand tool rows and thinking rows) ---
 
+#[test]
+fn compact_controls_do_not_override_any_thinking_mode() {
+    use crate::config::ReasoningDisplayMode::{Collapsed, Current, Full, Off};
+    for mode in [Off, Current, Full, Collapsed] {
+        super::tests_reasoning_display_override::set(mode);
+        for compact in [false, true] {
+            super::tests_compact_transcript_override::set(compact);
+            assert_eq!(
+                super::reasoning_folds_to_summary(),
+                mode == Collapsed,
+                "mode={mode:?}, compact={compact}"
+            );
+        }
+    }
+    super::tests_reasoning_display_override::set(Full);
+    super::tests_compact_transcript_override::set(false);
+}
+
+#[test]
+fn compact_controls_preserve_rendered_thinking_and_expansion_state() {
+    use crate::config::ReasoningDisplayMode::{Collapsed, Current, Full};
+    let markup = reasoning_markup(&["Thinking stays independent."]);
+    let messages = [
+        DisplayMessage::reasoning(markup.clone()),
+        DisplayMessage::assistant(format!("{markup}\nAnswer.")),
+    ];
+    for mode in [Full, Current, Collapsed] {
+        super::tests_reasoning_display_override::set(mode);
+        for msg in &messages {
+            for expanded in [false, true] {
+                let hash = msg.stable_cache_hash();
+                jcode_tui_messages::set_transcript_message_expanded(hash, expanded);
+                let render = || {
+                    let lines = if msg.role == "reasoning" {
+                        render_reasoning_message(msg, 120, crate::config::DiffDisplayMode::Off)
+                    } else {
+                        render_assistant_message(msg, 120, crate::config::DiffDisplayMode::Off)
+                    };
+                    lines.iter().map(extract_line_text).collect::<Vec<_>>()
+                };
+                super::tests_compact_transcript_override::set(false);
+                let before = render();
+                super::tests_compact_transcript_override::set(true);
+                assert_eq!(before, render(), "mode={mode:?}, expanded={expanded}");
+                assert_eq!(
+                    jcode_tui_messages::transcript_message_expanded(hash),
+                    expanded
+                );
+                assert_eq!(
+                    before.join("\n").contains("Thinking stays independent."),
+                    mode != Collapsed || expanded
+                );
+                jcode_tui_messages::set_transcript_message_expanded(hash, false);
+            }
+        }
+    }
+    super::tests_reasoning_display_override::set(Full);
+    super::tests_compact_transcript_override::set(false);
+}
+
 fn compact_bash_message(id: &str, content: &str) -> DisplayMessage {
     DisplayMessage {
         role: "tool".to_string(),

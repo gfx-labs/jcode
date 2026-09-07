@@ -255,20 +255,12 @@ impl App {
         true
     }
 
-    /// Toggle the most recent compact transcript row (tool result or thinking
-    /// summary). Keyboard path for the same action as clicking the row.
-    pub(super) fn toggle_latest_transcript_expand(&mut self) -> bool {
-        let Some(idx) =
-            self.display_messages
-                .iter()
-                .rposition(|message| match message.role.as_str() {
-                    "tool" => true,
-                    "reasoning" => true,
-                    "assistant" => jcode_tui_markdown::extract_reasoning_blocks(&message.content)
-                        .iter()
-                        .any(|block| !block.lines.is_empty()),
-                    _ => false,
-                })
+    /// Toggle the most recent tool result without changing thinking rows.
+    pub(super) fn toggle_latest_tool_output_expand(&mut self) -> bool {
+        let Some(idx) = self
+            .display_messages
+            .iter()
+            .rposition(|message| message.role == "tool")
         else {
             return false;
         };

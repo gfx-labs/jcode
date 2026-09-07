@@ -2911,15 +2911,15 @@ fn handle_compact_transcript_command(app: &mut App, trimmed: &str) -> bool {
     if rest.is_empty() || matches!(rest, "show" | "status") {
         let current = crate::config::config().display.compact_transcript;
         app.push_display_message(DisplayMessage::system(format!(
-            "Compact transcript is currently {}.\n\nWhen on, every tool result and thinking trace folds to a single summary row. Click a row (or run /compact-transcript expand for the latest one) to expand it in place and see the full output; click again to fold it back.\n\nUse /compact-transcript on or /compact-transcript off to change it.",
+            "Compact transcript is currently {}.\n\nWhen on, every tool result folds to a single summary row. Click a row (or run /compact-transcript expand for the latest tool result) to expand it in place and see the full output; click again to fold it back.\n\nUse /compact-transcript on or /compact-transcript off to change it. Thinking is controlled independently by /thinking-display; use /thinking-display collapsed for thinking summary rows.",
             if current { "on" } else { "off" }
         )));
         return true;
     }
 
     if matches!(rest, "expand" | "toggle") {
-        if !app.toggle_latest_transcript_expand() {
-            app.set_status_notice("No tool result or thinking trace to expand");
+        if !app.toggle_latest_tool_output_expand() {
+            app.set_status_notice("No tool result to expand");
         }
         return true;
     }
@@ -2947,7 +2947,7 @@ fn handle_compact_transcript_command(app: &mut App, trimmed: &str) -> bool {
             error
         ))),
     }
-    // Row geometry changed for every tool/thinking message; force a rebuild.
+    // Tool row geometry changed; force a rebuild without changing thinking state.
     jcode_tui_messages::bump_transcript_expand_epoch();
     app.bump_display_messages_version_no_stats();
     app.request_full_repaint();

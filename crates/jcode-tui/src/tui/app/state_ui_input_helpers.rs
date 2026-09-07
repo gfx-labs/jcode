@@ -115,7 +115,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public(
         "/compact-transcript",
-        "Fold tool results and thinking to one-line rows that expand on click",
+        "Fold tool results to one-line rows that expand on click",
     ),
     RegisteredCommand::public(
         "/thinking-display",
@@ -1086,15 +1086,15 @@ impl App {
                     ),
                     (
                         "/compact-transcript on".into(),
-                        "Fold tool results and thinking to one-line rows",
+                        "Fold tool results to one-line rows",
                     ),
                     (
                         "/compact-transcript off".into(),
-                        "Show tool previews and thinking inline as before",
+                        "Show tool previews without changing thinking display",
                     ),
                     (
                         "/compact-transcript expand".into(),
-                        "Toggle the most recent tool result or thinking row",
+                        "Toggle the most recent tool result",
                     ),
                 ],
             );
