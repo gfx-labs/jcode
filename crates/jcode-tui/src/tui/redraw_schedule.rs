@@ -53,7 +53,7 @@ fn idle_donut_active_with_policy(
     state: &dyn TuiState,
     policy: &crate::perf::TuiPerfPolicy,
 ) -> bool {
-    if state.remote_startup_phase_active() {
+    if state.remote_startup_phase_active() || state.agent_wizard().is_some() {
         return false;
     }
 

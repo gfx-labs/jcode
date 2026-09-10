@@ -415,6 +415,152 @@ fn agent_wizard_short_review_can_scroll_through_destination_and_instruction_tail
 }
 
 #[test]
+fn agent_wizard_debug_frame_advances_without_recording_private_draft() {
+    if std::env::var_os("JCODE_TEST_WIZARD_FRAME_CHILD").is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tui::app::tests::agent_wizard_debug_frame_advances_without_recording_private_draft", "--nocapture"])
+            .env("JCODE_TEST_WIZARD_FRAME_CHILD", "1")
+            .env("JCODE_HOME", home.path())
+            .env("JCODE_IDLE_ANIMATION", "1")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::perf::pin_full_profile_for_tests();
+    let mut app = create_test_app();
+    let _project = custom_agent_test_project(&mut app);
+    crate::tui::visual_debug::enable();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &app))
+        .unwrap();
+    let previous = crate::tui::visual_debug::latest_frame().unwrap().frame_id;
+    app.input = "PRIVATE_COMPOSER".into();
+    agent_wizard_manual_review(&mut app, "wizard-private-frame", "PRIVATE_INSTRUCTIONS");
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &app))
+        .unwrap();
+    let capture = crate::tui::visual_debug::latest_frame().unwrap();
+    assert!(
+        capture.frame_id > previous,
+        "wizard must replace the previous chat capture"
+    );
+    assert!(
+        capture
+            .render_order
+            .iter()
+            .any(|phase| phase == "agent_wizard")
+    );
+    assert!(capture.rendered_text.status_line.contains("Review"));
+    assert!(capture.render_timing.is_some());
+    let json = serde_json::to_string(&capture).unwrap();
+    assert!(!json.contains("PRIVATE_COMPOSER"));
+    assert!(!json.contains("PRIVATE_INSTRUCTIONS"));
+    assert!(!json.contains("wizard-private-frame"));
+    let previous = capture.frame_id;
+    agent_wizard_key(&mut app, KeyCode::Esc);
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &app))
+        .unwrap();
+    assert!(crate::tui::visual_debug::latest_frame().unwrap().frame_id > previous);
+    crate::tui::visual_debug::disable();
+}
+
+#[test]
+fn agent_wizard_remote_debug_keys_request_redraw_without_composer_changes() {
+    let mut app = create_test_app();
+    let _project = custom_agent_test_project(&mut app);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    let mut state = super::remote::RemoteRunState::default();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    app.open_agent_wizard();
+    let input = app.input.clone();
+    for command in [
+        "keys:enter",
+        "keys:x",
+        "keys:ctrl+c",
+        "keys:down",
+        "keys:enter",
+    ] {
+        let (_, needs_redraw) = rt
+            .block_on(super::remote::handle_remote_event(
+                &mut app,
+                &mut terminal,
+                &mut remote,
+                &mut state,
+                crate::tui::backend::RemoteRead::Event(
+                    crate::protocol::ServerEvent::ClientDebugRequest {
+                        id: 900,
+                        command: command.into(),
+                    },
+                ),
+            ))
+            .unwrap();
+        assert!(
+            needs_redraw,
+            "{command} changed the wizard but requested no paint"
+        );
+        assert_eq!(app.input, input);
+    }
+    assert!(app.agent_wizard.is_none());
+}
+
+#[test]
+fn agent_wizard_suspends_hidden_idle_animation() {
+    if std::env::var_os("JCODE_TEST_WIZARD_IDLE_CHILD").is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tui::app::tests::agent_wizard_suspends_hidden_idle_animation",
+                "--nocapture",
+            ])
+            .env("JCODE_TEST_WIZARD_IDLE_CHILD", "1")
+            .env("JCODE_HOME", home.path())
+            .env("JCODE_IDLE_ANIMATION", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::perf::pin_full_profile_for_tests();
+    let mut app = create_test_app();
+    app.display_messages.clear();
+    app.push_display_message(DisplayMessage::system("Idle fixture"));
+    app.last_user_interaction = Some(std::time::Instant::now());
+    app.open_agent_wizard();
+    assert!(app.agent_wizard.is_some());
+    assert!(
+        !crate::tui::idle_donut_active(&app),
+        "wizard owns the full viewport"
+    );
+    app.agent_wizard = None;
+    assert!(
+        crate::tui::idle_donut_active(&app),
+        "fixture must exercise an eligible animation: policy={:?}, config={}, focused={}, welcome={}, startup={}, processing={}",
+        crate::perf::tui_policy(),
+        crate::config::config().display.idle_animation,
+        app.client_focused(),
+        crate::tui::TuiState::onboarding_welcome_active(&app),
+        app.remote_startup_phase_active(),
+        app.is_processing
+    );
+}
+
+#[test]
 fn agent_wizard_reserved_command_requires_acknowledgement_per_destination() {
     let mut app = create_test_app();
     let _project = custom_agent_test_project(&mut app);
@@ -540,6 +686,38 @@ fn agent_wizard_async_clipboard_does_not_attach_images_or_edit_chat() {
     assert_eq!(app.pending_images.len(), images);
     assert_eq!(app.display_messages.len(), before);
     assert!(app.input.is_empty());
+}
+
+#[test]
+fn agent_wizard_async_clipboard_session_dismissal_consumes_paste_without_chat_fallback() {
+    let mut app = create_test_app();
+    let _project = custom_agent_test_project(&mut app);
+    app.input = "Preserved composer".into();
+    app.cursor_pos = 4;
+    app.open_agent_wizard();
+    let old_session = app.session.id.clone();
+    app.session.id = "replacement-session".into();
+    let before = app.display_messages.len();
+    assert!(
+        !app.handle_clipboard_paste_completed(crate::bus::ClipboardPasteCompleted {
+            session_id: old_session,
+            kind: crate::bus::ClipboardPasteKind::Smart,
+            content: crate::bus::ClipboardPasteContent::Text("Old clipboard".into()),
+        })
+    );
+    assert!(app.agent_wizard.is_some());
+    assert!(
+        app.handle_clipboard_paste_completed(crate::bus::ClipboardPasteCompleted {
+            session_id: app.session.id.clone(),
+            kind: crate::bus::ClipboardPasteKind::Smart,
+            content: crate::bus::ClipboardPasteContent::Text("Must not reach chat".into()),
+        })
+    );
+    assert!(app.agent_wizard.is_none());
+    assert_eq!(app.input, "Preserved composer");
+    assert_eq!(app.cursor_pos, 4);
+    assert_eq!(app.display_messages.len(), before);
+    assert!(!app.pending_turn && !app.is_processing);
 }
 
 fn agent_wizard_generation_choice(app: &mut App) {
@@ -809,6 +987,47 @@ fn agent_wizard_generation_cancel_and_old_daemon_error_stay_private() {
         assert_eq!(app.agent_wizard.as_ref().unwrap().step, super::agent_wizard::Step::InstructionChoice);
         assert_eq!(app.display_messages.len(), before);
         assert!(!app.is_processing && !app.pending_turn);
+    });
+}
+
+#[test]
+fn agent_wizard_full_discard_emits_cancel_for_sent_generation_after_draft_is_gone() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let project = custom_agent_test_project(&mut app);
+        app.is_remote = true;
+        app.input = "Preserved composer".into();
+        let before = app.display_messages.len();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let peer = remote.take_dummy_peer().unwrap();
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut reader = BufReader::new(peer);
+        agent_wizard_generation_choice(&mut app);
+        super::remote::handle_remote_key(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut remote).await.unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await.unwrap().unwrap();
+        let id = match serde_json::from_str::<crate::protocol::Request>(&line).unwrap() {
+            crate::protocol::Request::GenerateAgentInstructions { id, .. } => id,
+            other => panic!("Expected sent generation, got {other:?}"),
+        };
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        agent_wizard_key(&mut app, KeyCode::Down);
+        agent_wizard_key(&mut app, KeyCode::Enter);
+        assert!(app.agent_wizard.is_none());
+        assert_eq!(app.agent_wizard_remote_cancel, Some(id));
+        app.dispatch_agent_wizard_generation(&mut remote).await;
+        assert!(app.agent_wizard_remote_cancel.is_none());
+        line.clear();
+        tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await.unwrap().unwrap();
+        assert!(matches!(serde_json::from_str::<crate::protocol::Request>(&line).unwrap(), crate::protocol::Request::CancelAgentInstructions { generation_id, .. } if generation_id == id));
+        app.handle_server_event(crate::protocol::ServerEvent::AgentInstructionsGenerated { id, text: Some("Late text".into()), model: "model".into(), provider_name: "provider".into(), error: None }, &mut remote);
+        app.handle_server_event(crate::protocol::ServerEvent::Error { id, message: "Late error".into(), retry_after_secs: None }, &mut remote);
+        assert!(app.agent_wizard.is_none());
+        assert!(!project.path().join(".jcode/agents/wizard-generated.md").exists());
+        assert_eq!(app.input, "Preserved composer");
+        assert_eq!(app.display_messages.len(), before);
+        assert!(!app.pending_turn && !app.is_processing);
     });
 }
 

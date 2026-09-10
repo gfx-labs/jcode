@@ -9,6 +9,35 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 impl AgentWizard {
+    pub(crate) fn capture_debug_frame(&self, area: Rect, elapsed: std::time::Duration) {
+        use crate::tui::visual_debug::{self, FrameCaptureBuilder, RenderTimingCapture};
+        if !visual_debug::is_enabled() {
+            return;
+        }
+        let mut capture = FrameCaptureBuilder::new(area.width, area.height);
+        capture.layout.input_area = Some(area.into());
+        capture.state.input_len = self.editor.len();
+        capture.state.cursor_pos = self.cursor;
+        capture.state.scroll_offset = self.scroll;
+        capture.state.status = format!(
+            "{}:choice={}:revision={}",
+            self.step_title(),
+            self.selected,
+            self.revision
+        );
+        capture.rendered_text.status_line = format!("Create new agent · {}", self.step_title());
+        capture.render_order.push("agent_wizard".into());
+        let milliseconds = elapsed.as_secs_f32() * 1000.0;
+        capture.render_timing = Some(RenderTimingCapture {
+            prepare_ms: 0.0,
+            draw_ms: milliseconds,
+            total_ms: milliseconds,
+            messages_ms: None,
+            widgets_ms: None,
+        });
+        visual_debug::record_frame(capture.build());
+    }
+
     pub(crate) fn render(&self, frame: &mut Frame<'_>) {
         let screen = frame.area();
         if screen.width == 0 || screen.height == 0 {

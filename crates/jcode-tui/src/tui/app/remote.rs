@@ -884,10 +884,14 @@ pub(super) async fn handle_remote_event<B: Backend>(
                     return Ok((RemoteEventOutcome::Continue, false));
                 }
             }
+            let wizard_was_open = app.agent_wizard.is_some();
             let output = handle_debug_command(app, &command, remote).await;
             let _ = remote.send_client_debug_response(id, output).await;
             process_remote_followups(app, remote).await;
-            Ok((RemoteEventOutcome::Continue, false))
+            Ok((
+                RemoteEventOutcome::Continue,
+                wizard_was_open || app.agent_wizard.is_some(),
+            ))
         }
         RemoteRead::Event(ServerEvent::Transcript { text, mode }) => {
             let mut needs_redraw = false;

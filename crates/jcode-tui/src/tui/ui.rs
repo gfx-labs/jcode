@@ -2676,10 +2676,6 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     crate::tui::mermaid::render_pending_terminal_image_cleanup(frame.buffer_mut());
 }
 fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
-    if let Some(wizard) = app.agent_wizard() {
-        wizard.render(frame);
-        return;
-    }
     panel_image_preview::clear_regions();
     let area = frame.area().intersection(*frame.buffer_mut().area());
     if area.width == 0 || area.height == 0 {
@@ -2699,6 +2695,19 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Uses Color::Reset (terminal default bg) so text selection highlighting works
     // natively in all terminal emulators.
     clear_area(frame, area);
+
+    if let Some(wizard) = app.agent_wizard() {
+        wizard.render(frame);
+        wizard.capture_debug_frame(area, total_start.elapsed());
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
 
     if let Some(hash) = app.panel_image_preview() {
         panel_image_preview::draw_preview(frame, area, hash);
