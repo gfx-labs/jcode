@@ -251,7 +251,7 @@ where
     }
 }
 
-fn read_clipboard_text() -> Option<String> {
+pub(super) fn read_clipboard_text() -> Option<String> {
     if std::env::var("WAYLAND_DISPLAY").is_ok()
         && let Some(text) = read_wayland_clipboard_text()
     {
@@ -654,6 +654,9 @@ pub(in crate::tui::app) use paste_guard::expire_for_test as paste_guard_expire_f
 use paste_guard::image_media_type;
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    if app.handle_agent_wizard_paste(&text) {
+        return;
+    }
     if app.append_ssh_login_input(&text) {
         return;
     }
@@ -835,6 +838,9 @@ pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
 }
 
 pub(super) fn handle_text_paste(app: &mut App, text: String) {
+    if app.handle_agent_wizard_paste(&text) {
+        return;
+    }
     crate::logging::info(&format!(
         "Text paste: {} chars, {} lines",
         text.len(),
@@ -901,6 +907,13 @@ impl App {
     ) -> bool {
         if self.active_client_session_id() != Some(result.session_id.as_str()) {
             return false;
+        }
+
+        if self.agent_wizard.is_some() {
+            if let ClipboardPasteContent::Text(text) = result.content {
+                self.handle_agent_wizard_paste(&text);
+            }
+            return true;
         }
 
         match result.content {
@@ -1090,6 +1103,9 @@ fn bare_terminal_report_length(bytes: &[u8]) -> Option<usize> {
 }
 
 pub(super) fn insert_input_text(app: &mut App, text: &str) {
+    if app.handle_agent_wizard_paste(text) {
+        return;
+    }
     if text.is_empty() {
         return;
     }
@@ -1150,6 +1166,9 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
 }
 
 pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
+    if app.handle_agent_wizard_paste(text) {
+        return true;
+    }
     if app.append_ssh_login_input(text) {
         return true;
     }
@@ -2994,6 +3013,10 @@ impl App {
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
+        if self.handle_agent_wizard_key(code, modifiers, text_input.as_deref()) {
+            return Ok(());
+        }
+
         if self.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
             return Ok(());
         }
@@ -3732,6 +3755,9 @@ impl App {
 
     /// Submit input - just sets up message and flags, processing happens in next loop iteration
     pub(super) fn submit_input(&mut self) {
+        if self.agent_wizard.is_some() {
+            return;
+        }
         // Connected SSH input is dispatched through the wire client, never the
         // local submit fallback (which reads skills and persists prompts).
         if crate::tui::is_ssh_remote() {

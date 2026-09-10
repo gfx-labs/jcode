@@ -57,6 +57,7 @@ include!("tests/skill_invocation_multi_word.rs");
 include!("tests/prompt_history_cross_session.rs");
 include!("tests/ssh_remote.rs");
 include!("tests/agent_profiles.rs");
+include!("agent_wizard_tests.rs");
 #[test]
 fn kv_cache_signature_prefix_match_allows_appended_messages() {
     let baseline_messages = vec![

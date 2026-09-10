@@ -49,6 +49,7 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+pub mod agent_wizard;
 mod auth;
 mod auth_account_picker_saved_accounts;
 mod auth_remote;
@@ -1398,6 +1399,9 @@ pub struct App {
     inline_view_state: Option<super::InlineViewState>,
     // Interactive model/provider picker
     inline_interactive_state: Option<super::InlineInteractiveState>,
+    agent_wizard: Option<agent_wizard::AgentWizard>,
+    agent_wizard_remote_cancel: Option<u64>,
+    agent_wizard_saved_path: Option<String>,
     // Cached model picker entries. Building these can require hydrating large provider catalogs.
     model_picker_cache: Option<ModelPickerCache>,
     model_picker_catalog_revision: u64,

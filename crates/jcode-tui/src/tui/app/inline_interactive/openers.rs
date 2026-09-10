@@ -10,6 +10,13 @@ use crate::tui::{
 
 impl App {
     pub(crate) fn open_agents_picker(&mut self) {
+        self.open_agents_picker_with_error_reporting(true);
+    }
+
+    pub(in crate::tui::app) fn open_agents_picker_with_error_reporting(
+        &mut self,
+        report_errors: bool,
+    ) {
         if crate::tui::app::commands_dispatch::ssh_local_action_blocked(
             self,
             "Agent model configuration",
@@ -23,7 +30,9 @@ impl App {
                 .map(std::path::Path::new),
         );
         for error in registry.errors {
-            self.push_display_message(DisplayMessage::error(format!("Agent profile: {error}")));
+            if report_errors {
+                self.push_display_message(DisplayMessage::error(format!("Agent profile: {error}")));
+            }
         }
         let mut models: Vec<PickerEntry> = registry
             .profiles
@@ -69,6 +78,30 @@ impl App {
                 }
             })
             .collect();
+        models.insert(
+            0,
+            PickerEntry {
+                name: "Create new agent...".to_string(),
+                options: vec![PickerOption {
+                    provider: "new profile".into(),
+                    api_method: "guided creation".into(),
+                    available: true,
+                    detail: "/agents create · draft, review, then save".into(),
+                    estimated_reference_cost_micros: None,
+                }],
+                action: PickerAction::CreateAgent,
+                selected_option: 0,
+                is_current: false,
+                is_default: false,
+                is_favorite: false,
+                recommended: false,
+                recommendation_rank: usize::MAX,
+                usage_score: 0,
+                old: false,
+                created_date: None,
+                effort: None,
+            },
+        );
         models.push(PickerEntry {
             name: "Clear custom profile".to_string(),
             options: vec![PickerOption {
@@ -146,8 +179,6 @@ impl App {
             filter: String::new(),
             preview: false,
         });
-        self.input.clear();
-        self.cursor_pos = 0;
     }
 
     pub(crate) fn open_login_picker_inline(&mut self) {

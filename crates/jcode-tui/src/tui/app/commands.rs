@@ -3194,7 +3194,9 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    if let Some(target) = parse_agents_target(rest) {
+    if rest == "create" {
+        app.open_agent_wizard();
+    } else if let Some(target) = parse_agents_target(rest) {
         app.open_agent_model_picker(target);
     } else if rest == "clear" {
         app.select_agent_profile(None);

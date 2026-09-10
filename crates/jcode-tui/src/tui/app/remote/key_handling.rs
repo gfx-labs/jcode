@@ -277,6 +277,11 @@ async fn handle_remote_key_internal(
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
+    if app.handle_agent_wizard_key(code, modifiers, text_input.as_deref()) {
+        app.dispatch_agent_wizard_generation(remote).await;
+        return Ok(());
+    }
+
     if app.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
         return Ok(());
     }

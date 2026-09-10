@@ -96,6 +96,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             .is_some_and(|state| state.kind == crate::tui::PickerKind::Model),
     });
     let mut needs_redraw = crate::tui::periodic_redraw_required(app);
+    needs_redraw |= app.poll_agent_wizard();
+    needs_redraw |= app.dispatch_agent_wizard_generation(remote).await;
     needs_redraw |= app.poll_ssh_login(remote).await;
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
@@ -839,6 +841,7 @@ pub(super) async fn handle_remote_event<B: Backend>(
 ) -> Result<(RemoteEventOutcome, bool)> {
     match event {
         RemoteRead::Disconnected(reason) => {
+            app.agent_wizard_disconnected();
             if let RemoteDisconnectReason::Protocol(error) = &reason {
                 let detail = format_disconnect_reason(&reason);
                 crate::logging::error(&format!(
@@ -1222,6 +1225,11 @@ async fn dispatch_pending_agent_profile(app: &mut App, remote: &mut RemoteConnec
                 "Failed to request agent profile change: {error}"
             )));
             app.set_status_notice("Agent profile change failed");
+            if let Some(path) = app.agent_wizard_saved_path.take() {
+                app.set_status_notice(format!(
+                    "Saved {path}. Activation request failed: {error}. The file is preserved."
+                ));
+            }
         }
     }
 }
@@ -1936,6 +1944,11 @@ fn handle_disconnected_key_internal(
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+
+    if app.handle_agent_wizard_key(code, modifiers, text_input.as_deref()) {
+        app.agent_wizard_disconnected();
+        return Ok(());
+    }
 
     if app.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
         return Ok(());

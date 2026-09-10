@@ -551,6 +551,10 @@ impl App {
 
         if prefix.starts_with("/agents ") {
             let mut suggestions = vec![
+                (
+                    "/agents create".into(),
+                    "Create an editable custom agent profile",
+                ),
                 ("/agents swarm".into(), "Configure swarm/subagent model"),
                 ("/agents review".into(), "Configure code review model"),
                 ("/agents judge".into(), "Configure judge model"),

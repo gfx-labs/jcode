@@ -542,6 +542,12 @@ pub(in crate::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    if let ServerEvent::Error { id, message, .. } = &event {
+        if app.agent_wizard_protocol_error(*id, message) || remote.is_agent_instruction_request(*id)
+        {
+            return true;
+        }
+    }
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
@@ -613,6 +619,13 @@ pub(in crate::tui::app) fn handle_server_event(
     let call_output_tokens_seen = remote.call_output_tokens_seen();
 
     match event {
+        ServerEvent::AgentInstructionsGenerated {
+            id,
+            text,
+            model,
+            provider_name,
+            error,
+        } => app.finish_agent_wizard_generation(id, text, model, provider_name, error),
         ServerEvent::TextDelta { text } => {
             if let Some(thought_line) = App::extract_thought_line(&text) {
                 let ops = app.stream_buffer.flush();
@@ -2249,6 +2262,12 @@ pub(in crate::tui::app) fn handle_server_event(
             error,
         } => {
             let matched_request = app.remote_agent_profile_request_id == Some(id);
+            let saved_path = if matched_request {
+                app.agent_wizard_saved_path.take()
+            } else {
+                None
+            };
+            let activation_error = error.clone();
             if matched_request {
                 app.remote_agent_profile_request_id = None;
             }
@@ -2276,6 +2295,14 @@ pub(in crate::tui::app) fn handle_server_event(
                 if id != 0 {
                     app.agent_profile_change_confirmed(name.as_deref(), &model);
                 }
+            }
+            if let Some(path) = saved_path {
+                app.set_status_notice(match activation_error {
+                    Some(error) => {
+                        format!("Saved {path}. Activation failed: {error}. The file is preserved.")
+                    }
+                    None => format!("Saved {path}. Agent profile activated."),
+                });
             }
             true
         }

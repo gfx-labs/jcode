@@ -121,6 +121,13 @@ pub(super) fn openrouter_route_model_id(model: &str) -> String {
 
 pub(super) fn picker_route_model_spec(entry: &PickerEntry, route: &PickerOption) -> String {
     let bare_name = model_entry_base_name(entry);
+    agent_route_model_spec(bare_name, route)
+}
+
+pub(in crate::tui::app) fn agent_route_model_spec(
+    bare_name: String,
+    route: &PickerOption,
+) -> String {
     let api_method = crate::provider::ModelRouteApiMethod::parse(&route.api_method);
     match api_method {
         crate::provider::ModelRouteApiMethod::Copilot => format!("copilot:{}", bare_name),

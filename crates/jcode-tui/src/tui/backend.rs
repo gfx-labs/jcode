@@ -239,6 +239,7 @@ pub struct RemoteConnection {
     session_id: Option<String>,
     client_instance_id: Option<String>,
     next_request_id: u64,
+    agent_instruction_request_ids: std::collections::HashSet<u64>,
     // Bootstrap Done acknowledgments are not completions of a detached turn.
     // Retain recent ids because target Subscribe can acknowledge twice.
     control_done_ids: std::sync::Mutex<std::collections::VecDeque<u64>>,
@@ -284,6 +285,9 @@ fn remote_protocol_frame_exceeds_limit(buffered: usize, incoming: usize) -> bool
 }
 
 pub(crate) trait RemoteEventState {
+    fn is_agent_instruction_request(&self, _id: u64) -> bool {
+        false
+    }
     fn handle_tool_start(&mut self, id: &str, name: &str);
     fn handle_tool_input(&mut self, delta: &str);
     fn get_current_tool_input(&self) -> serde_json::Value;
@@ -341,6 +345,7 @@ impl RemoteConnection {
                 1
             },
             control_done_ids: Default::default(),
+            agent_instruction_request_ids: Default::default(),
             tool_diff: RemoteDiffTracker::default(),
             read_buffer: Vec::new(),
             read_buffer_scan_start: 0,
@@ -767,6 +772,33 @@ impl RemoteConnection {
         self.send_request(Request::SetAgentProfile { id, name })
             .await?;
         Ok(id)
+    }
+
+    pub async fn generate_agent_instructions(
+        &mut self,
+        description: String,
+        purpose: String,
+        mode: String,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.agent_instruction_request_ids.insert(id);
+        self.send_request(Request::GenerateAgentInstructions {
+            id,
+            description,
+            purpose,
+            mode,
+        })
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn cancel_agent_instructions(&mut self, generation_id: u64) -> Result<()> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.agent_instruction_request_ids.insert(id);
+        self.send_request(Request::CancelAgentInstructions { id, generation_id })
+            .await
     }
 
     pub async fn set_route_selection(
@@ -1335,6 +1367,7 @@ impl RemoteConnection {
             client_instance_id: None,
             next_request_id: 1,
             control_done_ids: Default::default(),
+            agent_instruction_request_ids: Default::default(),
             tool_diff: RemoteDiffTracker::default(),
             read_buffer: Vec::new(),
             read_buffer_scan_start: 0,
@@ -1420,6 +1453,9 @@ impl RemoteConnection {
 }
 
 impl RemoteEventState for RemoteConnection {
+    fn is_agent_instruction_request(&self, id: u64) -> bool {
+        self.agent_instruction_request_ids.contains(&id)
+    }
     fn handle_tool_start(&mut self, id: &str, name: &str) {
         Self::handle_tool_start(self, id, name);
     }

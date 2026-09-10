@@ -94,6 +94,7 @@ pub(super) fn picker_account_provider_scope(picker: &InlineInteractiveState) -> 
         | PickerAction::Usage { .. }
         | PickerAction::AgentTarget(_)
         | PickerAction::AgentProfile(_)
+        | PickerAction::CreateAgent
         | PickerAction::AgentModelChoice { .. }
         | PickerAction::SubagentModelChoice { .. } => None,
     })

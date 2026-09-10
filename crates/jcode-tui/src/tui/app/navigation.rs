@@ -1351,6 +1351,9 @@ impl App {
 
     /// Returns true if this was a scroll-only event (safe to defer redraw during streaming)
     pub(super) fn handle_mouse_event(&mut self, mouse: MouseEvent) -> bool {
+        if self.agent_wizard.is_some() {
+            return false;
+        }
         let trace_scroll = tui_mouse_scroll_trace_enabled() && is_mouse_scroll_kind(mouse.kind);
         let trace_before = trace_scroll.then(|| MouseScrollTraceState::capture(self));
         macro_rules! finish_mouse_event {

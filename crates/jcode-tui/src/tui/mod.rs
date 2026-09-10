@@ -665,6 +665,9 @@ pub trait TuiState {
     /// Interactive inline UI state (picker-like flows shown above input)
     // ---- Inline ----
     fn inline_interactive_state(&self) -> Option<&InlineInteractiveState>;
+    fn agent_wizard(&self) -> Option<&app::agent_wizard::AgentWizard> {
+        None
+    }
     /// Passive inline UI state (informational views shown above input)
     fn inline_view_state(&self) -> Option<&InlineViewState> {
         None
@@ -1308,6 +1311,7 @@ pub enum PickerAction {
     },
     AgentTarget(AgentModelTarget),
     AgentProfile(Option<String>),
+    CreateAgent,
     AgentModelChoice {
         target: AgentModelTarget,
         clear_override: bool,
@@ -1355,6 +1359,7 @@ impl InlineInteractiveState {
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
         PickerAction::Model
+        | PickerAction::CreateAgent
         | PickerAction::AgentTarget(_)
         | PickerAction::AgentModelChoice { .. }
         | PickerAction::SubagentModelChoice { .. }
@@ -1464,7 +1469,9 @@ impl InlineInteractiveState {
             && self.entries.iter().all(|entry| {
                 matches!(
                     entry.action,
-                    PickerAction::AgentTarget(_) | PickerAction::AgentProfile(_)
+                    PickerAction::AgentTarget(_)
+                        | PickerAction::AgentProfile(_)
+                        | PickerAction::CreateAgent
                 )
             })
     }

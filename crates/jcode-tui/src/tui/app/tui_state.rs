@@ -1899,6 +1899,10 @@ impl crate::tui::TuiState for App {
         self.inline_interactive_state.as_ref()
     }
 
+    fn agent_wizard(&self) -> Option<&super::agent_wizard::AgentWizard> {
+        self.agent_wizard.as_ref()
+    }
+
     fn inline_view_state(&self) -> Option<&crate::tui::InlineViewState> {
         self.inline_view_state.as_ref()
     }

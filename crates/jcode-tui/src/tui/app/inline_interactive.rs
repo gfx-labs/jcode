@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "inline_interactive/helpers.rs"]
-mod helpers;
+pub(super) mod helpers;
 #[path = "inline_interactive/openers.rs"]
 mod openers;
 #[path = "inline_interactive/preview.rs"]
@@ -3568,6 +3568,7 @@ impl App {
                         self.inline_interactive_state = None;
                         self.select_agent_profile(name.as_deref());
                     }
+                    PickerAction::CreateAgent => self.open_agent_wizard(),
                     PickerAction::AgentModelChoice {
                         target,
                         clear_override,
