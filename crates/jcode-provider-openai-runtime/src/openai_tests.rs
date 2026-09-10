@@ -389,10 +389,11 @@ async fn agent_instructions_openai_omits_hosted_tools_and_preserves_exact_model(
 #[tokio::test]
 async fn agent_instructions_openai_cancel_closes_owned_transport() {
     let _lock = jcode_base::storage::lock_test_env();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _runtime = EnvVarGuard::remove("JCODE_RUNTIME_PROVIDER");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let _base = EnvVarGuard::set("JCODE_OPENAI_API_BASE", &format!("http://{addr}/v1"));
-    let _transport = EnvVarGuard::set("JCODE_OPENAI_TRANSPORT", "websocket");
     let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
     let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
@@ -422,6 +423,11 @@ async fn agent_instructions_openai_cancel_closes_owned_transport() {
     });
     let provider = OpenAIProvider::new_inner(prewarm_test_credentials(), false);
     *provider.model.write().await = "gpt-5.4".into();
+    provider.set_transport("websocket").unwrap();
+    assert_eq!(
+        OpenAIProvider::responses_url(&*provider.credentials.read().await),
+        format!("http://{addr}/v1/responses")
+    );
     let generation = tokio::spawn(jcode_base::agent_instructions::generate_agent_instructions(
         Arc::new(provider),
         "Reviewer".into(),
@@ -455,6 +461,8 @@ async fn agent_instructions_openai_snapshot_does_not_share_reasoning_catalog() {
 #[tokio::test]
 async fn agent_instructions_openai_error_logs_never_echo_body() {
     let _lock = jcode_base::storage::lock_test_env();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _runtime = EnvVarGuard::remove("JCODE_RUNTIME_PROVIDER");
     jcode_base::logging::init();
     let path = jcode_base::logging::log_path().expect("test log path");
     let sentinel = format!(
@@ -464,7 +472,6 @@ async fn agent_instructions_openai_error_logs_never_echo_body() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let _base = EnvVarGuard::set("JCODE_OPENAI_API_BASE", &format!("http://{addr}/v1"));
-    let _transport = EnvVarGuard::set("JCODE_OPENAI_TRANSPORT", "websocket");
     let echo = sentinel.clone();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
@@ -475,6 +482,11 @@ async fn agent_instructions_openai_error_logs_never_echo_body() {
     });
     let provider = Arc::new(OpenAIProvider::new_inner(prewarm_test_credentials(), false));
     *provider.model.write().await = "gpt-5.4".into();
+    provider.set_transport("websocket").unwrap();
+    assert_eq!(
+        OpenAIProvider::responses_url(&*provider.credentials.read().await),
+        format!("http://{addr}/v1/responses")
+    );
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         jcode_base::agent_instructions::generate_agent_instructions(
@@ -486,7 +498,10 @@ async fn agent_instructions_openai_error_logs_never_echo_body() {
     )
     .await
     .unwrap();
-    server.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .expect("generation must reach the error fixture")
+        .unwrap();
     assert!(result.is_err());
     assert!(!result.unwrap_err().to_string().contains(&sentinel));
     let log = std::fs::read_to_string(path).unwrap();
