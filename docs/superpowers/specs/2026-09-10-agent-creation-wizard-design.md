@@ -1,7 +1,7 @@
 # Guided custom-agent creation
 
 Date: 2026-09-10
-Status: Approved in chat at 2026-09-10 21:11 UTC. Implemented with focused tests and real manual/configured-provider acceptance. Final installation verification is tracked in the implementation plan.
+Status: Approved in chat at 2026-09-10 21:11 UTC. Implemented, installed and verified with focused tests and real manual/configured-provider acceptance on the installed client and daemon. Validation boundaries are recorded in the implementation plan.
 Scope: Jcode TUI on the current `don` branch.
 
 ## 1. Outcome and approach
