@@ -105,12 +105,19 @@ impl RemoteStatus {
             config.enabled,
             config.port,
             &config.bind_addr,
+            config.connect_host.as_deref(),
             DeviceRegistry::load(),
         )
     }
 
-    fn from_parts(enabled: bool, port: u16, bind_addr: &str, registry: DeviceRegistry) -> Self {
-        let connect_host = resolve_connect_host(bind_addr);
+    fn from_parts(
+        enabled: bool,
+        port: u16,
+        bind_addr: &str,
+        connect_host: Option<&str>,
+        registry: DeviceRegistry,
+    ) -> Self {
+        let connect_host = resolve_connect_host(bind_addr, connect_host);
         Self {
             enabled,
             port,
@@ -376,7 +383,7 @@ mod tests {
 
     #[test]
     fn status_markdown_guides_setup_when_off() {
-        let status = RemoteStatus::from_parts(false, 7643, "127.0.0.1", registry(vec![]));
+        let status = RemoteStatus::from_parts(false, 7643, "127.0.0.1", None, registry(vec![]));
         let md = status.to_markdown();
         assert!(md.contains("Gateway: **off**"));
         assert!(md.contains("/remote on"));
@@ -389,6 +396,7 @@ mod tests {
             true,
             7643,
             "127.0.0.1",
+            None,
             registry(vec![device("phone-1", "my phone")]),
         );
         let md = status.to_markdown();
@@ -403,18 +411,34 @@ mod tests {
 
     #[test]
     fn wildcard_bind_warns_about_exposure() {
-        let status = RemoteStatus::from_parts(true, 7643, "0.0.0.0", registry(vec![]));
+        let status = RemoteStatus::from_parts(true, 7643, "0.0.0.0", None, registry(vec![]));
         assert!(status.to_markdown().contains("trusted network"));
 
-        let loopback = RemoteStatus::from_parts(true, 7643, "127.0.0.1", registry(vec![]));
+        let loopback = RemoteStatus::from_parts(true, 7643, "127.0.0.1", None, registry(vec![]));
         assert!(!loopback.to_markdown().contains("trusted network"));
     }
 
     #[test]
     fn explicit_bind_address_is_used_verbatim_as_dial_host() {
-        let status = RemoteStatus::from_parts(true, 7643, "100.64.1.5", registry(vec![]));
+        let status = RemoteStatus::from_parts(true, 7643, "100.64.1.5", None, registry(vec![]));
         assert_eq!(status.dial_address(), "100.64.1.5:7643");
         assert!(!status.host_unknown);
+    }
+
+    #[test]
+    fn configured_connect_host_is_shown_without_changing_listener() {
+        let status = RemoteStatus::from_parts(
+            true,
+            7643,
+            "127.0.0.1",
+            Some("proxy.example.test"),
+            registry(vec![]),
+        );
+        assert_eq!(status.bind_addr, "127.0.0.1");
+        assert_eq!(status.dial_address(), "proxy.example.test:7643");
+        let markdown = status.to_markdown();
+        assert!(markdown.contains("127.0.0.1:7643"));
+        assert!(markdown.contains("proxy.example.test:7643"));
     }
 
     #[test]

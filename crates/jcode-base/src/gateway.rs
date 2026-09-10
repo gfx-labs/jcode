@@ -557,20 +557,15 @@ pub fn detect_tailscale_dns_name() -> Option<String> {
 
 /// Resolve the address a remote client should actually dial.
 ///
-/// A wildcard `bind_addr` says nothing about how to reach this machine, so fall
-/// back through the explicit override, Tailscale MagicDNS, and finally the
-/// system hostname.
-pub fn resolve_connect_host(bind_addr: &str) -> String {
+/// The configured connect host (including the config-layer environment override)
+/// takes precedence over any listener address. Otherwise use a specific bind
+/// address, then Tailscale MagicDNS and finally the system hostname.
+pub fn resolve_connect_host(bind_addr: &str, connect_host: Option<&str>) -> String {
+    if let Some(host) = connect_host.map(str::trim).filter(|s| !s.is_empty()) {
+        return host.to_string();
+    }
     if bind_addr != "0.0.0.0" && bind_addr != "::" {
         return bind_addr.to_string();
-    }
-
-    if let Some(host) = std::env::var("JCODE_GATEWAY_HOST")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        return host;
     }
 
     if let Some(host) = detect_tailscale_dns_name() {

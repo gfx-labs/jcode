@@ -1484,6 +1484,9 @@ pub struct GatewayConfig {
     pub port: u16,
     /// Bind address (default: 0.0.0.0)
     pub bind_addr: String,
+    /// Hostname or IP advertised to remote clients, independent of the listener.
+    /// None or blank uses the bind address, then automatic host detection.
+    pub connect_host: Option<String>,
 }
 
 impl Default for GatewayConfig {
@@ -1492,6 +1495,7 @@ impl Default for GatewayConfig {
             enabled: false,
             port: 7643,
             bind_addr: "0.0.0.0".to_string(),
+            connect_host: None,
         }
     }
 }

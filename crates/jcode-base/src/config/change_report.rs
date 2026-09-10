@@ -49,6 +49,11 @@ const RESTART_REQUIRED_SECTIONS: &[&str] = &[
 
 /// Liveness of a dotted config key such as `keybindings.scroll_up`.
 pub fn liveness_for_key(key: &str) -> Liveness {
+    // Pairing/status read the advertised host from current config, unlike the
+    // listener's bind address and port which are fixed at server startup.
+    if key == "gateway.connect_host" {
+        return Liveness::Live;
+    }
     let section = key.split('.').next().unwrap_or(key);
     if RESTART_REQUIRED_SECTIONS.contains(&section) {
         Liveness::NeedsRestart
