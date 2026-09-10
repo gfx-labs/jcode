@@ -1,7 +1,7 @@
 # Guided custom-agent creation
 
 Date: 2026-09-10
-Status: Design for user review. Generated instructions with manual entry approved in chat. Implementation not started.
+Status: Approved in chat at 2026-09-10 21:11 UTC. Implementation in progress. Acceptance checks below are not yet executed.
 Scope: Jcode TUI on the current `don` branch.
 
 ## 1. Outcome and approach
