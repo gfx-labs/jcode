@@ -398,8 +398,8 @@ impl App {
                 let n: usize = raw.parse().unwrap_or(3);
                 let statuses = ["running", "thinking", "ready", "completed", "blocked"];
                 let names = [
-                    "fox", "owl", "bee", "elk", "ant", "cat", "dog", "jay", "ram", "yak", "ox",
-                    "emu",
+                    "naruto", "luffy", "goku", "gojo", "anya", "frieren", "levi", "sakura",
+                    "tanjiro", "saitama", "edward", "senku",
                 ];
                 let samples = [
                     "Editing crates/jcode-tui/src/tui/ui.rs\n  carving the gallery band off chat_area",

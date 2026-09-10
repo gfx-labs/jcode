@@ -25,7 +25,7 @@ fn member_label(member: &SwarmMemberStatus) -> String {
 }
 
 /// Session icon (emoji) for a member, derived from its friendly name (session
-/// names come from the shared `SESSION_NAMES` word list, e.g. "fox" -> 🦊).
+/// names come from the shared `SESSION_NAMES` word list, e.g. "naruto" -> 🍥).
 /// Falls back to `None` when the name is unknown so the strip shows the name.
 fn member_icon(member: &SwarmMemberStatus) -> Option<String> {
     let name = member.friendly_name.as_deref()?;
@@ -653,6 +653,15 @@ mod tests {
             todo_items: Vec::new(),
             runtime: crate::protocol::SwarmMemberRuntime::default(),
         }
+    }
+
+    #[test]
+    fn anime_member_identity_reaches_gallery() {
+        let worker = member("naruto", "running", None, None);
+        assert_eq!(member_label(&worker), "naruto");
+        assert_eq!(member_icon(&worker).as_deref(), Some("🍥"));
+        let tiles = members_to_tiles(&members_to_gallery(&[worker]));
+        assert_eq!(tiles[0].title, "naruto");
     }
 
     #[test]

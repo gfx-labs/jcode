@@ -12,7 +12,7 @@ pub fn new_id(prefix: &str) -> String {
 /// Server/location names with their icons.
 ///
 /// Servers now use location nouns while sessions use client/entity nouns,
-/// producing names like "harbor fox" or "observatory otter".
+/// producing names like "harbor naruto" or "observatory luffy".
 ///
 /// Icon constraints match `SESSION_NAMES`: single codepoints with default
 /// emoji presentation (no VS16), see the comment there.
@@ -53,8 +53,139 @@ const SERVER_MODIFIERS: &[(&str, &str)] = &[
     ("hut", "🛖"),
 ];
 
-/// Session/client names with their icons.
+/// Anime character identities shared by sessions and subagents.
+/// Icons evoke each character using portable, single-codepoint emoji (Unicode
+/// 12 or older, default emoji presentation, no variation selectors or ZWJ).
 const SESSION_NAMES: &[(&str, &str)] = &[
+    ("naruto", "🍥"),
+    ("sasuke", "🌘"),
+    ("sakura", "🌸"),
+    ("kakashi", "📖"),
+    ("hinata", "💜"),
+    ("gaara", "⌛"),
+    ("itachi", "🌑"),
+    ("shikamaru", "🧩"),
+    ("luffy", "👒"),
+    ("zoro", "🍶"),
+    ("nami", "🍊"),
+    ("sanji", "🍳"),
+    ("robin", "📚"),
+    ("chopper", "💊"),
+    ("franky", "🔧"),
+    ("brook", "🎻"),
+    ("ace", "🔥"),
+    ("law", "💉"),
+    ("shanks", "🚢"),
+    ("goku", "🟠"),
+    ("vegeta", "👑"),
+    ("gohan", "🎓"),
+    ("piccolo", "🟢"),
+    ("trunks", "🔮"),
+    ("bulma", "🔬"),
+    ("krillin", "🥋"),
+    ("beerus", "🍮"),
+    ("whis", "🍨"),
+    ("ichigo", "💀"),
+    ("rukia", "🍧"),
+    ("renji", "💢"),
+    ("orihime", "🍞"),
+    ("uryu", "🏹"),
+    ("aizen", "🎭"),
+    ("tanjiro", "🎴"),
+    ("nezuko", "🎋"),
+    ("zenitsu", "⚡"),
+    ("inosuke", "🍖"),
+    ("rengoku", "🧡"),
+    ("giyu", "🌊"),
+    ("shinobu", "🧪"),
+    ("muichiro", "🌁"),
+    ("mitsuri", "💗"),
+    ("tengen", "💎"),
+    ("deku", "🥦"),
+    ("bakugo", "💥"),
+    ("todoroki", "🧊"),
+    ("uravity", "🌌"),
+    ("iida", "🏁"),
+    ("allmight", "💪"),
+    ("endeavor", "🔴"),
+    ("saitama", "👊"),
+    ("genos", "🤖"),
+    ("tatsumaki", "🌀"),
+    ("mob", "🥄"),
+    ("reigen", "🧂"),
+    ("gon", "🎣"),
+    ("killua", "🔋"),
+    ("kurapika", "🔗"),
+    ("leorio", "🏥"),
+    ("hisoka", "🃏"),
+    ("chrollo", "📕"),
+    ("yuji", "🥊"),
+    ("megumi", "🌒"),
+    ("nobara", "🔨"),
+    ("gojo", "😎"),
+    ("sukuna", "😈"),
+    ("yuta", "💍"),
+    ("maki", "🔱"),
+    ("toge", "🍙"),
+    ("geto", "🧿"),
+    ("nanami", "👔"),
+    ("eren", "🧱"),
+    ("mikasa", "🧣"),
+    ("levi", "🧹"),
+    ("armin", "🌅"),
+    ("hange", "🔍"),
+    ("erwin", "📢"),
+    ("sasha", "🥔"),
+    ("annie", "💠"),
+    ("edward", "🔩"),
+    ("alphonse", "🔰"),
+    ("winry", "🔌"),
+    ("roy", "🧤"),
+    ("riza", "🎯"),
+    ("hughes", "📷"),
+    ("light", "📓"),
+    ("ryuk", "🍎"),
+    ("misa", "🎀"),
+    ("l", "🍰"),
+    ("near", "🎲"),
+    ("mello", "🍫"),
+    ("senku", "🔭"),
+    ("chrome", "💡"),
+    ("kohaku", "💛"),
+    ("suika", "🍉"),
+    ("spike", "🚬"),
+    ("faye", "🎰"),
+    ("jet", "🔫"),
+    ("vash", "🌵"),
+    ("ash", "🧢"),
+    ("misty", "💧"),
+    ("brock", "🍲"),
+    ("usagi", "🌙"),
+    ("rei", "🔵"),
+    ("ami", "💻"),
+    ("makoto", "🌳"),
+    ("minako", "🌟"),
+    ("madoka", "💝"),
+    ("homura", "⏳"),
+    ("sayaka", "🎼"),
+    ("mami", "☕"),
+    ("kyoko", "🍡"),
+    ("anya", "🥜"),
+    ("loid", "💼"),
+    ("yor", "🌹"),
+    ("frieren", "🧝"),
+    ("fern", "🟣"),
+    ("stark", "🔺"),
+    ("himmel", "💐"),
+    ("laios", "🍴"),
+    ("marcille", "🧙"),
+    ("senshi", "🥘"),
+    ("chilchuck", "🔑"),
+    ("yugi", "🀄"),
+];
+
+/// Legacy identities remain readable for saved sessions, but are never allocated.
+const LEGACY_SESSION_NAMES: &[(&str, &str)] = &[
     // Animals, nature companions, and client entities. Every emoji here is a single, widely-supported
     // codepoint (Unicode <= 12.0, no ZWJ sequences) with *default emoji
     // presentation* (no VS16 / U+FE0F needed). Text-default codepoints that rely
@@ -201,6 +332,7 @@ fn session_name_cursor() -> &'static AtomicUsize {
 pub fn session_icon(name: &str) -> &'static str {
     SESSION_NAMES
         .iter()
+        .chain(LEGACY_SESSION_NAMES)
         .find(|(n, _)| *n == name)
         .map(|(_, icon)| *icon)
         .unwrap_or("💫")
@@ -247,8 +379,8 @@ pub fn extract_server_name(server_id: &str) -> Option<&str> {
 
 /// Generate a memorable session name
 /// Returns (full_id, short_name) where:
-/// - full_id is the storage identifier like "session_fox_1234567890_deadbeefcafebabe"
-/// - short_name is the memorable part like "fox"
+/// - full_id is the storage identifier like "session_naruto_1234567890_deadbeefcafebabe"
+/// - short_name is the memorable part like "naruto"
 pub fn new_memorable_session_id() -> (String, String) {
     new_memorable_session_id_avoiding(&HashSet::new())
 }
@@ -366,8 +498,8 @@ mod tests {
     }
 
     #[test]
-    fn session_identity_pool_is_expanded_and_reserves_bee_for_swarm() {
-        assert_eq!(SESSION_NAMES.len(), 125);
+    fn anime_identity_pool_preserves_capacity_and_reserves_bee_for_swarm() {
+        assert!(SESSION_NAMES.len() >= 125);
         assert!(
             SESSION_NAMES
                 .iter()
@@ -375,6 +507,26 @@ mod tests {
             "the bee identity must remain reserved for the global swarm marker"
         );
         assert_eq!(session_icon("bee"), "💫");
+    }
+
+    #[test]
+    fn anime_identities_are_storage_safe_and_do_not_allocate_legacy_names() {
+        for (name, _) in SESSION_NAMES {
+            assert!(name.chars().all(|c| c.is_ascii_lowercase()));
+            assert!(!LEGACY_SESSION_NAMES.iter().any(|(old, _)| old == name));
+            let id = format!("session_{name}_123_deadbeef");
+            assert_eq!(extract_session_name(&id), Some(*name));
+        }
+        assert_eq!(session_icon("naruto"), "🍥");
+        assert_eq!(session_icon("luffy"), "👒");
+    }
+
+    #[test]
+    fn saved_animal_identities_keep_their_icons() {
+        for (name, icon) in LEGACY_SESSION_NAMES {
+            assert_eq!(session_icon(name), *icon);
+        }
+        assert_eq!(session_icon("unknown"), "💫");
     }
 
     #[test]
@@ -427,7 +579,7 @@ mod tests {
     fn session_icons_render_as_single_safe_glyphs() {
         for (name, emoji) in SESSION_NAMES {
             assert!(
-                !is_fragile_emoji(emoji),
+                emoji.chars().count() == 1 && !is_fragile_emoji(emoji),
                 "session name '{}' uses fragile emoji '{}' (ZWJ or Unicode 13+); \
                  pick a single widely-supported codepoint instead",
                 name,
@@ -455,7 +607,7 @@ mod tests {
     fn server_icons_render_as_single_safe_glyphs() {
         for (name, emoji) in SERVER_MODIFIERS {
             assert!(
-                !is_fragile_emoji(emoji),
+                emoji.chars().count() == 1 && !is_fragile_emoji(emoji),
                 "server name '{}' uses fragile emoji '{}' (ZWJ or Unicode 13+); \
                  pick a single widely-supported codepoint instead",
                 name,
