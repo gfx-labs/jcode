@@ -4,10 +4,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod create;
+pub use create::{AgentProfileDraft, AgentProfileScope, create_profile, profile_destination};
+
 #[cfg(test)]
 mod activation_tests;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMode {
     Primary,
@@ -38,15 +41,17 @@ pub struct AgentProfile {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Frontmatter {
     description: String,
     #[serde(default)]
     mode: AgentMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     skills: Vec<String>,
 }
 

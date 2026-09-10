@@ -240,7 +240,10 @@ impl SkillRegistry {
     pub fn load_global() -> Result<Self> {
         // First-run import from Claude Code / Codex CLI
         Self::import_from_external();
+        Self::load_global_read_only()
+    }
 
+    fn load_global_read_only() -> Result<Self> {
         let mut registry = Self::default();
 
         // Load skills provided by Claude Code plugins/marketplace installs
@@ -302,6 +305,15 @@ impl SkillRegistry {
     pub fn load_for_working_dir(working_dir: Option<&Path>) -> Result<Self> {
         let mut registry = Self::load_global()?;
         registry.load_project_local_dirs(working_dir)?;
+        Ok(registry)
+    }
+
+    /// Draft previews and validation must not trigger first-run skill imports.
+    pub fn load_for_working_dir_read_only(working_dir: Option<&Path>) -> Result<Self> {
+        let mut registry = Self::load_global_read_only()?;
+        if let Some(working_dir) = working_dir {
+            registry.load_project_local_dirs(Some(working_dir))?;
+        }
         Ok(registry)
     }
 
@@ -1254,8 +1266,15 @@ mod tests {
         std::env::set_current_dir(temp.path()).expect("chdir");
         let mut registry = SkillRegistry::default();
         let result = registry.reload_global();
+        let read_only = SkillRegistry::load_for_working_dir_read_only(None);
         std::env::set_current_dir(prev_cwd).expect("restore cwd");
 
+        assert!(
+            !read_only
+                .expect("read-only global skills")
+                .contains("session-skill"),
+            "read-only discovery needs an explicit session directory for project skills"
+        );
         result.expect("reload skills");
         assert!(
             registry.get("session-skill").is_none(),
