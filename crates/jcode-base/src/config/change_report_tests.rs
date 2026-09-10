@@ -27,6 +27,17 @@ fn gateway_edit_reports_as_needing_restart() {
 }
 
 #[test]
+fn gateway_connect_host_edit_reports_as_live() {
+    let report = summarize_toml_change(
+        "[gateway]\nconnect_host = \"old.example.test\"\n",
+        "[gateway]\nconnect_host = \"new.example.test\"\n",
+    )
+    .expect("changed host should produce a report");
+    assert!(report.contains("gateway.connect_host"), "{report}");
+    assert!(report.contains("no restart needed"), "{report}");
+}
+
+#[test]
 fn comment_and_formatting_only_edits_report_nothing() {
     assert!(
         summarize_toml_change(
