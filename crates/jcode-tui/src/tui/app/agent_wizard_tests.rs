@@ -132,14 +132,16 @@ fn agent_wizard_busy_entry_and_reserved_profile_commands_are_distinct() {
     app.remote_model_switch_in_flight = false;
     app.pending_agent_profile = None;
     app.pending_model_switch = None;
-    std::fs::write(
-        project.path().join(".jcode/agents/create.md"),
-        "---\ndescription: Existing profile\n---\nUse this profile.",
-    )
-    .unwrap();
-    super::commands::handle_agents_command(&mut app, "/agents use create");
-    assert!(app.agent_wizard.is_none());
-    assert_eq!(app.active_agent_profile_name(), Some("create"));
+    for name in ["create", "clear", "review"] {
+        std::fs::write(
+            project.path().join(format!(".jcode/agents/{name}.md")),
+            "---\ndescription: Existing profile\n---\nUse this profile.",
+        )
+        .unwrap();
+        super::commands::handle_agents_command(&mut app, &format!("/agents use {name}"));
+        assert!(app.agent_wizard.is_none());
+        assert_eq!(app.active_agent_profile_name(), Some(name));
+    }
 }
 
 #[test]

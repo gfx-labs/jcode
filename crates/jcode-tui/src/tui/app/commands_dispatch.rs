@@ -293,6 +293,7 @@ mod tests {
             "/rebuild",
             "/fast default on",
             "/agents",
+            "/agents create",
             "/agents custom-profile",
             "/agents use review",
             "/agents clear",
