@@ -1,5 +1,195 @@
 use super::*;
 
+#[test]
+fn agent_instructions_anthropic_snapshot_is_available_and_independent() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let provider = AnthropicProvider::new();
+    *provider.model.write().unwrap() = "claude-opus-5".into();
+    *provider.reasoning_effort.write().unwrap() = Some("high".into());
+    *provider.credential_mode.try_write().unwrap() = AnthropicCredentialMode::OAuth;
+    let snapshot = provider
+        .fork_for_instruction_generation()
+        .expect("configured Claude route must support isolated instruction drafting");
+    *provider.model.write().unwrap() = "claude-sonnet-4-6".into();
+    *provider.reasoning_effort.write().unwrap() = Some("low".into());
+    *provider.credential_mode.try_write().unwrap() = AnthropicCredentialMode::ApiKey;
+    assert_eq!(snapshot.model(), "claude-opus-5");
+    assert_eq!(snapshot.reasoning_effort().as_deref(), Some("high"));
+    assert_eq!(snapshot.credential_mode(), AnthropicCredentialMode::OAuth);
+    assert_eq!(
+        snapshot.fork_for_instruction_generation().unwrap().model(),
+        "claude-opus-5"
+    );
+}
+
+fn instruction_test_provider() -> AnthropicProvider {
+    let mut provider = AnthropicProvider::new();
+    *provider.model.write().unwrap() = "claude-opus-5".into();
+    *provider.credential_mode.try_write().unwrap() = AnthropicCredentialMode::ApiKey;
+    provider.profile_api_key = Some(Ok("instruction-test-key".into()));
+    provider.max_tokens_override = Some(128);
+    provider
+}
+
+#[test]
+fn agent_instructions_anthropic_snapshot_rejects_busy_auth_and_pins_auto() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let provider = instruction_test_provider();
+    let credentials = provider.credentials.try_write().unwrap();
+    assert!(provider.fork_for_instruction_generation().is_err());
+    drop(credentials);
+    let mut mode = provider.credential_mode.try_write().unwrap();
+    assert!(provider.fork_for_instruction_generation().is_err());
+    *mode = AnthropicCredentialMode::Auto;
+    drop(mode);
+    *provider.credentials.try_write().unwrap() = Some(CachedCredentials {
+        access_token: "cached-test-token".into(),
+        refresh_token: "cached-test-refresh".into(),
+        expires_at: i64::MAX,
+    });
+    let snapshot = provider.fork_for_instruction_generation().unwrap();
+    *provider.credentials.try_write().unwrap() = None;
+    assert_eq!(snapshot.credential_mode(), AnthropicCredentialMode::OAuth);
+    assert_eq!(provider.credential_mode(), AnthropicCredentialMode::Auto);
+}
+
+async fn instruction_read_request(socket: &mut tokio::net::TcpStream) -> Value {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    let (header_end, length) = loop {
+        bytes.push(socket.read_u8().await.unwrap());
+        assert!(bytes.len() < 65_536);
+        if bytes.ends_with(b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&bytes).to_lowercase();
+            assert!(headers.starts_with("post /v1/messages "));
+            let length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            break (bytes.len(), length);
+        }
+    };
+    bytes.resize(header_end + length, 0);
+    socket.read_exact(&mut bytes[header_end..]).await.unwrap();
+    serde_json::from_slice(&bytes[header_end..]).unwrap()
+}
+
+#[test]
+fn agent_instructions_anthropic_sends_exact_model_without_tools() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let mut provider = instruction_test_provider();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        use tokio::io::AsyncWriteExt;
+        for split in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        provider.direct_transport.api_url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = instruction_read_request(&mut socket).await;
+            let body = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Review carefully.\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            request
+        });
+        let snapshot = provider.fork_for_instruction_generation().unwrap();
+        let tools = vec![ToolDefinition { name: "bash".into(), description: "Must not be advertised".into(), input_schema: json!({"type":"object"}) }];
+        let messages = [Message::user("Draft a reviewer")];
+        let mut stream = if split {
+            snapshot.complete_split(&messages, &tools, "Draft only", "Private purpose", Some("must-not-resume")).await
+        } else {
+            snapshot.complete(&messages, &tools, "Draft only", Some("must-not-resume")).await
+        }.unwrap();
+        let mut text = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while let Some(event) = stream.next().await {
+                if let StreamEvent::TextDelta(delta) = event.unwrap() { text.push_str(&delta); }
+            }
+        }).await.unwrap();
+        let request = server.await.unwrap();
+        assert_eq!(text, "Review carefully.");
+        assert_eq!(request["model"], "claude-opus-5");
+        assert!(request.get("tools").is_none());
+        assert_eq!(request["messages"].as_array().unwrap().len(), 1);
+        assert!(!request.to_string().contains("must-not-resume"));
+        assert_eq!(provider.model(), "claude-opus-5");
+        }
+    });
+}
+
+#[test]
+fn agent_instructions_anthropic_error_is_private_without_model_fallback() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let _debug = EnvVarGuard::set("JCODE_ANTHROPIC_DEBUG", "1");
+    jcode_base::logging::init();
+    let path = jcode_base::logging::log_path().unwrap();
+    let sentinel = format!("PRIVATE_CLAUDE_DRAFT_{}", Uuid::new_v4());
+    let mut provider = instruction_test_provider();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        provider.direct_transport.api_url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let echo = sentinel.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = instruction_read_request(&mut socket).await;
+            assert_eq!(request["model"], "claude-opus-5");
+            let body = json!({"error":{"type":"not_found_error","message":format!("model: claude-opus-5 not found. Please use claude-sonnet-4-6. {echo}")}}).to_string();
+            socket.write_all(format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            drop(socket);
+            assert!(tokio::time::timeout(std::time::Duration::from_millis(300), listener.accept()).await.is_err(), "drafting must not make a fallback model request");
+        });
+        let provider = Arc::new(provider);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), jcode_base::agent_instructions::generate_agent_instructions(provider.clone(), "Reviewer".into(), sentinel.clone(), "all".into())).await.unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(!error.contains(&sentinel));
+        assert_eq!(provider.model(), "claude-opus-5");
+        tokio::time::timeout(std::time::Duration::from_secs(3), server).await.expect("generation must reach the error fixture").unwrap();
+        assert!(!std::fs::read_to_string(path).unwrap().contains(&sentinel));
+    });
+}
+
+#[test]
+fn agent_instructions_anthropic_cancel_closes_owned_transport() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let mut provider = instruction_test_provider();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        provider.direct_transport.api_url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let (ready, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            instruction_read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100000\r\n\r\n").await.unwrap();
+            ready.send(()).unwrap();
+            let mut byte = [0];
+            match tokio::time::timeout(std::time::Duration::from_secs(2), socket.read(&mut byte)).await.expect("discard must close the stalled generation transport") {
+                Ok(0) | Err(_) => {},
+                other => panic!("unexpected read: {other:?}"),
+            }
+        });
+        let snapshot = provider.fork_for_instruction_generation().unwrap();
+        let stream = snapshot.complete(&[Message::user("Draft")], &[], "Draft only", None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), received).await.unwrap().unwrap();
+        drop(stream);
+        server.await.unwrap();
+        assert_eq!(provider.model(), "claude-opus-5");
+    });
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<std::ffi::OsString>,

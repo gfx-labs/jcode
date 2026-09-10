@@ -2824,6 +2824,7 @@ impl Provider for MultiProvider {
     fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
         let active = self.active_provider();
         let runtime = match active {
+            ActiveProvider::Claude => self.anthropic_provider().or_else(|| self.claude_provider()),
             ActiveProvider::OpenAI => self.openai_provider(),
             _ => None,
         }

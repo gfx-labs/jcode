@@ -1215,7 +1215,7 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
     });
 }
 
-struct InstructionRuntime;
+struct InstructionRuntime(&'static str);
 #[async_trait::async_trait]
 impl Provider for InstructionRuntime {
     async fn complete(
@@ -1228,13 +1228,13 @@ impl Provider for InstructionRuntime {
         panic!("snapshot selection must not complete")
     }
     fn name(&self) -> &str {
-        "OpenAI"
+        self.0
     }
     fn model(&self) -> String {
         "configured-instruction-model".into()
     }
     fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self)
+        Arc::new(Self(self.0))
     }
     fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
         Ok(self.fork())
@@ -1247,7 +1247,7 @@ fn agent_instructions_multi_provider_snapshots_only_selected_runtime() {
         let rt = enter_test_runtime();
         let _runtime_guard = rt.enter();
         let provider = test_multi_provider_with_openai();
-        *provider.openai.write().unwrap() = Some(Arc::new(InstructionRuntime));
+        *provider.openai.write().unwrap() = Some(Arc::new(InstructionRuntime("OpenAI")));
         let snapshot = provider.fork_for_instruction_generation();
         assert!(snapshot.is_ok(), "selected direct runtime must be used");
         assert_eq!(snapshot.unwrap().model(), "configured-instruction-model");
@@ -1257,5 +1257,34 @@ fn agent_instructions_multi_provider_snapshots_only_selected_runtime() {
             "never fall back from unavailable selected runtime to configured OpenAI"
         );
         assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
+    });
+}
+
+#[test]
+fn agent_instructions_multi_provider_uses_selected_claude_transport() {
+    with_clean_provider_test_env(|| {
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+        let provider = test_multi_provider_with_openai();
+        *provider.openai.write().unwrap() = Some(Arc::new(InstructionRuntime("OpenAI")));
+        *provider.anthropic.write().unwrap() = Some(Arc::new(InstructionRuntime("Anthropic")));
+        *provider.claude.write().unwrap() = Some(Arc::new(InstructionRuntime("Claude CLI")));
+        provider.set_active_provider(ActiveProvider::Claude);
+
+        let snapshot = provider
+            .fork_for_instruction_generation()
+            .expect("Claude drafting must use the selected Anthropic runtime");
+        assert_eq!(snapshot.name(), "Anthropic");
+        assert_eq!(snapshot.model(), "configured-instruction-model");
+        assert_eq!(provider.active_provider(), ActiveProvider::Claude);
+
+        *provider.anthropic.write().unwrap() = None;
+        assert_eq!(
+            provider.fork_for_instruction_generation().unwrap().name(),
+            "Claude CLI"
+        );
+        *provider.claude.write().unwrap() = None;
+        assert!(provider.fork_for_instruction_generation().is_err());
+        assert_eq!(provider.active_provider(), ActiveProvider::Claude);
     });
 }

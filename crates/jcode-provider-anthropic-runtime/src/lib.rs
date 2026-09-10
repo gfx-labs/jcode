@@ -461,6 +461,7 @@ struct CachedCredentials {
 
 /// Direct Anthropic API provider
 pub struct AnthropicProvider {
+    instruction_generation: bool,
     client: Client,
     model: Arc<std::sync::RwLock<String>>,
     reasoning_effort: Arc<std::sync::RwLock<Option<String>>>,
@@ -625,6 +626,7 @@ impl AnthropicProvider {
         let profile_models = active_anthropic_profile_models();
 
         Self {
+            instruction_generation: false,
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model)),
             reasoning_effort: Arc::new(std::sync::RwLock::new(reasoning_effort)),
@@ -1113,6 +1115,9 @@ impl AnthropicProvider {
     /// Convert tool definitions to Anthropic API format
     /// Adds cache_control to the last tool for prompt caching
     fn format_tools(&self, tools: &[ToolDefinition], is_oauth: bool) -> Vec<ApiTool> {
+        if self.instruction_generation {
+            return Vec::new();
+        }
         jcode_provider_anthropic::format_tools(tools, is_oauth, is_cache_ttl_1h())
     }
 }
@@ -1191,9 +1196,12 @@ impl Provider for AnthropicProvider {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let model = self
-            .model_after_oauth_quota_check(&token, is_oauth, selected_model)
-            .await;
+        let model = if self.instruction_generation {
+            selected_model
+        } else {
+            self.model_after_oauth_quota_check(&token, is_oauth, selected_model)
+                .await
+        };
         let api_model = strip_1m_suffix(&model).to_string();
 
         // Format request
@@ -1224,7 +1232,9 @@ impl Provider for AnthropicProvider {
             stream: true,
         };
 
-        log_anthropic_canonical_input(&model, "anthropic_messages", &request, is_oauth, false);
+        if !self.instruction_generation {
+            log_anthropic_canonical_input(&model, "anthropic_messages", &request, is_oauth, false);
+        }
 
         jcode_base::logging::info(&format!(
             "Anthropic transport: HTTPS SSE stream (oauth={})",
@@ -1240,6 +1250,27 @@ impl Provider for AnthropicProvider {
         let oauth_session_id = self.oauth_session_id.clone();
         let model_state = Arc::clone(&self.model);
         let direct_transport = self.direct_transport.clone();
+
+        if self.instruction_generation {
+            // Drafts must not inherit chat fallback or outlive their receiver. Log
+            // suppression is task-local, so the spawned transport needs its own scope.
+            tokio::spawn(jcode_base::logging::suppress_content_logs(async move {
+                tokio::select! {
+                    _ = tx.closed() => {},
+                    result = stream_response(
+                        client, token, is_oauth, request, tx.clone(), &model,
+                        &oauth_session_id, &direct_transport,
+                    ) => {
+                        if result.is_err() {
+                            let _ = tx.send(Err(anyhow::anyhow!(
+                                "Instruction generation request failed"
+                            ))).await;
+                        }
+                    }
+                }
+            }));
+            return Ok(Box::pin(ReceiverStream::new(rx)));
+        }
 
         // Spawn task to handle streaming with retry logic.
         // This includes forced OAuth refresh on auth failures.
@@ -1514,6 +1545,7 @@ impl Provider for AnthropicProvider {
 
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(Self {
+            instruction_generation: self.instruction_generation,
             client: self.client.clone(),
             model: Arc::new(std::sync::RwLock::new(
                 self.model
@@ -1536,6 +1568,44 @@ impl Provider for AnthropicProvider {
         })
     }
 
+    fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
+        let credentials = self
+            .credentials
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("Provider is refreshing credentials"))?
+            .clone();
+        let mut mode = *self
+            .credential_mode
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("Provider is switching authentication"))?;
+        if mode == AnthropicCredentialMode::Auto {
+            mode = if credentials.is_some() || auth::claude::load_credentials().is_ok() {
+                AnthropicCredentialMode::OAuth
+            } else {
+                AnthropicCredentialMode::ApiKey
+            };
+        }
+        Ok(Arc::new(Self {
+            instruction_generation: true,
+            client: self.client.clone(),
+            model: Arc::new(std::sync::RwLock::new(self.model())),
+            reasoning_effort: Arc::new(std::sync::RwLock::new(self.stored_reasoning_effort())),
+            service_tier: Arc::new(std::sync::RwLock::new(self.service_tier())),
+            credentials: Arc::new(RwLock::new(credentials)),
+            credential_mode: Arc::new(RwLock::new(mode)),
+            max_tokens_override: self.max_tokens_override,
+            oauth_session_id: Uuid::new_v4().to_string(),
+            oauth_preflight_done: Arc::new(AtomicBool::new(false)),
+            direct_transport: self.direct_transport.clone(),
+            profile_api_key: if mode == AnthropicCredentialMode::ApiKey {
+                Some(self.direct_api_key().map_err(|err| format!("{err:#}")))
+            } else {
+                None
+            },
+            profile_models: self.profile_models.clone(),
+        }))
+    }
+
     async fn invalidate_credentials(&self) {
         let mut cached = self.credentials.write().await;
         *cached = None;
@@ -1555,6 +1625,16 @@ impl Provider for AnthropicProvider {
         system_dynamic: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if self.instruction_generation {
+            return self
+                .complete(
+                    messages,
+                    tools,
+                    &format!("{system_static}\n\n{system_dynamic}"),
+                    None,
+                )
+                .await;
+        }
         let (token, is_oauth) = self.get_access_token().await?;
         if is_oauth {
             ensure_oauth_preflight(
