@@ -1,6 +1,24 @@
 # Custom agents
 
-Add a Markdown file to `~/.jcode/agents/` for a global agent, or `.jcode/agents/` in a project for a project-specific agent. The filename is the agent name. Files are read again whenever you open the picker or activate a profile. No rebuild is needed after adding or editing an agent file.
+Open `/agents` and choose **Create new agent...**, or enter `/agents create`. You can also add a Markdown file directly to `$JCODE_HOME/agents/` for a global agent (`~/.jcode/agents/` when `JCODE_HOME` is unset), or `.jcode/agents/` in a project for a project-specific agent. The filename is the agent name. Files are read again whenever you open the picker or activate a profile. No rebuild is needed after adding or editing an agent file.
+
+## Guided creation
+
+1. Choose Project or Global, then enter a name and one-line description. Project uses the session's working directory. Global uses `$JCODE_HOME/agents/` when `JCODE_HOME` is set, otherwise `~/.jcode/agents/`.
+2. Enter optional purpose/context and choose whether the profile is for the main chat, workers, or both. Purpose is required for generation and is not saved as hidden profile metadata.
+3. Choose **Generate draft** or **Write myself**, then edit the instructions. Manual entry does not call a provider. Generation uses the displayed current provider/model, not the future profile's model selection.
+4. Select the future model, optional effort override, and installed skills. Inherit and No effort override are the defaults. These selections change the draft only. An empty instructions body is allowed when at least one valid skill is selected.
+5. Review the destination and content, then choose **Save** or **Save and activate**. Save is the default. Workers-only profiles cannot activate in the main chat. A successful save returns to the refreshed picker with the new profile selected.
+
+Enter advances a text step. Shift/Alt+Enter inserts a newline in multiline fields. Escape goes back, or cancels a pending generation. Ctrl+C opens discard confirmation. Page Up/Page Down scroll long content. The existing chat composer draft is preserved. No file is written until Save is confirmed.
+
+Names are limited to 64 ASCII letters, digits, hyphens, or underscores. Descriptions are limited to 1,000 characters, purpose/context to 4 KiB, and instructions to 64 KiB. Existing destinations, including invalid profiles and symlinks, are never overwritten. Project-over-global shadowing and command-name collisions require acknowledgement. A global name already hidden by a project profile is rejected, so the wizard cannot save one profile and activate a different namesake. Use `/agents use create` to activate an existing profile named `create` rather than opening the wizard.
+
+Generation sends a dedicated drafting prompt plus the entered description, purpose and usage mode. It does not send the conversation, profile instructions, project files, or skill bodies, and does not expose tools. Provider routes must explicitly support isolated completion. Unsupported routes leave manual entry available. Generated text is editable and is never saved automatically. Errors retain the draft for retry or manual entry. Regeneration asks before replacing existing instructions. Reconnection never silently retries a request.
+
+Save alone preserves the active profile, model and effort. Save and activate waits for the normal authoritative profile activation result. If activation fails, the saved file remains available and the previous active profile is preserved. A missing skill or save error keeps the draft for correction. Modes and instructions are presets, not permission sandboxes.
+
+## File-based creation
 
 For example, save this as `~/.jcode/agents/reviewer.md`:
 

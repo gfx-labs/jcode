@@ -1,7 +1,7 @@
 # Guided custom-agent creation
 
 Date: 2026-09-10
-Status: Approved in chat at 2026-09-10 21:11 UTC. Implementation in progress. Acceptance checks below are not yet executed.
+Status: Approved in chat at 2026-09-10 21:11 UTC. Implemented with focused tests and real manual/configured-provider acceptance. Final installation verification is tracked in the implementation plan.
 Scope: Jcode TUI on the current `don` branch.
 
 ## 1. Outcome and approach
@@ -115,7 +115,7 @@ Out of scope: agent permissions/ACLs, OpenCode imports, automatic migration, pro
 
 ## 5. Acceptance map and delivery gate
 
-The following checks are requirements for implementation. They are planned, not yet executed.
+The following checks define acceptance. The implementation plan records execution and delivery status.
 
 | ID | Requirement | Concrete check |
 | :--- | :--- | :--- |
