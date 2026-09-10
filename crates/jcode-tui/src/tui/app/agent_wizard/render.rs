@@ -58,8 +58,8 @@ impl AgentWizard {
             .title(title)
             .border_style(Style::default().fg(Color::DarkGray));
         let inner = block.inner(area);
-        frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
+            frame.render_widget(block, area);
             return;
         }
         let width = inner.width as usize;
@@ -93,6 +93,16 @@ impl AgentWizard {
                 .map(|line| Line::styled(line, Style::default().fg(Color::DarkGray))),
         );
         let footer_height = footer.len().min((inner.height as usize / 2).max(1));
+        let block = if footer.len() > footer_height {
+            block.title_bottom(if self.step == Step::Generating {
+                " Esc cancel "
+            } else {
+                " Esc back · Ctrl+C cancel "
+            })
+        } else {
+            block
+        };
+        frame.render_widget(block, area);
         let body_height = inner.height as usize - footer_height;
         let mut body = Vec::new();
         for line in wrap(self.explanation(), width)

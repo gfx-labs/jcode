@@ -391,6 +391,41 @@ fn agent_wizard_narrow_and_large_rendering_keeps_save_and_scrollable_content() {
 }
 
 #[test]
+fn agent_wizard_narrow_error_keeps_back_and_cancel_hints_visible() {
+    let mut app = create_test_app();
+    let project = custom_agent_test_project(&mut app);
+    let name = "wizard-navigation";
+    std::fs::write(
+        project.path().join(format!(".jcode/agents/{name}.md")),
+        "Existing instructions",
+    )
+    .unwrap();
+    super::commands::handle_agents_command(&mut app, "/agents create");
+    agent_wizard_key(&mut app, KeyCode::Enter);
+    app.handle_paste(name.into());
+    agent_wizard_key(&mut app, KeyCode::Enter);
+    for (width, height) in [(40, 12), (100, 32)] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &app))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("2/11 Name"));
+        assert!(text.contains("wizard-navigation▏"));
+        assert!(text.contains("Already exists:"));
+        assert!(text.contains("Esc back"), "{width}x{height}: {text}");
+        assert!(text.contains("Ctrl+C cancel"), "{width}x{height}: {text}");
+    }
+}
+
+#[test]
 fn agent_wizard_short_review_can_scroll_through_destination_and_instruction_tail() {
     let mut app = create_test_app();
     let _project = custom_agent_test_project(&mut app);
@@ -1189,6 +1224,20 @@ fn agent_wizard_remote_generation_response_fills_editable_body_not_chat() {
             }
             other => panic!("Expected dedicated generation, got {other:?}"),
         };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(28, 6)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &app))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Esc cancel"));
+        assert!(!text.contains("Esc back"));
         app.handle_server_event(
             crate::protocol::ServerEvent::AgentInstructionsGenerated {
                 id,
