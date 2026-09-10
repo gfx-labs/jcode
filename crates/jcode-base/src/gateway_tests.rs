@@ -2,6 +2,23 @@ use super::*;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
 
 #[test]
+fn explicit_connect_host_is_independent_of_bind_address() {
+    for bind in ["127.0.0.1", "100.64.1.5", "0.0.0.0", "::"] {
+        assert_eq!(
+            resolve_connect_host(bind, Some(" proxy.example.test ")),
+            "proxy.example.test"
+        );
+    }
+}
+
+#[test]
+fn absent_or_blank_connect_host_preserves_specific_bind_fallback() {
+    for host in [None, Some(""), Some("  ")] {
+        assert_eq!(resolve_connect_host("127.0.0.1", host), "127.0.0.1");
+    }
+}
+
+#[test]
 fn test_device_registry_pairing() {
     let mut registry = DeviceRegistry::default();
 

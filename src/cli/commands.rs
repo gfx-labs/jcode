@@ -1871,7 +1871,7 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
     }
 
     let code = registry.generate_pairing_code();
-    let connect_host = resolve_connect_host(&gw_config.bind_addr);
+    let connect_host = resolve_connect_host(&gw_config.bind_addr, gw_config.connect_host.as_deref());
     let pair_uri = format!(
         "jcode://pair?host={}&port={}&code={}",
         connect_host, gw_config.port, code

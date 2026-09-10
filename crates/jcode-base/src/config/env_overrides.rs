@@ -728,6 +728,12 @@ impl Config {
                 self.gateway.bind_addr = trimmed.to_string();
             }
         }
+        if let Ok(v) = std::env::var("JCODE_GATEWAY_HOST") {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                self.gateway.connect_host = Some(trimmed.to_string());
+            }
+        }
 
         // Power management
         if let Ok(v) = std::env::var("JCODE_PREVENT_SLEEP_WHILE_STREAMING") {
