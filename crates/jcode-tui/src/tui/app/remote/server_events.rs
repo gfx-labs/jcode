@@ -2297,6 +2297,18 @@ pub(in crate::tui::app) fn handle_server_event(
                 }
             }
             if let Some(path) = saved_path {
+                if activation_error.is_none()
+                    && let Some(picker) = app.inline_interactive_state.as_mut()
+                    && picker
+                        .entries
+                        .iter()
+                        .any(|entry| matches!(entry.action, crate::tui::PickerAction::CreateAgent))
+                {
+                    for entry in &mut picker.entries {
+                        entry.is_current = matches!(&entry.action,
+                            crate::tui::PickerAction::AgentProfile(Some(profile)) if name.as_ref() == Some(profile));
+                    }
+                }
                 app.set_status_notice(match activation_error {
                     Some(error) => {
                         format!("Saved {path}. Activation failed: {error}. The file is preserved.")

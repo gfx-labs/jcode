@@ -1075,6 +1075,81 @@ fn agent_wizard_remote_activation_failure_keeps_saved_file_and_previous_profile(
 }
 
 #[test]
+fn agent_wizard_activation_ack_refreshes_current_row_without_resetting_picker() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    let project = custom_agent_test_project(&mut app);
+    std::fs::write(
+        project.path().join(".jcode/agents/previous.md"),
+        "---\ndescription: Previous profile\n---\nPrevious instructions",
+    )
+    .unwrap();
+    app.is_remote = true;
+    app.remote_agent_profile_name = Some("previous".into());
+    agent_wizard_manual_review(&mut app, "wizard-activate", "Instructions");
+    agent_wizard_key(&mut app, KeyCode::Down);
+    agent_wizard_key(&mut app, KeyCode::Enter);
+    let picker = app.inline_interactive_state.as_mut().unwrap();
+    let selected = picker.selected;
+    let filtered = picker.filtered.clone();
+    assert!(
+        matches!(&picker.entries[picker.filtered[selected]].action, crate::tui::PickerAction::AgentProfile(Some(name)) if name == "wizard-activate")
+    );
+    picker.filter = "retained-filter".into();
+    let chat_count = app.display_messages.len();
+    std::fs::write(
+        project.path().join(".jcode/agents/invalid.md"),
+        "---\nname: [\n---\n",
+    )
+    .unwrap();
+    app.pending_agent_profile = None;
+    app.remote_agent_profile_request_id = Some(988);
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AgentProfileChanged {
+            id: 988,
+            name: Some("wizard-activate".into()),
+            model: "current-model".into(),
+            provider_name: None,
+            effort: None,
+            error: None,
+        },
+        &mut remote,
+    );
+    let picker = app.inline_interactive_state.as_ref().unwrap();
+    assert_eq!(picker.selected, selected);
+    assert_eq!(picker.filtered, filtered);
+    assert_eq!(picker.filter, "retained-filter");
+    assert_eq!(
+        picker
+            .entries
+            .iter()
+            .filter(|entry| entry.is_current)
+            .count(),
+        1
+    );
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name == "wizard-activate" && entry.is_current)
+    );
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name == "previous" && !entry.is_current)
+    );
+    assert_eq!(
+        app.display_messages.len(),
+        chat_count + 1,
+        "only authoritative activation confirmation belongs in chat"
+    );
+    assert!(app.agent_wizard_saved_path.is_none());
+}
+
+#[test]
 fn agent_wizard_remote_generation_response_fills_editable_body_not_chat() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
