@@ -1772,6 +1772,10 @@ fn test_deepseek_direct_profile_supports_reasoning_effort_via_multi_provider() {
                 .set_reasoning_effort("max")
                 .expect("/effort max should work for direct DeepSeek profile");
             assert_eq!(provider.reasoning_effort().as_deref(), Some("max"));
+            let fork = provider.fork();
+            assert_eq!(fork.reasoning_effort().as_deref(), Some("max"));
+            fork.set_reasoning_effort("low").unwrap();
+            assert_eq!(provider.reasoning_effort().as_deref(), Some("max"));
         })
     });
 }

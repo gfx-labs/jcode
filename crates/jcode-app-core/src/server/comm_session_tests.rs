@@ -256,6 +256,7 @@ fn prepare_visible_spawn_session_persists_startup_before_launch() {
         None,
         false,
         Some(startup),
+        None,
         |session_id, _cwd: &std::path::Path, _selfdev, provider_key| {
             assert_eq!(provider_key, None);
             let path = crate::storage::jcode_dir()
@@ -303,6 +304,7 @@ fn prepare_visible_spawn_session_cleans_startup_when_launch_not_started() {
         None,
         false,
         Some("Do the thing."),
+        None,
         |_session_id, _cwd: &std::path::Path, _selfdev, _provider_key| Ok(false),
     )
     .expect("visible spawn preparation should succeed even when launch is skipped");
@@ -339,6 +341,7 @@ fn prepare_visible_spawn_session_cleans_session_when_launch_errors() {
         None,
         false,
         Some("Do the thing."),
+        None,
         |_session_id, _cwd: &std::path::Path, _selfdev, _provider_key| {
             Err(anyhow::anyhow!("launch failed"))
         },
@@ -375,6 +378,7 @@ fn prepare_visible_spawn_session_persists_and_launches_provider_key_for_openrout
         None,
         false,
         None,
+        None,
         |_session_id, _cwd: &std::path::Path, _selfdev, provider_key| {
             assert_eq!(provider_key, Some("openrouter"));
             Ok(true)
@@ -404,6 +408,7 @@ fn prepare_visible_spawn_session_persists_requested_effort() {
         None,
         Some("low"),
         false,
+        None,
         None,
         |_session_id, _cwd: &std::path::Path, _selfdev, _provider_key| Ok(true),
     )
@@ -435,6 +440,7 @@ fn prepare_visible_spawn_session_prefers_parent_provider_key_over_model_guess() 
         None,
         None,
         false,
+        None,
         None,
         |_session_id, _cwd: &std::path::Path, _selfdev, provider_key| {
             assert_eq!(provider_key, Some("ollama"));
@@ -789,6 +795,7 @@ async fn coordinator_identity_falls_back_to_persisted_session_when_agent_busy() 
     session.model = Some("claude-opus-4-6".to_string());
     session.provider_key = Some("claude-api".to_string());
     session.route_api_method = Some("claude-api".to_string());
+    session.title = Some("Busy coordinator fixture".to_string());
     session.save().expect("persist coordinator session");
 
     // Hold the agent lock to simulate a coordinator mid-turn: the spawn path
@@ -1204,4 +1211,36 @@ fn swarm_spawn_effort_prefers_explicit_then_config_pin_then_inherit() {
     // With neither, the worker inherits the provider-wide effort.
     assert_eq!(resolve_swarm_spawn_effort(None, None), None);
     assert_eq!(resolve_swarm_spawn_effort(Some(""), Some("")), None);
+}
+#[test]
+fn custom_agent_profile_is_installed_before_visible_worker_launch() {
+    let _guard = crate::storage::lock_test_env();
+    let previous = std::env::var_os("JCODE_HOME");
+    let home = tempfile::tempdir().unwrap();
+    crate::env::set_var("JCODE_HOME", home.path());
+    let profile = crate::agent_profile::ActiveAgentProfile {
+        name: "reviewer".into(),
+        prompt: "Review instructions and resolved skill content.".into(),
+    };
+    let result = prepare_visible_spawn_session(
+        Some(home.path().to_str().unwrap()),
+        None,
+        None,
+        None,
+        None,
+        false,
+        Some("Review the diff"),
+        Some(&profile),
+        |id, _, _, _| {
+            let session = crate::session::Session::load(id)?;
+            assert_eq!(session.agent_profile.as_ref(), Some(&profile));
+            Ok(true)
+        },
+    );
+    if let Some(previous) = previous {
+        crate::env::set_var("JCODE_HOME", previous);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+    assert!(result.is_ok(), "{result:?}");
 }

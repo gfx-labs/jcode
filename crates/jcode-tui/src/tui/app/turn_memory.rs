@@ -34,6 +34,10 @@ impl App {
             memory_prompt,
             None,
         );
+        if let Some(profile) = &self.session.agent_profile {
+            split.static_part.push_str("\n\n");
+            split.static_part.push_str(&profile.prompt);
+        }
         self.append_current_turn_system_reminder(&mut split);
         crate::prompt::append_swarm_effort_directive(
             &mut split,

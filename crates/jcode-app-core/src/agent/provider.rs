@@ -1,6 +1,41 @@
 use super::*;
 
 impl Agent {
+    pub fn active_agent_profile_name(&self) -> Option<&str> {
+        self.session
+            .agent_profile
+            .as_ref()
+            .map(|profile| profile.name.as_str())
+    }
+
+    pub fn set_agent_profile(&mut self, name: Option<&str>) -> Result<()> {
+        let skills = self.current_skills_snapshot();
+        crate::agent_profile::activate_profile(
+            &mut self.session,
+            &mut self.provider,
+            &skills,
+            name,
+            false,
+        )?;
+        let event = crate::provider::ProviderStateEvent::selected_model(
+            crate::provider::ProviderModelSelectionSource::User,
+            self.provider.model(),
+        );
+        self.provider_runtime_state.apply(event);
+        self.refresh_compaction_budget();
+        self.restore_reasoning_effort_from_session();
+        self.reset_provider_session();
+        Ok(())
+    }
+
+    pub(crate) fn set_agent_profile_snapshot(
+        &mut self,
+        profile: crate::agent_profile::ActiveAgentProfile,
+    ) -> Result<()> {
+        self.session.agent_profile = Some(profile);
+        self.session.save()
+    }
+
     pub fn set_premium_mode(&self, mode: crate::provider::copilot::PremiumMode) {
         self.provider.set_premium_mode(mode);
     }

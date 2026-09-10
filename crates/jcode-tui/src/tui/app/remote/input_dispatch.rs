@@ -107,9 +107,14 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
     remote: &mut RemoteConnection,
     prepared: input::PreparedInput,
 ) -> Result<()> {
-    if app.remote_model_switch_in_flight || app.auth_catalog_refresh_pending {
+    if app.remote_model_switch_in_flight
+        || app.auth_catalog_refresh_pending
+        || app.agent_profile_switch_pending()
+    {
         app.pending_prompt_after_model_switch = Some(prepared);
-        app.set_status_notice(if app.auth_catalog_refresh_pending {
+        app.set_status_notice(if app.agent_profile_switch_pending() {
+            "Prompt queued until agent profile change completes"
+        } else if app.auth_catalog_refresh_pending {
             "Prompt queued until model setup completes"
         } else {
             "Prompt queued until model switch completes"

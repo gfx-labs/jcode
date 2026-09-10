@@ -2943,7 +2943,7 @@ fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
-fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
+pub(super) fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "swarm" | "agent" | "agents" | "subagent" | "subagents" => {
             Some(crate::tui::AgentModelTarget::Swarm)
@@ -3177,8 +3177,15 @@ mod interactive_editor_tests {
 }
 
 pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/agents") {
+    if trimmed != "/agents" && !trimmed.starts_with("/agents ") {
         return false;
+    }
+
+    if super::commands_dispatch::ssh_local_action_blocked(
+        app,
+        "Agent profile and service configuration",
+    ) {
+        return true;
     }
 
     let rest = trimmed.strip_prefix("/agents").unwrap_or_default().trim();
@@ -3187,15 +3194,105 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    let Some(target) = parse_agents_target(rest) else {
+    if let Some(target) = parse_agents_target(rest) {
+        app.open_agent_model_picker(target);
+    } else if rest == "clear" {
+        app.select_agent_profile(None);
+    } else if rest == "use" {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents or /agents <swarm|review|judge|memory|ambient>".to_string(),
+            "Usage: /agents use <name>".to_string(),
         ));
-        return true;
-    };
-
-    app.open_agent_model_picker(target);
+    } else {
+        let name = rest.strip_prefix("use ").unwrap_or(rest).trim();
+        app.select_agent_profile(Some(name));
+    }
     true
+}
+
+impl App {
+    pub(super) fn active_agent_profile_name(&self) -> Option<&str> {
+        if self.is_remote {
+            self.remote_agent_profile_name.as_deref()
+        } else {
+            self.session
+                .agent_profile
+                .as_ref()
+                .map(|profile| profile.name.as_str())
+        }
+    }
+
+    pub(super) fn agent_profile_switch_pending(&self) -> bool {
+        self.pending_agent_profile.is_some() || self.remote_agent_profile_request_id.is_some()
+    }
+
+    pub(super) fn select_agent_profile(&mut self, name: Option<&str>) {
+        if super::commands_dispatch::ssh_local_action_blocked(self, "Agent profile activation") {
+            return;
+        }
+        if self.is_processing || self.pending_turn {
+            self.push_display_message(DisplayMessage::error(
+                "Cannot change agent profile while processing. Wait for the current turn to finish.".to_string(),
+            ));
+            return;
+        }
+        if self.agent_profile_switch_pending()
+            || self.remote_model_switch_in_flight
+            || self.pending_model_switch.is_some()
+            || self.pending_route_selection.is_some()
+        {
+            self.push_display_message(DisplayMessage::error(
+                "Wait for the pending agent profile or model change to finish.".to_string(),
+            ));
+            return;
+        }
+        self.inline_interactive_state = None;
+        if self.is_remote {
+            self.pending_agent_profile = Some(name.map(str::to_owned));
+            self.set_status_notice("Applying agent profile...");
+            return;
+        }
+
+        let skills = self.current_skills_snapshot();
+        match crate::agent_profile::activate_profile(
+            &mut self.session,
+            &mut self.provider,
+            &skills,
+            name,
+            false,
+        ) {
+            Ok(()) => {
+                self.provider_session_id = None;
+                self.upstream_provider = None;
+                self.status_detail = None;
+                self.invalidate_model_picker_cache();
+                let model = self.provider.model();
+                self.update_context_limit_for_model(&model);
+                self.agent_profile_change_confirmed(name, &model);
+            }
+            Err(error) => {
+                self.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set agent profile: {error}"
+                )));
+                self.set_status_notice("Agent profile change failed");
+            }
+        }
+    }
+
+    pub(super) fn agent_profile_change_confirmed(&mut self, name: Option<&str>, model: &str) {
+        let message = match name {
+            Some(name) => {
+                format!("Agent profile `{name}` active for the current session. Model: {model}.")
+            }
+            None => format!(
+                "Agent profile cleared. Profile instructions removed, model unchanged: {model}."
+            ),
+        };
+        self.push_display_message(DisplayMessage::system(message));
+        self.set_status_notice(match name {
+            Some(name) => format!("Agent profile: {name}"),
+            None => "Agent profile cleared".to_string(),
+        });
+    }
 }
 
 fn handle_alignment_command(app: &mut App, trimmed: &str) -> bool {

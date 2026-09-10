@@ -16,51 +16,130 @@ impl App {
         ) {
             return;
         }
-        let models = [
-            AgentModelTarget::Swarm,
-            AgentModelTarget::Review,
-            AgentModelTarget::Judge,
-            AgentModelTarget::Memory,
-            AgentModelTarget::Ambient,
-        ]
-        .into_iter()
-        .map(|target| {
-            let configured = load_agent_model_override(target);
-            let summary = configured
-                .clone()
-                .unwrap_or_else(|| agent_model_default_summary(target, self));
-            PickerEntry {
-                name: agent_model_target_label(target).to_string(),
-                options: vec![PickerOption {
-                    provider: summary,
-                    api_method: agent_model_target_config_path(target).to_string(),
-                    available: true,
-                    detail: if target == AgentModelTarget::Swarm {
-                        "/agents swarm · routing: /swarm-prompt".to_string()
-                    } else {
-                        format!("/agents {}", agent_model_target_slug(target))
-                    },
-                    estimated_reference_cost_micros: None,
-                }],
-                action: PickerAction::AgentTarget(target),
-                selected_option: 0,
-                is_current: false,
-                is_default: configured.is_some(),
-                is_favorite: false,
-                recommended: false,
-                recommendation_rank: usize::MAX,
-                usage_score: 0,
-                old: false,
-                created_date: None,
-                effort: None,
-            }
-        })
-        .collect();
+        let registry = crate::agent_profile::AgentProfileRegistry::load(
+            self.session
+                .working_dir
+                .as_deref()
+                .map(std::path::Path::new),
+        );
+        for error in registry.errors {
+            self.push_display_message(DisplayMessage::error(format!("Agent profile: {error}")));
+        }
+        let mut models: Vec<PickerEntry> = registry
+            .profiles
+            .into_values()
+            .map(|profile| {
+                let primary = profile.mode.allows_primary();
+                let mode = if !primary {
+                    "subagent-only"
+                } else if profile.mode.allows_subagent() {
+                    "all"
+                } else {
+                    "primary"
+                };
+                PickerEntry {
+                    is_current: self.active_agent_profile_name() == Some(profile.name.as_str()),
+                    name: profile.name.clone(),
+                    options: vec![PickerOption {
+                        provider: profile.model.unwrap_or_else(|| "unchanged".to_string()),
+                        api_method: format!("custom · {mode}"),
+                        available: primary,
+                        detail: format!(
+                            "{} · {} · {}",
+                            profile.description,
+                            if primary {
+                                format!("/agents use {} · current session", profile.name)
+                            } else {
+                                "subagent-only: cannot activate in the current session".to_string()
+                            },
+                            profile.path.display()
+                        ),
+                        estimated_reference_cost_micros: None,
+                    }],
+                    action: PickerAction::AgentProfile(Some(profile.name)),
+                    selected_option: 0,
+                    is_default: false,
+                    is_favorite: false,
+                    recommended: false,
+                    recommendation_rank: usize::MAX,
+                    usage_score: 0,
+                    old: false,
+                    created_date: None,
+                    effort: profile.effort,
+                }
+            })
+            .collect();
+        models.push(PickerEntry {
+            name: "Clear custom profile".to_string(),
+            options: vec![PickerOption {
+                provider: "unchanged".to_string(),
+                api_method: "current session".to_string(),
+                available: true,
+                detail: "/agents clear · remove profile instructions, keep the current model"
+                    .to_string(),
+                estimated_reference_cost_micros: None,
+            }],
+            action: PickerAction::AgentProfile(None),
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            is_favorite: false,
+            recommended: false,
+            recommendation_rank: usize::MAX,
+            usage_score: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        });
+        models.extend(
+            [
+                AgentModelTarget::Swarm,
+                AgentModelTarget::Review,
+                AgentModelTarget::Judge,
+                AgentModelTarget::Memory,
+                AgentModelTarget::Ambient,
+            ]
+            .into_iter()
+            .map(|target| {
+                let configured = load_agent_model_override(target);
+                let summary = configured
+                    .clone()
+                    .unwrap_or_else(|| agent_model_default_summary(target, self));
+                PickerEntry {
+                    name: agent_model_target_label(target).to_string(),
+                    options: vec![PickerOption {
+                        provider: summary,
+                        api_method: format!(
+                            "built-in · {}",
+                            agent_model_target_config_path(target)
+                        ),
+                        available: true,
+                        detail: if target == AgentModelTarget::Swarm {
+                            "/agents swarm · routing: /swarm-prompt".to_string()
+                        } else {
+                            format!("/agents {}", agent_model_target_slug(target))
+                        },
+                        estimated_reference_cost_micros: None,
+                    }],
+                    action: PickerAction::AgentTarget(target),
+                    selected_option: 0,
+                    is_current: false,
+                    is_default: configured.is_some(),
+                    is_favorite: false,
+                    recommended: false,
+                    recommendation_rank: usize::MAX,
+                    usage_score: 0,
+                    old: false,
+                    created_date: None,
+                    effort: None,
+                }
+            }),
+        );
 
         self.inline_view_state = None;
         self.inline_interactive_state = Some(InlineInteractiveState {
             kind: PickerKind::Model,
-            filtered: (0..5).collect(),
+            filtered: (0..models.len()).collect(),
             entries: models,
             selected: 0,
             column: 0,

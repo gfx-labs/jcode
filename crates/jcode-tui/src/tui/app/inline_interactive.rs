@@ -3564,6 +3564,10 @@ impl App {
                     PickerAction::AgentTarget(target) => {
                         self.open_agent_model_picker(target);
                     }
+                    PickerAction::AgentProfile(name) => {
+                        self.inline_interactive_state = None;
+                        self.select_agent_profile(name.as_deref());
+                    }
                     PickerAction::AgentModelChoice {
                         target,
                         clear_override,

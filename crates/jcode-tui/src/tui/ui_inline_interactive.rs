@@ -162,6 +162,9 @@ fn selected_route_notice_text(
     if unavailable {
         return Some((format!("× {}", detail), true));
     }
+    if picker.is_agent_target_picker() {
+        return Some((detail, false));
+    }
     if route_detail_is_limited(&route.detail) {
         return Some((format!("⚠ {}", detail), true));
     }
@@ -176,6 +179,9 @@ fn selected_route_notice_text(
 }
 
 fn model_picker_top_hint(picker: &crate::tui::InlineInteractiveState) -> Option<&'static str> {
+    if picker.is_agent_target_picker() {
+        return Some(" custom profiles: current session · built-in services: saved model settings");
+    }
     let is_swarm_agent_model_picker = picker.kind == crate::tui::PickerKind::Model
         && picker.entries.iter().any(|entry| {
             matches!(

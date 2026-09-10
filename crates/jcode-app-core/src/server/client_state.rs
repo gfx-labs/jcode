@@ -507,6 +507,14 @@ async fn send_history_from_persisted_session(
         .reasoning_effort
         .clone()
         .or_else(|| provider.reasoning_effort());
+    let profile_event = ServerEvent::AgentProfileChanged {
+        id: 0,
+        name: session.agent_profile.as_ref().map(|p| p.name.clone()),
+        model: provider_model.clone().unwrap_or_default(),
+        provider_name: provider_name.clone(),
+        effort: reasoning_effort.clone(),
+        error: None,
+    };
     drop(session);
 
     let messages = rendered_messages
@@ -561,7 +569,8 @@ async fn send_history_from_persisted_session(
         side_panel,
     };
 
-    write_event(writer, &history_event).await
+    write_event(writer, &history_event).await?;
+    write_event(writer, &profile_event).await
 }
 
 #[expect(
@@ -585,6 +594,7 @@ pub(super) async fn send_history(
     let history_start = Instant::now();
     let agent_lock_start = Instant::now();
     let (
+        profile_event,
         messages,
         images,
         is_canary,
@@ -660,6 +670,14 @@ pub(super) async fn send_history(
         let compaction_mode_ms = compaction_mode_start.elapsed().as_millis();
 
         (
+            ServerEvent::AgentProfileChanged {
+                id: 0,
+                name: agent_guard.active_agent_profile_name().map(str::to_string),
+                model: agent_guard.provider_model(),
+                provider_name: Some(agent_guard.provider_name()),
+                effort: reasoning_effort.clone(),
+                error: None,
+            },
             messages,
             images,
             agent_guard.is_canary(),
@@ -786,6 +804,9 @@ pub(super) async fn send_history(
     let write_start = Instant::now();
     let result = writer_guard.write_all(json.as_bytes()).await;
     drop(writer_guard);
+    if result.is_ok() {
+        write_event(writer, &profile_event).await?;
+    }
     // Release the serialized payload before any further work (logging below
     // only needs the captured length).
     drop(json);

@@ -1528,6 +1528,7 @@ async fn run_swarm_plan_loop(
 
 async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput) -> Result<String> {
     let spawn_request = Request::CommSpawn {
+        profile: None,
         id: REQUEST_ID,
         session_id: ctx.session_id.clone(),
         working_dir: params.working_dir.clone(),
@@ -1830,6 +1831,7 @@ struct CommunicateInput {
     working_dir: Option<String>,
     #[serde(default)]
     initial_message: Option<String>,
+    profile: Option<String>,
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
@@ -2031,6 +2033,10 @@ impl Tool for CommunicateTool {
                 "prompt": {
                     "type": "string",
                     "description": "Initial task/instructions for spawn. Spawning without it creates an idle agent."
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "For spawn: custom agent profile name from ~/.jcode/agents/ or the worker project .jcode/agents/. Applies instructions and skills; explicit model/effort override profile defaults."
                 },
                 "initial_message": {
                     "type": "string",
@@ -2733,6 +2739,7 @@ impl Tool for CommunicateTool {
             "spawn" => {
                 let label = params.required_spawn_label()?;
                 let request = Request::CommSpawn {
+                    profile: params.profile.clone(),
                     id: REQUEST_ID,
                     session_id: ctx.session_id.clone(),
                     working_dir: params.working_dir.clone(),

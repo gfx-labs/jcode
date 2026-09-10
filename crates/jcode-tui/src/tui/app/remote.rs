@@ -416,6 +416,7 @@ async fn apply_terminal_event(
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_remote_key_event(app, key, remote).await?;
+                dispatch_pending_agent_profile(app, remote).await;
                 if let Some(selection) = app.pending_route_selection.take() {
                     app.pending_model_switch = None;
                     match remote.set_route_selection(selection).await {
@@ -1200,7 +1201,36 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
     }
 }
 
+async fn dispatch_pending_agent_profile(app: &mut App, remote: &mut RemoteConnection) {
+    let Some(name) = app.pending_agent_profile.take() else {
+        return;
+    };
+    let result = if app.is_processing {
+        Err(anyhow::anyhow!(
+            "Cannot change agent profile while processing"
+        ))
+    } else {
+        remote.set_agent_profile(name).await
+    };
+    match result {
+        Ok(id) => app.remote_agent_profile_request_id = Some(id),
+        Err(error) => {
+            if let Some(prepared) = app.pending_prompt_after_model_switch.take() {
+                input_dispatch::restore_prepared_remote_input(app, prepared);
+            }
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to request agent profile change: {error}"
+            )));
+            app.set_status_notice("Agent profile change failed");
+        }
+    }
+}
+
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+    dispatch_pending_agent_profile(app, remote).await;
+    if app.agent_profile_switch_pending() {
+        return;
+    }
     // A pending *server* reload must be dispatched even when the bootstrap
     // History payload was intentionally deferred. The runtime-identity /
     // stale-binary guard in the History handler sets `pending_server_reload =

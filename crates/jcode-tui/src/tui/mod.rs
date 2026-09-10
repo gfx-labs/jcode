@@ -1307,6 +1307,7 @@ pub enum PickerAction {
         detail_lines: Vec<String>,
     },
     AgentTarget(AgentModelTarget),
+    AgentProfile(Option<String>),
     AgentModelChoice {
         target: AgentModelTarget,
         clear_override: bool,
@@ -1358,6 +1359,7 @@ fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
         | PickerAction::AgentModelChoice { .. }
         | PickerAction::SubagentModelChoice { .. }
         | PickerAction::LogoutAll => 0,
+        PickerAction::AgentProfile(name) => name.as_ref().map_or(0, String::capacity),
         PickerAction::Account(AccountPickerAction::Switch { provider_id, label }) => {
             provider_id.capacity() + label.capacity()
         }
@@ -1459,10 +1461,12 @@ impl InlineInteractiveState {
     pub fn is_agent_target_picker(&self) -> bool {
         self.kind == PickerKind::Model
             && !self.entries.is_empty()
-            && self
-                .entries
-                .iter()
-                .all(|entry| matches!(entry.action, PickerAction::AgentTarget(_)))
+            && self.entries.iter().all(|entry| {
+                matches!(
+                    entry.action,
+                    PickerAction::AgentTarget(_) | PickerAction::AgentProfile(_)
+                )
+            })
     }
 
     pub fn uses_compact_navigation(&self) -> bool {

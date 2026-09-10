@@ -448,6 +448,7 @@ fn test_comm_stop_roundtrip_with_force() -> Result<()> {
 #[test]
 fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     let req = Request::CommSpawn {
+        profile: None,
         id: 59,
         session_id: "sess_coord".to_string(),
         working_dir: Some("/tmp/project".to_string()),

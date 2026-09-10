@@ -81,7 +81,12 @@ impl Agent {
         if let Some(ref override_prompt) = self.system_prompt_override {
             return crate::prompt::SplitSystemPrompt {
                 static_part: override_prompt.clone(),
-                dynamic_part: String::new(),
+                dynamic_part: self
+                    .session
+                    .agent_profile
+                    .as_ref()
+                    .map(|profile| profile.prompt.clone())
+                    .unwrap_or_default(),
             };
         }
 
@@ -115,6 +120,11 @@ impl Agent {
             working_dir.as_deref(),
             self.agents_md_snapshot.clone(),
         );
+
+        if let Some(profile) = &self.session.agent_profile {
+            split.dynamic_part.push_str("\n\n");
+            split.dynamic_part.push_str(&profile.prompt);
+        }
 
         self.append_current_turn_system_reminder(&mut split);
         crate::prompt::append_swarm_effort_directive(

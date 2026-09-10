@@ -50,8 +50,8 @@ pub enum AppRuntimeMode {
 }
 
 mod auth;
-mod auth_remote;
 mod auth_account_picker_saved_accounts;
+mod auth_remote;
 mod catchup;
 mod commands;
 mod commands_colors;
@@ -1411,6 +1411,9 @@ pub struct App {
     model_picker_load_request_id: u64,
     // Pending model switch from picker (for remote mode async processing)
     pending_model_switch: Option<String>,
+    pending_agent_profile: Option<Option<String>>,
+    remote_agent_profile_request_id: Option<u64>,
+    remote_agent_profile_name: Option<String>,
     pending_route_selection: Option<crate::provider::RouteSelection>,
     // Reasoning-effort variant chosen together with a model in the picker
     // (e.g. "gpt-5.5 (high)"), staged for remote mode alongside the model

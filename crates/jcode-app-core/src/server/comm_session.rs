@@ -71,12 +71,14 @@ fn create_visible_spawn_session(
     route_api_method_override: Option<&str>,
     effort_override: Option<&str>,
     selfdev_requested: bool,
+    profile: Option<&crate::agent_profile::ActiveAgentProfile>,
 ) -> anyhow::Result<(String, PathBuf)> {
     let cwd = working_dir
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let mut session = Session::create(None, None);
+    session.agent_profile = profile.cloned();
     session.working_dir = Some(cwd.display().to_string());
     if let Some(model) = model_override {
         session.model = Some(model.to_string());
@@ -99,7 +101,7 @@ fn create_visible_spawn_session(
     if selfdev_requested {
         session.set_canary("self-dev");
     }
-    session.save()?;
+    session.save_for_resume()?;
 
     Ok((session.id.clone(), cwd))
 }
@@ -433,6 +435,7 @@ fn prepare_visible_spawn_session<F>(
     effort_override: Option<&str>,
     selfdev_requested: bool,
     startup_message: Option<&str>,
+    profile: Option<&crate::agent_profile::ActiveAgentProfile>,
     launch_visible: F,
 ) -> anyhow::Result<(String, bool)>
 where
@@ -446,6 +449,7 @@ where
         route_api_method_override,
         effort_override,
         selfdev_requested,
+        profile,
     )?;
 
     if let Some(message) = startup_message {
@@ -580,6 +584,7 @@ pub(super) async fn spawn_swarm_agent(
     requested_model: Option<String>,
     requested_effort: Option<String>,
     label: Option<String>,
+    profile: Option<String>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
@@ -596,6 +601,23 @@ pub(super) async fn spawn_swarm_agent(
 ) -> anyhow::Result<String> {
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
+    let profile_registry = crate::agent_profile::AgentProfileRegistry::load(
+        resolved_working_dir.as_deref().map(std::path::Path::new),
+    );
+    let profile = profile
+        .as_deref()
+        .map(|name| profile_registry.get(name))
+        .transpose()?;
+    let profile_snapshot = if let Some(profile) = profile {
+        let skills = crate::skill::SkillRegistry::load_for_working_dir(
+            resolved_working_dir.as_deref().map(std::path::Path::new),
+        )?;
+        Some(profile.resolve(&skills, true)?)
+    } else {
+        None
+    };
+    let requested_model = requested_model.or_else(|| profile.and_then(|p| p.model.clone()));
+    let requested_effort = requested_effort.or_else(|| profile.and_then(|p| p.effort.clone()));
     let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
     let coordinator_is_canary = coordinator.is_canary;
     // Capture the requesting client's terminal env so spawn hooks place the new
@@ -632,6 +654,21 @@ pub(super) async fn spawn_swarm_agent(
         spawn_route_api_method,
     ));
 
+    if profile.is_some() {
+        let validation_provider = provider_template.fork();
+        if let Some(model) = spawn_model.as_deref() {
+            let request = crate::provider::MultiProvider::model_switch_request_for_session_route(
+                model,
+                spawn_provider_key.as_deref(),
+                spawn_route_api_method.as_deref(),
+            );
+            crate::provider::set_model_with_auth_refresh(validation_provider.as_ref(), &request)?;
+        }
+        if let Some(effort) = spawn_effort.as_deref() {
+            validation_provider.set_reasoning_effort(effort)?;
+        }
+    }
+
     let startup_message = initial_message
         .as_deref()
         .map(append_swarm_completion_report_instructions);
@@ -650,6 +687,7 @@ pub(super) async fn spawn_swarm_agent(
             spawn_effort.as_deref(),
             coordinator_is_canary,
             startup_message.as_deref(),
+            profile_snapshot.as_ref(),
             |session_id, cwd, selfdev_requested, provider_key| {
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
@@ -710,6 +748,16 @@ pub(super) async fn spawn_swarm_agent(
             })
         }
     }?;
+
+    if is_headless_fallback && let Some(snapshot) = profile_snapshot {
+        let spawned = sessions
+            .read()
+            .await
+            .get(&new_session_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Spawned agent session disappeared"))?;
+        spawned.lock().await.set_agent_profile_snapshot(snapshot)?;
+    }
 
     let startup_message = startup_message.clone();
     {
@@ -854,6 +902,7 @@ pub(super) async fn handle_comm_spawn(
     model: Option<String>,
     effort: Option<String>,
     label: Option<String>,
+    profile: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
@@ -913,6 +962,7 @@ pub(super) async fn handle_comm_spawn(
             effort.clone().unwrap_or_default(),
             model.clone().unwrap_or_default(),
             label.clone().unwrap_or_default(),
+            profile.clone().unwrap_or_default(),
         ],
     );
     let Some(mutation_state) = begin_or_replay(
@@ -937,6 +987,7 @@ pub(super) async fn handle_comm_spawn(
         model,
         effort,
         label,
+        profile,
         sessions,
         global_session_id,
         provider_template,

@@ -799,6 +799,7 @@ struct StubExternalRuntime {
     models: &'static [&'static str],
     model: std::sync::RwLock<String>,
     credential_mode: std::sync::RwLock<jcode_provider_core::CredentialMode>,
+    effort: std::sync::RwLock<Option<String>>,
 }
 
 impl StubExternalRuntime {
@@ -815,6 +816,7 @@ impl StubExternalRuntime {
             models,
             model: std::sync::RwLock::new(models[0].to_string()),
             credential_mode: std::sync::RwLock::new(jcode_provider_core::CredentialMode::Auto),
+            effort: std::sync::RwLock::new(None),
         }
     }
 
@@ -932,12 +934,19 @@ impl Provider for StubExternalRuntime {
         Ok(())
     }
     fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(StubExternalRuntime::new(
-            self.name,
-            self.provider_label,
-            self.api_method,
-            self.models,
-        ))
+        let fork =
+            StubExternalRuntime::new(self.name, self.provider_label, self.api_method, self.models);
+        fork.set_model(&self.model()).unwrap();
+        fork.set_credential_mode(self.credential_mode()).unwrap();
+        *fork.effort.write().unwrap() = self.reasoning_effort();
+        Arc::new(fork)
+    }
+    fn reasoning_effort(&self) -> Option<String> {
+        self.effort.read().unwrap().clone()
+    }
+    fn set_reasoning_effort(&self, effort: &str) -> anyhow::Result<()> {
+        *self.effort.write().unwrap() = Some(effort.to_string());
+        Ok(())
     }
 }
 
@@ -1142,6 +1151,7 @@ fn new_session_fork_reloads_changed_config_provider_and_model() {
 include!("tests/auth_refresh.rs");
 include!("tests/model_resolution.rs");
 include!("tests/issue_534_profile_preservation.rs");
+include!("tests/agent_profile_fork.rs");
 include!("tests/fallback_failover.rs");
 include!("tests/catalog_subscription.rs");
 

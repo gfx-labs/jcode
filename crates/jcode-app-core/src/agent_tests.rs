@@ -96,6 +96,38 @@ fn message_text(message: &Message) -> &str {
 }
 
 #[test]
+fn custom_agent_profile_is_in_system_prompt_before_first_turn() {
+    let mut session = Session::create(None, None);
+    session.agent_profile = Some(crate::agent_profile::ActiveAgentProfile {
+        name: "reviewer".into(),
+        prompt: "PROFILE_PROMPT_SENTINEL".into(),
+    });
+    let mut agent = Agent::new_with_session(
+        Arc::new(NativeAutoCompactionProvider),
+        Registry::empty(),
+        session,
+        None,
+    );
+    assert!(
+        agent
+            .build_system_prompt_split(None)
+            .dynamic_part
+            .contains("PROFILE_PROMPT_SENTINEL")
+    );
+    agent.system_prompt_override = Some("BASE_PROMPT_SENTINEL".into());
+    let split = agent.build_system_prompt_split(None);
+    assert_eq!(split.static_part, "BASE_PROMPT_SENTINEL");
+    assert_eq!(split.dynamic_part, "PROFILE_PROMPT_SENTINEL");
+    agent.session.agent_profile = None;
+    assert!(
+        agent
+            .build_system_prompt_split(None)
+            .dynamic_part
+            .is_empty()
+    );
+}
+
+#[test]
 fn agent_drop_removes_its_configured_session_tool_policy() {
     let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
     let session = Session::create(None, None);

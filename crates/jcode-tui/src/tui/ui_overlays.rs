@@ -188,7 +188,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "/provider-test-coverage",
         "Show live-test evidence for the current provider/model",
     ));
-    lines.push(help_entry("/agents", "Configure models for agent roles"));
+    lines.push(help_entry(
+        "/agents",
+        "Custom profiles and built-in service settings",
+    ));
     lines.push(help_entry(
         "/swarm-prompt",
         "Open the active swarm routing prompt in your editor",

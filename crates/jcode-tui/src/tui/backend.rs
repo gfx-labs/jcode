@@ -761,6 +761,14 @@ impl RemoteConnection {
         Ok(id)
     }
 
+    pub async fn set_agent_profile(&mut self, name: Option<String>) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::SetAgentProfile { id, name })
+            .await?;
+        Ok(id)
+    }
+
     pub async fn set_route_selection(
         &mut self,
         selection: crate::provider::RouteSelection,

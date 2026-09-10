@@ -2825,62 +2825,34 @@ impl Provider for MultiProvider {
         let current_model = self.model();
         let active = self.active_provider();
 
-        let claude = if matches!(active, ActiveProvider::Claude) && self.claude_provider().is_some()
-        {
-            external::instantiate_expected_external_provider(external::CLAUDE_CLI_RUNTIME)
-        } else {
-            None
-        };
-        let anthropic = if self.anthropic_provider().is_some() {
-            external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME)
-        } else {
-            None
-        };
-        let openai = if self.openai_provider().is_some() {
-            external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
-        } else {
-            None
-        };
-        let copilot_api = self
-            .copilot_api
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let antigravity_provider = self
-            .antigravity
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let gemini_provider = self
-            .gemini
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let cursor_provider = if self
-            .cursor
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some()
-        {
-            external::instantiate_expected_external_provider(external::CURSOR_RUNTIME)
-        } else {
-            None
-        };
-        let bedrock_provider = if self.bedrock_provider().is_some() {
-            Some(Arc::new(bedrock::BedrockProvider::new()))
-        } else {
-            None
-        };
-        let openrouter = if self
+        let claude = self.claude_provider().map(|provider| provider.fork());
+        let anthropic = self.anthropic_provider().map(|provider| provider.fork());
+        let openai = self.openai_provider().map(|provider| provider.fork());
+        let copilot_api = self.copilot_provider().map(|provider| provider.fork());
+        let antigravity_provider = self.antigravity_provider().map(|provider| provider.fork());
+        let gemini_provider = self.gemini_provider().map(|provider| provider.fork());
+        let cursor_provider = self.cursor_provider().map(|provider| provider.fork());
+        let bedrock_provider = self
+            .bedrock_provider()
+            .map(|_| Arc::new(bedrock::BedrockProvider::new()));
+        let openrouter = self
             .openrouter
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some()
-        {
-            external::instantiate_openrouter_runtime(external::OpenRouterRuntimeSpec::Default).ok()
-        } else {
-            None
-        };
+            .as_ref()
+            .map(|provider| provider.fork());
+        let compatible_profiles = self
+            .openai_compatible_profiles
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(name, provider)| (name.clone(), provider.fork()))
+            .collect();
+        let active_compatible_profile = self
+            .active_openai_compatible_profile
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
 
         let provider = Self {
             claude: RwLock::new(claude),
@@ -2892,8 +2864,8 @@ impl Provider for MultiProvider {
             cursor: RwLock::new(cursor_provider),
             bedrock: RwLock::new(bedrock_provider),
             openrouter: RwLock::new(openrouter),
-            openai_compatible_profiles: RwLock::new(HashMap::new()),
-            active_openai_compatible_profile: RwLock::new(None),
+            openai_compatible_profiles: RwLock::new(compatible_profiles),
+            active_openai_compatible_profile: RwLock::new(active_compatible_profile),
             active: RwLock::new(active),
             use_claude_cli: self.use_claude_cli,
             startup_notices: RwLock::new(Vec::new()),

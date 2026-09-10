@@ -377,6 +377,14 @@ pub(in crate::tui::app) async fn connect_with_retry(
     session_to_resume: Option<&str>,
     remote_working_dir: Option<&str>,
 ) -> Result<ConnectOutcome> {
+    if app.remote_agent_profile_request_id.take().is_some() {
+        if let Some(prepared) = app.pending_prompt_after_model_switch.take() {
+            super::input_dispatch::restore_prepared_remote_input(app, prepared);
+        }
+        app.set_status_notice(
+            "Agent profile confirmation interrupted. Reopen /agents after reconnecting.",
+        );
+    }
     if let Some(outcome) =
         wait_for_reload_handoff_before_reconnect(app, terminal, event_stream, state).await?
     {

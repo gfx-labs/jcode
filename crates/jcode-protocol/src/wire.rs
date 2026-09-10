@@ -251,6 +251,9 @@ pub enum Request {
     #[serde(rename = "set_model")]
     SetModel { id: u64, model: String },
 
+    #[serde(rename = "set_agent_profile")]
+    SetAgentProfile { id: u64, name: Option<String> },
+
     /// Set the active model by structured route identity.
     #[serde(rename = "set_route")]
     SetRoute {
@@ -539,6 +542,8 @@ pub enum Request {
     #[serde(rename = "comm_spawn")]
     CommSpawn {
         id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
@@ -749,6 +754,16 @@ pub enum Request {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    #[serde(rename = "agent_profile_changed")]
+    AgentProfileChanged {
+        id: u64,
+        name: Option<String>,
+        model: String,
+        #[serde(default)]
+        provider_name: Option<String>,
+        effort: Option<String>,
+        error: Option<String>,
+    },
     /// An autonomous wake was requested. In external wake mode this event is
     /// emitted instead of starting or injecting into a turn.
     #[serde(rename = "wake_requested")]

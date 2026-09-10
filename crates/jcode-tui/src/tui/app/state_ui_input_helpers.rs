@@ -48,7 +48,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::hidden("/model-status", "Alias for /provider-test-coverage"),
     RegisteredCommand::public("/refresh-model-list", "Refresh provider model catalogs"),
-    RegisteredCommand::public("/agents", "Configure models for agent roles"),
+    RegisteredCommand::public(
+        "/agents",
+        "Choose a custom profile or configure built-in services",
+    ),
     RegisteredCommand::public(
         "/swarm-prompt",
         "Open the active swarm routing prompt in your editor",
@@ -547,16 +550,37 @@ impl App {
         }
 
         if prefix.starts_with("/agents ") {
-            return self.rank_suggestions(
-                input,
-                vec![
-                    ("/agents swarm".into(), "Configure swarm/subagent model"),
-                    ("/agents review".into(), "Configure code review model"),
-                    ("/agents judge".into(), "Configure judge model"),
-                    ("/agents memory".into(), "Configure memory sidecar model"),
-                    ("/agents ambient".into(), "Configure ambient model"),
-                ],
+            let mut suggestions = vec![
+                ("/agents swarm".into(), "Configure swarm/subagent model"),
+                ("/agents review".into(), "Configure code review model"),
+                ("/agents judge".into(), "Configure judge model"),
+                ("/agents memory".into(), "Configure memory sidecar model"),
+                ("/agents ambient".into(), "Configure ambient model"),
+                (
+                    "/agents clear".into(),
+                    "Clear profile instructions, keep current model",
+                ),
+            ];
+            let registry = crate::agent_profile::AgentProfileRegistry::load(
+                self.session
+                    .working_dir
+                    .as_deref()
+                    .map(std::path::Path::new),
             );
+            for profile in registry.profiles.into_values() {
+                let description = if profile.mode.allows_primary() {
+                    "Activate custom profile in the current session"
+                } else {
+                    "Subagent-only profile, cannot activate in the current session"
+                };
+                suggestions.push((format!("/agents use {}", profile.name), description));
+                if super::commands::parse_agents_target(&profile.name).is_none()
+                    && !matches!(profile.name.as_str(), "clear" | "use")
+                {
+                    suggestions.push((format!("/agents {}", profile.name), description));
+                }
+            }
+            return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/subagent-model ") {
@@ -688,7 +712,10 @@ impl App {
         }
 
         if prefix_trimmed == "/agents" {
-            return vec![("/agents".into(), "Open agent model config picker")];
+            return vec![(
+                "/agents".into(),
+                "Choose a custom profile or configure built-in services",
+            )];
         }
 
         if prefix.starts_with("/help ") || prefix.starts_with("/? ") {

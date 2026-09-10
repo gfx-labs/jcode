@@ -575,7 +575,7 @@ pub(super) async fn handle_client(
 
     let client_start = std::time::Instant::now();
 
-    let provider = provider_template.fork_for_new_session();
+    let mut provider = provider_template.fork_for_new_session();
     let provider_fork_ms = client_start.elapsed().as_millis();
     let t0 = std::time::Instant::now();
     let registry = Registry::new(provider.clone()).await;
@@ -1933,6 +1933,33 @@ pub(super) async fn handle_client(
                 handle_set_model(id, model, &agent, &client_event_tx).await;
             }
 
+            Request::SetAgentProfile { id, name } => {
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "set_agent_profile",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
+                let mut agent = agent.lock().await;
+                let error = agent.set_agent_profile(name.as_deref()).err()
+                    .map(|error| crate::util::format_error_chain(&error));
+                if error.is_none() {
+                    provider = agent.provider_handle();
+                }
+                let _ = client_event_tx.send(ServerEvent::AgentProfileChanged {
+                    id,
+                    name: agent.active_agent_profile_name().map(str::to_string),
+                    model: agent.provider_model(),
+                    provider_name: Some(agent.provider_name()),
+                    effort: agent.provider_handle().reasoning_effort(),
+                    error,
+                });
+            }
+
             Request::SetRoute { id, selection } => {
                 handle_set_route(id, selection, &agent, &client_event_tx).await;
             }
@@ -2520,6 +2547,7 @@ pub(super) async fn handle_client(
                 model,
                 effort,
                 label,
+            profile,
             } => {
                 let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                     Some(spawn_mode) => spawn_mode,
@@ -2535,6 +2563,7 @@ pub(super) async fn handle_client(
                     model,
                     effort,
                     label,
+            profile,
                     &client_event_tx,
                     &sessions,
                     &global_session_id,

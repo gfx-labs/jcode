@@ -2240,6 +2240,45 @@ pub(in crate::tui::app) fn handle_server_event(
             // user is typing during startup.
             false
         }
+        ServerEvent::AgentProfileChanged {
+            id,
+            name,
+            model,
+            provider_name,
+            effort,
+            error,
+        } => {
+            let matched_request = app.remote_agent_profile_request_id == Some(id);
+            if matched_request {
+                app.remote_agent_profile_request_id = None;
+            }
+            if let Some(error) = error {
+                if matched_request
+                    && let Some(prepared) = app.pending_prompt_after_model_switch.take()
+                {
+                    super::input_dispatch::restore_prepared_remote_input(app, prepared);
+                }
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to set agent profile: {error}"
+                )));
+                app.set_status_notice("Agent profile change failed");
+            } else {
+                app.remote_agent_profile_name = name.clone();
+                app.remote_provider_model = Some(model.clone());
+                if let Some(provider_name) = provider_name {
+                    app.remote_provider_name = Some(provider_name);
+                }
+                app.remote_reasoning_effort = effort;
+                app.update_context_limit_for_model(&model);
+                app.invalidate_model_picker_cache();
+                app.upstream_provider = None;
+                app.status_detail = None;
+                if id != 0 {
+                    app.agent_profile_change_confirmed(name.as_deref(), &model);
+                }
+            }
+            true
+        }
         ServerEvent::ModelChanged {
             model,
             provider_name,

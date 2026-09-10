@@ -93,3 +93,39 @@ fn model_picker_hotkey_hint_renders_above_the_box() {
         lines[hint_row]
     );
 }
+
+#[test]
+fn custom_agents_picker_renders_profile_and_service_scopes() {
+    let mut state = model_picker_state();
+    let picker = state.inline_interactive_state.as_mut().unwrap();
+    let mut profile = model_picker_entry();
+    profile.name = "my-designer".to_string();
+    profile.action = crate::tui::PickerAction::AgentProfile(Some(profile.name.clone()));
+    profile.recommended = false;
+    profile.options[0].provider = "unchanged".to_string();
+    profile.options[0].api_method = "custom · primary".to_string();
+    profile.options[0].detail = "Design interfaces · current session".to_string();
+    let mut service = profile.clone();
+    service.name = "Code review".to_string();
+    service.action = crate::tui::PickerAction::AgentTarget(crate::tui::AgentModelTarget::Review);
+    service.options[0].api_method = "built-in · review_model".to_string();
+    picker.entries = vec![profile, service];
+    picker.filtered = vec![0, 1];
+    for width in [80, 120] {
+        let text = render_inline_picker(&state, width, 12).join("\n");
+        assert!(text.contains("my-designer"), "{text}");
+        assert!(text.contains("custom · primary"), "{text}");
+        assert!(text.contains("built-in · review_model"), "{text}");
+        assert!(text.contains("Design interfaces"), "{text}");
+        assert!(!text.contains("Ctrl+N favorite"), "{text}");
+    }
+    let picker = state.inline_interactive_state.as_mut().unwrap();
+    picker.entries[0].options[0].available = false;
+    picker.entries[0].options[0].api_method = "custom · subagent-only".to_string();
+    picker.entries[0].options[0].detail =
+        "subagent-only: cannot activate in the current session".to_string();
+    let text = render_inline_picker(&state, 100, 12).join("\n");
+    assert!(text.contains("subagent-only"), "{text}");
+    assert!(text.contains('×'), "{text}");
+    assert!(text.contains("cannot activate"), "{text}");
+}

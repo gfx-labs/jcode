@@ -448,6 +448,7 @@ fn test_comm_stop_roundtrip_with_force() -> Result<()> {
 #[test]
 fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     let req = Request::CommSpawn {
+        profile: None,
         id: 59,
         session_id: "sess_coord".to_string(),
         working_dir: Some("/tmp/project".to_string()),
@@ -615,4 +616,19 @@ fn test_reload_force_roundtrip() -> Result<()> {
         assert_eq!(decoded_force, force);
     }
     Ok(())
+}
+#[test]
+fn custom_agent_profile_selection_request_roundtrip() {
+    let json = r#"{"type":"set_agent_profile","id":42,"name":"reviewer"}"#;
+    let request = crate::decode_request(json).expect("custom profile selection is supported");
+    let encoded = serde_json::to_value(request).unwrap();
+    assert_eq!(encoded["name"], "reviewer");
+}
+
+#[test]
+fn custom_agent_profile_spawn_preserves_profile_name() {
+    let json = r#"{"type":"comm_spawn","id":42,"session_id":"parent","profile":"reviewer"}"#;
+    let request = crate::decode_request(json).unwrap();
+    let encoded = serde_json::to_value(request).unwrap();
+    assert_eq!(encoded["profile"], "reviewer");
 }
