@@ -1330,6 +1330,8 @@ fn reload_starting_rejects_new_turns_for_multiple_sessions() {
 
 #[tokio::test]
 async fn lightweight_comm_request_skips_full_session_initialization() {
+    let _guard = crate::storage::lock_test_env();
+    let _runtime = IsolatedReloadRecoveryEnv::new();
     let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
     let forked = Arc::new(AtomicBool::new(false));
     let provider_template: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
@@ -1392,6 +1394,29 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
 
     let (client_reader, mut client_writer) = client_stream.into_split();
     let mut client_reader = BufReader::new(client_reader);
+    // Discovery is repeatable before Subscribe and leaves the same stream usable.
+    for id in [5, 6] {
+        client_writer
+            .write_all(format!("{{\"type\":\"list_sessions\",\"id\":{id}}}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(2), client_reader.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(decode_request_or_event(&line), ServerEvent::Sessions { id: response_id, sessions } if response_id == id && sessions.is_empty()));
+        assert!(client_connections.read().await.is_empty());
+        assert!(sessions.read().await.is_empty());
+        assert!(!forked.load(Ordering::SeqCst));
+        client_writer.write_all(b"{\"type\":\"ping\",\"id\":99}\n").await.unwrap();
+        line.clear();
+        tokio::time::timeout(Duration::from_secs(2), client_reader.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(decode_request_or_event(&line), ServerEvent::Pong { id: 99, .. }));
+    }
     let request = Request::CommList {
         id: 7,
         session_id: "not-in-swarm".to_string(),
