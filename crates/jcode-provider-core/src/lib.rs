@@ -435,6 +435,14 @@ pub trait Provider: Send + Sync {
     /// Create a new provider instance with independent mutable state.
     fn fork(&self) -> Arc<dyn Provider>;
 
+    /// Opt-in contract: independent conversation state, no hosted/native tools,
+    /// and no implicit provider or model fallback for instruction drafting.
+    fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
+        Err(anyhow::anyhow!(
+            "Instruction generation is unavailable on this provider route. Write instructions manually."
+        ))
+    }
+
     /// Create an independent provider for a brand-new user session.
     ///
     /// The default preserves the current runtime selection, matching [`Self::fork`].

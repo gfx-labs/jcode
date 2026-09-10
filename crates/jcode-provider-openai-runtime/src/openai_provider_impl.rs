@@ -260,7 +260,8 @@ impl Provider for OpenAIProvider {
         let client = self.client.clone();
         let panic_tx = tx.clone();
 
-        tokio::spawn(async move {
+        let suppress_logs = self.instruction_generation;
+        let stream_future = async move {
             let stream_task = async move {
                 // Attempt persistent WebSocket continuation first
                 if use_websocket_transport {
@@ -719,9 +720,24 @@ impl Provider for OpenAIProvider {
                     )))
                     .await;
             }
+        };
+        let stream_task = tokio::spawn(async move {
+            if suppress_logs {
+                jcode_base::logging::suppress_content_logs(stream_future).await;
+            } else {
+                stream_future.await;
+            }
         });
 
-        Ok(Box::pin(ReceiverStream::new(rx)))
+        if self.instruction_generation {
+            let guard = InstructionStreamTask(stream_task);
+            Ok(Box::pin(futures::stream::unfold(
+                (rx, guard),
+                |(mut rx, guard)| async move { rx.recv().await.map(|event| (event, (rx, guard))) },
+            )))
+        } else {
+            Ok(Box::pin(ReceiverStream::new(rx)))
+        }
     }
 
     fn name(&self) -> &str {
@@ -1225,36 +1241,11 @@ impl Provider for OpenAIProvider {
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
-        let model = self.model();
-        Arc::new(OpenAIProvider {
-            client: self.client.clone(),
-            credentials: Arc::clone(&self.credentials),
-            credential_mode: Arc::clone(&self.credential_mode),
-            model: Arc::new(RwLock::new(model)),
-            prompt_cache_key: self.prompt_cache_key.clone(),
-            prompt_cache_retention: self.prompt_cache_retention.clone(),
-            max_output_tokens: self.max_output_tokens,
-            // Copy the raw stored effort (not the surfaced effective value) so
-            // a fork that later switches models does not inherit another
-            // model's default as if the user had chosen it.
-            reasoning_effort: Arc::new(StdRwLock::new(
-                self.reasoning_effort
-                    .read()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_else(|poisoned| poisoned.into_inner().clone()),
-            )),
-            model_reasoning_efforts: Arc::clone(&self.model_reasoning_efforts),
-            service_tier: Arc::new(StdRwLock::new(self.service_tier())),
-            native_compaction_mode: self.native_compaction_mode,
-            native_compaction_threshold_tokens: self.native_compaction_threshold_tokens,
-            transport_mode: Arc::clone(&self.transport_mode),
-            websocket_cooldowns: Arc::clone(&self.websocket_cooldowns),
-            websocket_failure_streaks: Arc::clone(&self.websocket_failure_streaks),
-            persistent_ws: Arc::new(Mutex::new(None)),
-            prewarm: Arc::new(openai_websocket_prewarm::PrewarmSlot::default()),
-            chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
-            browser_only: Arc::clone(&self.browser_only),
-        })
+        Arc::new(self.fork_snapshot())
+    }
+
+    fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
+        Ok(Arc::new(self.instruction_generation_snapshot()?))
     }
 
     async fn invalidate_credentials(&self) {

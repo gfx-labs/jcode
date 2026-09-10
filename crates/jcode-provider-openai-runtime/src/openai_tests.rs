@@ -349,3 +349,149 @@ fn catalog_credential_identity_survives_token_refresh_but_changes_accounts() {
         OpenAIProvider::catalog_credential_identity(&credentials("new", "refresh-b", None))
     );
 }
+
+#[tokio::test]
+async fn agent_instructions_openai_snapshot_is_available_and_independent() {
+    let provider = OpenAIProvider::new_inner(prewarm_test_credentials(), false);
+    *provider.model.write().await = "gpt-5.4".into();
+    let snapshot = provider.fork_for_instruction_generation();
+    assert!(
+        snapshot.is_ok(),
+        "direct Responses route needs an isolated snapshot"
+    );
+    let snapshot = snapshot.unwrap();
+    assert_eq!(snapshot.model(), provider.model());
+    *provider.model.write().await = "different-model".into();
+    assert_eq!(snapshot.model(), "gpt-5.4");
+}
+
+#[tokio::test]
+async fn agent_instructions_openai_omits_hosted_tools_and_preserves_exact_model() {
+    let provider = OpenAIProvider::new_inner(prewarm_test_credentials(), false);
+    *provider.model.write().await = "wizard-unknown-model".into();
+    let isolated = provider.instruction_generation_snapshot();
+    assert!(
+        isolated.is_ok(),
+        "isolated request construction must be available"
+    );
+    let isolated = isolated.unwrap();
+    let input = build_responses_input(&[ChatMessage::user("Draft instructions")]);
+    let request =
+        isolated.response_request_for_model("gpt-5.4", &input, &[], "Only instructions", true);
+    assert_eq!(request["tools"], serde_json::json!([]));
+    assert!(request.get("previous_response_id").is_none());
+    assert_eq!(request["instructions"], "Only instructions");
+    assert_eq!(request["input"], serde_json::json!(input));
+    assert_eq!(isolated.model_id().await, "wizard-unknown-model");
+    assert!(isolated.persistent_ws.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn agent_instructions_openai_cancel_closes_owned_transport() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _base = EnvVarGuard::set("JCODE_OPENAI_API_BASE", &format!("http://{addr}/v1"));
+    let _transport = EnvVarGuard::set("JCODE_OPENAI_TRANSPORT", "websocket");
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let request: Value = serde_json::from_str(
+            socket
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_text()
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
+        assert_eq!(request["tools"], serde_json::json!([]));
+        assert_eq!(request["model"], "gpt-5.4");
+        assert!(request.get("previous_response_id").is_none());
+        assert_eq!(request["input"].as_array().unwrap().len(), 1);
+        seen_tx.send(()).unwrap();
+        let closed = matches!(
+            socket.next().await,
+            None | Some(Err(_)) | Some(Ok(WsMessage::Close(_)))
+        );
+        let _ = closed_tx.send(closed);
+    });
+    let provider = OpenAIProvider::new_inner(prewarm_test_credentials(), false);
+    *provider.model.write().await = "gpt-5.4".into();
+    let generation = tokio::spawn(jcode_base::agent_instructions::generate_agent_instructions(
+        Arc::new(provider),
+        "Reviewer".into(),
+        "Review code".into(),
+        "all".into(),
+    ));
+    tokio::time::timeout(Duration::from_secs(2), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    generation.abort();
+    let _ = generation.await;
+    let closed = tokio::time::timeout(Duration::from_millis(300), closed_rx).await;
+    server.abort();
+    assert!(
+        matches!(closed, Ok(Ok(true))),
+        "cancelling generation must abort its transport task"
+    );
+}
+
+#[tokio::test]
+async fn agent_instructions_openai_snapshot_does_not_share_reasoning_catalog() {
+    let provider = OpenAIProvider::new_inner(prewarm_test_credentials(), false);
+    let snapshot = provider.instruction_generation_snapshot().unwrap();
+    assert!(!Arc::ptr_eq(
+        &provider.model_reasoning_efforts,
+        &snapshot.model_reasoning_efforts
+    ));
+}
+
+#[tokio::test]
+async fn agent_instructions_openai_error_logs_never_echo_body() {
+    let _lock = jcode_base::storage::lock_test_env();
+    jcode_base::logging::init();
+    let path = jcode_base::logging::log_path().expect("test log path");
+    let sentinel = format!(
+        "INSTRUCTION_PRIVATE_ECHO_{}",
+        jcode_base::id::new_id("privacy")
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _base = EnvVarGuard::set("JCODE_OPENAI_API_BASE", &format!("http://{addr}/v1"));
+    let _transport = EnvVarGuard::set("JCODE_OPENAI_TRANSPORT", "websocket");
+    let echo = sentinel.clone();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket.next().await.unwrap().unwrap();
+        socket.send(WsMessage::Text(serde_json::json!({"type":"error","error":{"code":"invalid_request_error","message":echo}}).to_string().into())).await.unwrap();
+        let _ = socket.close(None).await;
+    });
+    let provider = Arc::new(OpenAIProvider::new_inner(prewarm_test_credentials(), false));
+    *provider.model.write().await = "gpt-5.4".into();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        jcode_base::agent_instructions::generate_agent_instructions(
+            provider,
+            "Reviewer".into(),
+            sentinel.clone(),
+            "all".into(),
+        ),
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+    assert!(result.is_err());
+    assert!(!result.unwrap_err().to_string().contains(&sentinel));
+    let log = std::fs::read_to_string(path).unwrap();
+    assert!(
+        !log.contains(&sentinel),
+        "provider diagnostic logs must not contain echoed purpose text"
+    );
+}

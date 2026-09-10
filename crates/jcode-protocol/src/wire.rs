@@ -36,6 +36,15 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
+    #[serde(rename = "generate_agent_instructions")]
+    GenerateAgentInstructions {
+        id: u64,
+        description: String,
+        purpose: String,
+        mode: String,
+    },
+    #[serde(rename = "cancel_agent_instructions")]
+    CancelAgentInstructions { id: u64, generation_id: u64 },
     /// Send a message to the agent
     #[serde(rename = "message")]
     Message {
@@ -754,6 +763,14 @@ pub enum Request {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    #[serde(rename = "agent_instructions_generated")]
+    AgentInstructionsGenerated {
+        id: u64,
+        text: Option<String>,
+        model: String,
+        provider_name: String,
+        error: Option<String>,
+    },
     #[serde(rename = "agent_profile_changed")]
     AgentProfileChanged {
         id: u64,

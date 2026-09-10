@@ -2821,6 +2821,18 @@ impl Provider for MultiProvider {
         }
     }
 
+    fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
+        let active = self.active_provider();
+        let runtime = match active {
+            ActiveProvider::OpenAI => self.openai_provider(),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            anyhow::anyhow!("Instruction generation is unavailable on this provider route")
+        })?;
+        runtime.fork_for_instruction_generation()
+    }
+
     fn fork(&self) -> Arc<dyn Provider> {
         let current_model = self.model();
         let active = self.active_provider();

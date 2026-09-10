@@ -1214,3 +1214,48 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
         );
     });
 }
+
+struct InstructionRuntime;
+#[async_trait::async_trait]
+impl Provider for InstructionRuntime {
+    async fn complete(
+        &self,
+        _: &[Message],
+        _: &[ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<EventStream> {
+        panic!("snapshot selection must not complete")
+    }
+    fn name(&self) -> &str {
+        "OpenAI"
+    }
+    fn model(&self) -> String {
+        "configured-instruction-model".into()
+    }
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self)
+    }
+    fn fork_for_instruction_generation(&self) -> Result<Arc<dyn Provider>> {
+        Ok(self.fork())
+    }
+}
+
+#[test]
+fn agent_instructions_multi_provider_snapshots_only_selected_runtime() {
+    with_clean_provider_test_env(|| {
+        let rt = enter_test_runtime();
+        let _runtime_guard = rt.enter();
+        let provider = test_multi_provider_with_openai();
+        *provider.openai.write().unwrap() = Some(Arc::new(InstructionRuntime));
+        let snapshot = provider.fork_for_instruction_generation();
+        assert!(snapshot.is_ok(), "selected direct runtime must be used");
+        assert_eq!(snapshot.unwrap().model(), "configured-instruction-model");
+        provider.set_active_provider(ActiveProvider::Cursor);
+        assert!(
+            provider.fork_for_instruction_generation().is_err(),
+            "never fall back from unavailable selected runtime to configured OpenAI"
+        );
+        assert_eq!(provider.active_provider(), ActiveProvider::Cursor);
+    });
+}

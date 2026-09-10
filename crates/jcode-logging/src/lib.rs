@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+tokio::task_local! { static SUPPRESS_CONTENT_LOGS: bool; }
+
 static LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
 static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static TASK_LOG_CONTEXTS: OnceLock<Mutex<HashMap<String, LogContext>>> = OnceLock::new();
@@ -204,6 +206,12 @@ impl Logger {
     }
 
     fn write(&mut self, level: &str, message: &str) {
+        if SUPPRESS_CONTENT_LOGS
+            .try_with(|suppressed| *suppressed)
+            .unwrap_or(false)
+        {
+            return;
+        }
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let ctx = context_prefix();
         let line = format!("[{}] [{}] {}{}\n", timestamp, level, ctx, message);
@@ -215,6 +223,12 @@ impl Logger {
             eprintln!("jcode logger flush failed: {err}");
         }
     }
+}
+
+/// Suppresses inherited content-bearing diagnostics for a private operation.
+/// Spawned tasks must enter their own scope; unrelated tasks remain unchanged.
+pub async fn suppress_content_logs<F: std::future::Future>(future: F) -> F::Output {
+    SUPPRESS_CONTENT_LOGS.scope(true, future).await
 }
 
 /// Initialize the logger (call once at startup)
@@ -659,6 +673,52 @@ fn redact_url_queries(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instruction_generation_logging_scope_is_private_and_task_local() {
+        let path = std::env::temp_dir().join(format!(
+            "jcode-private-logging-{}-{}.log",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let mut logger = Logger {
+            file: OpenOptions::new()
+                .create_new(true)
+                .append(true)
+                .open(&path)
+                .unwrap(),
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(async {
+                logger.write("INFO", "VISIBLE_BEFORE");
+                suppress_content_logs(async {
+                    logger.write("ERROR", "PRIVATE_ECHO_BODY");
+                    tokio::task::yield_now().await;
+                    logger.write("ERROR", "PRIVATE_AFTER_YIELD");
+                    let path = path.clone();
+                    tokio::spawn(async move {
+                        let mut independent = Logger {
+                            file: OpenOptions::new().append(true).open(path).unwrap(),
+                        };
+                        independent.write("INFO", "VISIBLE_OTHER_TASK");
+                    })
+                    .await
+                    .unwrap();
+                })
+                .await;
+                logger.write("INFO", "VISIBLE_AFTER");
+            });
+        let log = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            log.contains("VISIBLE_BEFORE")
+                && log.contains("VISIBLE_AFTER")
+                && log.contains("VISIBLE_OTHER_TASK")
+        );
+        assert!(!log.contains("PRIVATE_ECHO_BODY") && !log.contains("PRIVATE_AFTER_YIELD"));
+    }
 
     #[test]
     fn auth_log_redacts_secret_like_fields() {

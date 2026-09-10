@@ -564,6 +564,8 @@ pub struct AwaitedMemberStatus {
 impl Request {
     pub fn id(&self) -> u64 {
         match self {
+            Request::GenerateAgentInstructions { id, .. }
+            | Request::CancelAgentInstructions { id, .. } => *id,
             Request::Message { id, .. } => *id,
             Request::Cancel { id } => *id,
             Request::BackgroundTool { id } => *id,
@@ -679,6 +681,42 @@ impl Request {
                 | Request::CommUnsubscribeChannel { .. }
                 | Request::CommAwaitMembers { .. }
         )
+    }
+}
+
+#[cfg(test)]
+mod agent_instructions_tests {
+    use super::*;
+
+    #[test]
+    fn agent_instructions_generation_request_decodes() {
+        let request = decode_request(
+            r#"{"type":"generate_agent_instructions","id":42,"description":"Reviewer","purpose":"Review changes","mode":"all"}"#,
+        );
+        assert!(
+            request.is_ok(),
+            "generation request must decode: {request:?}"
+        );
+        assert_eq!(request.unwrap().id(), 42);
+    }
+
+    #[test]
+    fn agent_instructions_cancel_request_decodes() {
+        let request =
+            decode_request(r#"{"type":"cancel_agent_instructions","id":43,"generation_id":42}"#);
+        assert!(
+            request.is_ok(),
+            "correlated cancellation must decode: {request:?}"
+        );
+        assert_eq!(request.unwrap().id(), 43);
+    }
+
+    #[test]
+    fn agent_instructions_result_decodes() {
+        let result = serde_json::from_str::<ServerEvent>(
+            r#"{"type":"agent_instructions_generated","id":42,"text":"Review changes.","model":"test-model","provider_name":"test-provider","error":null}"#,
+        );
+        assert!(result.is_ok(), "generation result must decode: {result:?}");
     }
 }
 

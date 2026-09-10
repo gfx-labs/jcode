@@ -1,3 +1,4 @@
+mod agent_instructions;
 mod available_models_dedup;
 mod await_members_state;
 mod background_tasks;

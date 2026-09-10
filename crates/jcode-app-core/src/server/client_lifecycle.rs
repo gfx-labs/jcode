@@ -715,7 +715,7 @@ pub(super) async fn handle_client(
                 // A broken pipe here is routine (client reload/disconnect mid
                 // broadcast), so keep the line short: a full Debug dump of e.g.
                 // a SwarmStatus event prints every member and floods the log.
-                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
+                let event_desc = super::agent_instructions::event_log_description(&event);
                 crate::logging::warn(&format!(
                     "event_forwarder write failed for connection {} while sending {}: {}",
                     client_connection_id_for_events, event_desc, error
@@ -785,6 +785,7 @@ pub(super) async fn handle_client(
     let mut client_subscribed = false;
     let mut provisional_session = true;
     let mut pending_request = Some(initial_request);
+    let mut instruction_job = super::agent_instructions::InstructionJob::default();
 
     let connection_result: Result<()> = async {
     loop {
@@ -811,6 +812,12 @@ pub(super) async fn handle_client(
                 if let Some(info) = connections.get_mut(&client_connection_id) {
                     info.last_seen = Instant::now();
                 }
+            }
+            result = instruction_job.next(&client_session_id), if instruction_job.is_running() => {
+                if let Some(event) = result {
+                    let _ = client_event_tx.send(event);
+                }
+                continue;
             }
             done = processing_done_rx.recv() => {
                 if let Some((done_id, result, completion_report)) = done {
@@ -1171,6 +1178,27 @@ pub(super) async fn handle_client(
             continue;
         }
         match request {
+            Request::GenerateAgentInstructions { id, description, purpose, mode } => {
+                let snapshot = if instruction_job.is_running() {
+                    Err(anyhow::anyhow!("An instruction generation is already running on this connection"))
+                } else if client_is_processing {
+                    Err(anyhow::anyhow!("Wait for the active turn before generating instructions"))
+                } else {
+                    match agent.try_lock() {
+                        Ok(guard) => guard.provider_handle().fork_for_instruction_generation().map_err(|_| anyhow::anyhow!("Instruction generation is unavailable on this provider route. Write instructions manually.")),
+                        Err(_) => Err(anyhow::anyhow!("Session is busy. Retry instruction generation when idle.")),
+                    }
+                };
+                let result = snapshot.and_then(|provider| instruction_job.start(id, &client_session_id, provider, description, purpose, mode));
+                if let Err(error) = result {
+                    let _ = client_event_tx.send(ServerEvent::AgentInstructionsGenerated {
+                        id, text: None, model: String::new(), provider_name: String::new(), error: Some(error.to_string()),
+                    });
+                }
+            }
+            Request::CancelAgentInstructions { generation_id, .. } => {
+                instruction_job.cancel(generation_id);
+            }
             Request::Message {
                 id,
                 content,
@@ -1355,6 +1383,7 @@ pub(super) async fn handle_client(
             }
 
             Request::Clear { id } => {
+                instruction_job.clear();
                 if reject_if_agent_busy_for_request(
                     id,
                     "clear",
@@ -1529,6 +1558,7 @@ pub(super) async fn handle_client(
             }
 
             Request::PrepareDisconnect { id } => {
+                instruction_job.clear();
                 let json = encode_event(&ServerEvent::Done { id });
                 let mut w = writer.lock().await;
                 if w.write_all(json.as_bytes()).await.is_err() {
@@ -1563,6 +1593,7 @@ pub(super) async fn handle_client(
                 continue_on_disconnect: requested_continuation,
                 terminal_env,
             } => {
+                instruction_job.clear();
                 if let Err(message) =
                     validated_subscribe_working_dir(
                         subscribe_working_dir.as_deref(), requested_continuation,
@@ -1819,6 +1850,7 @@ pub(super) async fn handle_client(
             }
 
             Request::Reload { id, force } => {
+                instruction_job.clear();
                 handle_reload(
                     id,
                     force,
@@ -1837,6 +1869,7 @@ pub(super) async fn handle_client(
                 client_has_local_history,
                 allow_session_takeover,
             } => {
+                instruction_job.clear();
                 let pre_resume_session_id = client_session_id.clone();
                 let resume_working_dir = {
                     let agent_guard = agent.lock().await;
@@ -2120,6 +2153,7 @@ pub(super) async fn handle_client(
             }
 
             Request::Transfer { id } => {
+                instruction_job.clear();
                 if reject_if_agent_busy_for_request(
                     id,
                     "transfer",
@@ -2981,6 +3015,7 @@ pub(super) async fn handle_client(
     Ok(())
     }.await;
 
+    instruction_job.clear();
     if continue_on_disconnect {
         // Retain the existing turn owner, not the socket. Its JoinHandle and
         // completion receiver stay alive so normal finalization still runs and

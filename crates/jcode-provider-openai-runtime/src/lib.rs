@@ -699,7 +699,16 @@ fn spawn_persistent_ws_keepalive_with_interval(
     })
 }
 
+struct InstructionStreamTask(tokio::task::JoinHandle<()>);
+
+impl Drop for InstructionStreamTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct OpenAIProvider {
+    instruction_generation: bool,
     client: Client,
     credentials: Arc<RwLock<CodexCredentials>>,
     credential_mode: Arc<RwLock<OpenAICredentialMode>>,
@@ -726,6 +735,79 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
+    fn fork_snapshot(&self) -> Self {
+        let model = self.model();
+        OpenAIProvider {
+            instruction_generation: self.instruction_generation,
+            client: self.client.clone(),
+            credentials: Arc::clone(&self.credentials),
+            credential_mode: Arc::clone(&self.credential_mode),
+            model: Arc::new(RwLock::new(model)),
+            prompt_cache_key: self.prompt_cache_key.clone(),
+            prompt_cache_retention: self.prompt_cache_retention.clone(),
+            max_output_tokens: self.max_output_tokens,
+            // Copy the raw stored effort (not the surfaced effective value) so
+            // a fork that later switches models does not inherit another
+            // model's default as if the user had chosen it.
+            reasoning_effort: Arc::new(StdRwLock::new(
+                self.reasoning_effort
+                    .read()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_else(|poisoned| poisoned.into_inner().clone()),
+            )),
+            model_reasoning_efforts: Arc::clone(&self.model_reasoning_efforts),
+            service_tier: Arc::new(StdRwLock::new(self.service_tier())),
+            native_compaction_mode: self.native_compaction_mode,
+            native_compaction_threshold_tokens: self.native_compaction_threshold_tokens,
+            transport_mode: Arc::clone(&self.transport_mode),
+            websocket_cooldowns: Arc::clone(&self.websocket_cooldowns),
+            websocket_failure_streaks: Arc::clone(&self.websocket_failure_streaks),
+            persistent_ws: Arc::new(Mutex::new(None)),
+            prewarm: Arc::new(openai_websocket_prewarm::PrewarmSlot::default()),
+            chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
+            browser_only: Arc::clone(&self.browser_only),
+        }
+    }
+
+    fn instruction_generation_snapshot(&self) -> Result<Self> {
+        let model = self
+            .model
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("Provider is switching models"))?
+            .clone();
+        anyhow::ensure!(
+            !self.browser_only.load(AtomicOrdering::Acquire) && !is_chatgpt_web_model(&model),
+            "Instruction generation is unavailable on browser-backed routes"
+        );
+        let mut snapshot = self.fork_snapshot();
+        snapshot.instruction_generation = true;
+        snapshot.model = Arc::new(RwLock::new(model));
+        snapshot.credentials = Arc::new(RwLock::new(
+            self.credentials
+                .try_read()
+                .map_err(|_| anyhow::anyhow!("Provider is refreshing credentials"))?
+                .clone(),
+        ));
+        snapshot.credential_mode =
+            Arc::new(RwLock::new(*self.credential_mode.try_read().map_err(
+                |_| anyhow::anyhow!("Provider is switching authentication"),
+            )?));
+        snapshot.transport_mode =
+            Arc::new(RwLock::new(*self.transport_mode.try_read().map_err(
+                |_| anyhow::anyhow!("Provider is switching transport"),
+            )?));
+        snapshot.model_reasoning_efforts = Arc::new(StdRwLock::new(
+            self.model_reasoning_efforts
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        ));
+        snapshot.websocket_cooldowns = Arc::new(RwLock::new(HashMap::new()));
+        snapshot.websocket_failure_streaks = Arc::new(RwLock::new(HashMap::new()));
+        snapshot.browser_only = Arc::new(AtomicBool::new(false));
+        Ok(snapshot)
+    }
+
     pub(crate) fn supports_extended_prompt_cache_retention(model_id: &str) -> bool {
         jcode_base::provider::openai::supports_extended_prompt_cache_retention(model_id)
     }
@@ -865,6 +947,7 @@ impl OpenAIProvider {
             prewarm: Arc::new(openai_websocket_prewarm::PrewarmSlot::default()),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::new(AtomicBool::new(browser_only)),
+            instruction_generation: false,
         };
         provider.revalidate_reasoning_effort();
         provider
@@ -1235,7 +1318,7 @@ impl OpenAIProvider {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
         let native_compaction_threshold =
             self.native_compaction_threshold_for_context_window(self.context_window());
-        Self::build_response_request(
+        let mut request = Self::build_response_request(
             model_id,
             system.to_string(),
             input,
@@ -1247,7 +1330,14 @@ impl OpenAIProvider {
             self.prompt_cache_key.as_deref(),
             self.prompt_cache_retention.as_deref(),
             native_compaction_threshold,
-        )
+        );
+        if self.instruction_generation {
+            request["tools"] = serde_json::json!([]);
+            if let Some(object) = request.as_object_mut() {
+                object.remove("context_management");
+            }
+        }
+        request
     }
 
     #[expect(
@@ -1324,6 +1414,9 @@ impl OpenAIProvider {
 
     async fn model_id(&self) -> String {
         let current = self.model.read().await.clone();
+        if self.instruction_generation {
+            return current.strip_suffix("[1m]").unwrap_or(&current).to_string();
+        }
         let availability = jcode_base::provider::model_availability_for_account(&current);
 
         match availability.state {
