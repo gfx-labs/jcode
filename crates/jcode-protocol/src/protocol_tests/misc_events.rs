@@ -542,3 +542,26 @@ fn test_native_ssh_pong_capability_is_backward_compatible() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn session_picker_wire_contract() {
+    let request: Request = serde_json::from_str(r#"{"type":"list_sessions","id":42}"#).unwrap();
+    assert!(matches!(request, Request::ListSessions { id: 42 }));
+    assert_eq!(request.id(), 42);
+    let event = ServerEvent::Sessions {
+        id: 42,
+        sessions: vec![crate::SessionListEntry {
+            id: "session_fox".into(),
+            title: "Fix login".into(),
+            working_dir: None,
+            is_processing: None,
+        }],
+    };
+    let value = serde_json::to_value(&event).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"type":"sessions","id":42,"sessions":[{"id":"session_fox","title":"Fix login"}]})
+    );
+    let decoded: ServerEvent = serde_json::from_value(value).unwrap();
+    assert!(matches!(decoded, ServerEvent::Sessions { id: 42, sessions } if sessions.len() == 1));
+}

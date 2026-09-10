@@ -77,6 +77,82 @@ type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<S
 const RELOAD_STARTING_GUARD_MAX_AGE: Duration = Duration::from_secs(30);
 const REQUEST_HANDLER_STALL_THRESHOLDS_MS: [u64; 3] = [2_000, 10_000, 60_000];
 
+/// Snapshot discovery only: no Agent construction, attachment, or session writes.
+async fn list_sessions_event(
+    id: u64,
+    sessions: &SessionAgents,
+    members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) -> Result<ServerEvent> {
+    use crate::protocol::SessionListEntry;
+    let mut entries = tokio::task::spawn_blocking(
+        || -> Result<std::collections::BTreeMap<String, SessionListEntry>> {
+            let mut entries = std::collections::BTreeMap::new();
+            let dir = crate::storage::jcode_dir()?.join("sessions");
+            let files = match std::fs::read_dir(dir) {
+                Ok(files) => files,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+                Err(error) => return Err(error.into()),
+            };
+            for file in files {
+                let path = file?.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                // Skip damaged/unreadable snapshots rather than hiding every session.
+                if let Ok(session) = crate::session::Session::load_startup_stub(id) {
+                    entries.insert(
+                        session.id.clone(),
+                        SessionListEntry {
+                            title: session.display_title_or_name().to_string(),
+                            id: session.id,
+                            working_dir: session.working_dir,
+                            is_processing: None,
+                        },
+                    );
+                }
+            }
+            Ok(entries)
+        },
+    )
+    .await??;
+    let live = sessions.read().await.clone();
+    let members = members.read().await;
+    for (id, agent) in live {
+        let entry = entries
+            .entry(id.clone())
+            .or_insert_with(|| SessionListEntry {
+                title: members
+                    .get(&id)
+                    .and_then(|m| m.friendly_name.clone())
+                    .unwrap_or_else(|| id.clone()),
+                id: id.clone(),
+                working_dir: None,
+                is_processing: None,
+            });
+        if let Ok(agent) = agent.try_lock() {
+            entry.title = agent
+                .session_for_split()
+                .display_title_or_name()
+                .to_string();
+            entry.working_dir = agent.working_dir().map(str::to_string);
+        } else if let Some(member) = members.get(&id) {
+            entry.working_dir = member
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .or(entry.working_dir.take());
+        }
+        entry.is_processing = members.get(&id).map(|m| m.status == "running");
+    }
+    Ok(ServerEvent::Sessions {
+        id,
+        sessions: entries.into_values().collect(),
+    })
+}
+
 fn required_subscribe_working_dir(working_dir: Option<&str>) -> std::result::Result<&str, String> {
     let working_dir = working_dir
         .map(str::trim)
@@ -118,10 +194,13 @@ async fn resolve_target_subscribe_working_dir(
     else {
         return Ok(());
     };
+    let live = sessions.read().await.get(target).cloned();
+    if live.is_none() && !crate::session::session_exists(target) {
+        return Err(format!("Unknown session '{target}'"));
+    }
     if working_dir.is_some() {
         return Ok(());
     }
-    let live = sessions.read().await.get(target).cloned();
     let resolved = if let Some(live) = live {
         let idle_cwd = live
             .try_lock()
@@ -488,6 +567,17 @@ pub(super) async fn handle_client(
 
         match decode_request(&line) {
             Ok(request) => {
+                if let Request::ListSessions { id } = request {
+                    let event = list_sessions_event(id, &sessions, &swarm_members)
+                        .await
+                        .unwrap_or_else(|error| ServerEvent::Error {
+                            id,
+                            message: format!("Cannot list sessions: {error}"),
+                            retry_after_secs: None,
+                        });
+                    write_direct_event(&writer, &event).await?;
+                    continue;
+                }
                 if request.is_lightweight_control_request() {
                     let keep_connection_open = matches!(request, Request::Ping { .. });
                     handle_lightweight_control_request(
@@ -1097,7 +1187,7 @@ pub(super) async fn handle_client(
         // Send ack
         let ack = ServerEvent::Ack { id: request.id() };
         let json = encode_event(&ack);
-        {
+        if !matches!(request, Request::ListSessions { .. }) {
             let ack_start = Instant::now();
             let mut w = writer.lock().await;
             if w.write_all(json.as_bytes()).await.is_err() {
@@ -1520,6 +1610,17 @@ pub(super) async fn handle_client(
                 }
             }
 
+            Request::ListSessions { id } => {
+                let event = list_sessions_event(id, &sessions, &swarm_members)
+                    .await
+                    .unwrap_or_else(|error| ServerEvent::Error {
+                        id,
+                        message: format!("Cannot list sessions: {error}"),
+                        retry_after_secs: None,
+                    });
+                write_direct_event(&writer, &event).await?;
+            }
+
             Request::Ping { id } => {
                 let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1) });
                 let mut w = writer.lock().await;
@@ -1683,34 +1784,14 @@ pub(super) async fn handle_client(
                             break;
                         }
                     } else {
-                        if provisional_session {
-                            agent.lock().await.activate_concurrency_tracking();
-                        }
-                        handle_subscribe(
+                        let _ = client_event_tx.send(ServerEvent::Error {
                             id,
-                            subscribe_working_dir,
-                            selfdev,
-                            true,
-                            &mut client_selfdev,
-                            &client_session_id,
-                            &client_connection_id,
-                            &friendly_name,
-                            &agent,
-                            &registry,
-                            swarm_enabled,
-                            &swarm_members,
-                            &swarms_by_id,
-                            &channel_subscriptions,
-                            &channel_subscriptions_by_session,
-                            &swarm_plans,
-                            &swarm_coordinators,
-                            &client_event_tx,
-                            &mcp_pool,
-                            &event_history,
-                            &event_counter,
-                            &swarm_event_tx,
-                        )
-                        .await;
+                            message: format!("Unknown session '{target_session_id}'"),
+                            retry_after_secs: None,
+                        });
+                        if provisional_session {
+                            break;
+                        }
                     }
                 } else {
                     if provisional_session {

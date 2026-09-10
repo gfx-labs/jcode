@@ -51,6 +51,7 @@ pub(super) fn request_type_is_read_only(kind: &str) -> bool {
     matches!(
         kind,
         "ping"
+            | "list_sessions"
             | "state"
             | "get_history"
             | "get_model_catalog"

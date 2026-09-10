@@ -185,6 +185,26 @@ async fn target_subscribe_busy_live_agent_uses_member_root_without_waiting() {
         initial_subscribe_working_dir(&request).unwrap(),
         "/workspace/busy-original"
     );
+    let event = tokio::time::timeout(
+        Duration::from_secs(1),
+        list_sessions_event(93, &sessions, &members),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let ServerEvent::Sessions {
+        sessions: listed, ..
+    } = event
+    else {
+        panic!("wrong event")
+    };
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(
+        listed[0].working_dir.as_deref(),
+        Some("/workspace/busy-original")
+    );
+    assert_eq!(listed[0].is_processing, Some(true));
 }
 
 #[tokio::test]
@@ -205,13 +225,20 @@ async fn target_subscribe_unknown_target_never_uses_process_working_dir() {
 
 #[tokio::test]
 async fn target_subscribe_preserves_explicit_directory_and_its_validation() {
+    let _lock = crate::storage::lock_test_env();
+    let _home = Home::new();
+    let agent = live_agent("session_explicit", "/workspace/original").await;
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        "session_explicit".into(),
+        agent,
+    )])));
     let mut request = subscribe("session_explicit");
     if let Request::Subscribe { working_dir, .. } = &mut request {
         *working_dir = Some("/workspace/explicit".into());
     }
     resolve_target_subscribe_working_dir(
         &mut request,
-        &Arc::new(RwLock::new(HashMap::new())),
+        &sessions,
         &Arc::new(RwLock::new(HashMap::new())),
     )
     .await
@@ -225,10 +252,105 @@ async fn target_subscribe_preserves_explicit_directory_and_its_validation() {
     }
     resolve_target_subscribe_working_dir(
         &mut request,
-        &Arc::new(RwLock::new(HashMap::new())),
+        &sessions,
         &Arc::new(RwLock::new(HashMap::new())),
     )
     .await
     .unwrap();
     assert!(initial_subscribe_working_dir(&request).is_err());
+}
+
+#[tokio::test]
+async fn target_subscribe_unknown_even_with_explicit_cwd_is_rejected() {
+    let _lock = crate::storage::lock_test_env();
+    let _home = Home::new();
+    let mut request = subscribe("session_missing");
+    if let Request::Subscribe { working_dir, .. } = &mut request {
+        *working_dir = Some("/workspace/explicit".into());
+    }
+    assert!(
+        resolve_target_subscribe_working_dir(
+            &mut request,
+            &Arc::new(RwLock::new(HashMap::new())),
+            &Arc::new(RwLock::new(HashMap::new()))
+        )
+        .await
+        .unwrap_err()
+        .contains("Unknown session")
+    );
+    assert!(!crate::session::session_exists("session_missing"));
+}
+
+#[tokio::test]
+async fn list_sessions_merges_live_and_persisted_without_side_effects() {
+    let _lock = crate::storage::lock_test_env();
+    let home = Home::new();
+    let mut saved = crate::session::Session::create(None, Some("saved".into()));
+    saved.working_dir = Some("/workspace/old".into());
+    saved.rename_title(Some("My saved session".into()));
+    saved.save().unwrap();
+    let snapshot = std::fs::read(crate::session::session_path(&saved.id).unwrap()).unwrap();
+    let mut disk_only = crate::session::Session::create(None, Some("disk".into()));
+    disk_only.rename_title(Some("Disk only".into()));
+    disk_only.save().unwrap();
+    std::fs::write(home._temp.path().join("sessions/broken.json"), "invalid").unwrap();
+    let live = live_agent(&saved.id, "/workspace/live").await;
+    let unsaved = live_agent("session_unsaved", "/workspace/unsaved").await;
+    let sessions = Arc::new(RwLock::new(HashMap::from([
+        (saved.id.clone(), live),
+        ("session_unsaved".into(), unsaved.clone()),
+    ])));
+    let members = Arc::new(RwLock::new(HashMap::new()));
+    let event = list_sessions_event(91, &sessions, &members).await.unwrap();
+    let ServerEvent::Sessions {
+        id,
+        sessions: listed,
+    } = event
+    else {
+        panic!("wrong event")
+    };
+    assert_eq!(id, 91);
+    assert_eq!(listed.len(), 3);
+    assert_eq!(
+        listed
+            .iter()
+            .find(|s| s.id == saved.id)
+            .unwrap()
+            .working_dir
+            .as_deref(),
+        Some("/workspace/live")
+    );
+    assert_eq!(
+        listed.iter().find(|s| s.id == disk_only.id).unwrap().title,
+        "Disk only"
+    );
+    assert_eq!(sessions.read().await.len(), 2);
+    assert!(!crate::session::session_exists("session_unsaved"));
+    assert_eq!(
+        std::fs::read(crate::session::session_path(&saved.id).unwrap()).unwrap(),
+        snapshot
+    );
+    let _busy = unsaved.lock().await;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        list_sessions_event(92, &sessions, &members),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+#[tokio::test]
+async fn list_sessions_empty_home_does_not_create_storage() {
+    let _lock = crate::storage::lock_test_env();
+    let home = Home::new();
+    let event = list_sessions_event(
+        3,
+        &Arc::new(RwLock::new(HashMap::new())),
+        &Arc::new(RwLock::new(HashMap::new())),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(event, ServerEvent::Sessions { id: 3, sessions } if sessions.is_empty()));
+    assert!(!home._temp.path().join("sessions").exists());
 }

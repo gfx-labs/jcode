@@ -36,6 +36,10 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
+    /// Read-only discovery, available before Subscribe.
+    #[serde(rename = "list_sessions")]
+    ListSessions { id: u64 },
+
     /// Send a message to the agent
     #[serde(rename = "message")]
     Message {
@@ -749,6 +753,13 @@ pub enum Request {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    /// Session-picker snapshot.
+    #[serde(rename = "sessions")]
+    Sessions {
+        id: u64,
+        sessions: Vec<SessionListEntry>,
+    },
+
     /// An autonomous wake was requested. In external wake mode this event is
     /// emitted instead of starting or injecting into a turn.
     #[serde(rename = "wake_requested")]
@@ -1493,4 +1504,15 @@ pub enum ServerEvent {
         /// Tool call ID this is associated with
         tool_call_id: String,
     },
+}
+
+/// Minimal session-picker metadata. Optional fields may be unavailable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionListEntry {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_processing: Option<bool>,
 }

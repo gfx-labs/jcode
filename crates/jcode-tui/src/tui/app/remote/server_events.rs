@@ -932,7 +932,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.update_terminal_title();
             false
         }
-        ServerEvent::Pong { .. } => false,
+        ServerEvent::Pong { .. } | ServerEvent::Sessions { .. } => false,
         ServerEvent::ConnectionPhase { phase } => {
             let cp = match phase.as_str() {
                 "authenticating" => crate::message::ConnectionPhase::Authenticating,
