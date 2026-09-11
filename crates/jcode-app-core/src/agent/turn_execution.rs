@@ -839,6 +839,11 @@ impl Agent {
         crate::session::render_messages(&self.session)
             .into_iter()
             .map(|msg| HistoryMessage {
+                timestamp_unix_ms: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .and_then(|stored| stored.timestamp)
+                    .map(|timestamp| timestamp.timestamp_millis()),
                 message_id: msg
                     .stored_index
                     .and_then(|index| self.session.messages.get(index))
@@ -864,6 +869,11 @@ impl Agent {
         let history = messages
             .into_iter()
             .map(|msg| HistoryMessage {
+                timestamp_unix_ms: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .and_then(|stored| stored.timestamp)
+                    .map(|timestamp| timestamp.timestamp_millis()),
                 message_id: msg
                     .stored_index
                     .and_then(|index| self.session.messages.get(index))
@@ -899,6 +909,11 @@ impl Agent {
         let history = messages
             .into_iter()
             .map(|msg| HistoryMessage {
+                timestamp_unix_ms: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .and_then(|stored| stored.timestamp)
+                    .map(|timestamp| timestamp.timestamp_millis()),
                 message_id: msg
                     .stored_index
                     .and_then(|index| self.session.messages.get(index))

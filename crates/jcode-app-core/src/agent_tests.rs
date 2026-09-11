@@ -2232,3 +2232,48 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
         "{text:?}"
     );
 }
+
+#[tokio::test]
+async fn history_converters_preserve_stored_timestamps_and_legacy_absence() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let mut agent = Agent::new(provider, Registry::empty());
+    agent.session.messages.clear();
+    let expected = [Some(1_789_096_075_695_i64), None, Some(-1)];
+    for (index, timestamp) in expected.into_iter().enumerate() {
+        agent.session.append_stored_message(crate::session::StoredMessage {
+            id: format!("history-timestamp-{index}"),
+            role: if index == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
+            content: vec![ContentBlock::Text {
+                text: format!("timestamp message {index}"),
+                cache_control: None,
+            }],
+            display_role: None,
+            timestamp: timestamp.map(|value| chrono::DateTime::from_timestamp_millis(value).unwrap()),
+            tool_duration_ms: None,
+            token_usage: None,
+        });
+    }
+    // Repeated snapshots must never assign poll-time timestamps to legacy messages.
+    for _ in 0..2 {
+        for history in [
+            agent.get_history(),
+            agent.get_history_and_rendered_images().0,
+            agent
+                .get_history_and_rendered_images_with_compacted_history(0)
+                .0,
+        ] {
+            assert_eq!(
+                history
+                    .iter()
+                    .map(|message| message.timestamp_unix_ms)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+}

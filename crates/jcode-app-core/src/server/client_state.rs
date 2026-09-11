@@ -365,6 +365,11 @@ fn rendered_to_history_message(
     session: &crate::session::Session,
 ) -> HistoryMessage {
     HistoryMessage {
+        timestamp_unix_ms: msg
+            .stored_index
+            .and_then(|index| session.messages.get(index))
+            .and_then(|stored| stored.timestamp)
+            .map(|timestamp| timestamp.timestamp_millis()),
         message_id: msg
             .stored_index
             .and_then(|index| session.messages.get(index))
@@ -871,6 +876,43 @@ async fn write_event(writer: &Arc<Mutex<WriteHalf>>, event: &ServerEvent) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_history_preserves_stored_timestamp_and_legacy_absence() {
+        let mut session = session_with_provider_key(None);
+        let mut stored: crate::session::StoredMessage = serde_json::from_value(serde_json::json!({
+            "id": "legacy-message",
+            "role": "user",
+            "content": []
+        }))
+        .expect("legacy stored message without timestamp");
+        assert_eq!(stored.timestamp, None);
+        assert!(
+            serde_json::to_value(&stored)
+                .unwrap()
+                .get("timestamp")
+                .is_none()
+        );
+        for expected in [None, Some(1_789_096_075_695_i64), Some(-1)] {
+            stored.timestamp =
+                expected.map(|value| chrono::DateTime::from_timestamp_millis(value).unwrap());
+            session.messages = vec![stored.clone()];
+            for index in [Some(0), None, Some(1)] {
+                let rendered = crate::session::RenderedMessage {
+                    role: "user".to_string(),
+                    content: "history message".to_string(),
+                    tool_calls: Vec::new(),
+                    tool_data: None,
+                    stored_index: index,
+                };
+                let history = rendered_to_history_message(rendered, &session);
+                assert_eq!(
+                    history.timestamp_unix_ms,
+                    if index == Some(0) { expected } else { None }
+                );
+            }
+        }
+    }
 
     fn session_with_provider_key(key: Option<&str>) -> crate::session::Session {
         let mut session = crate::session::Session::create_with_id(

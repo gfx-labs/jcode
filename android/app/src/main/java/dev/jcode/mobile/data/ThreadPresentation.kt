@@ -72,10 +72,10 @@ fun threadRowsNewestFirst(session: MobileSession, transcript: List<TranscriptEnt
     }
     val chronological = buildList<ThreadRow> {
         for (index in 0..transcript.size) {
-            pending[index].orEmpty().forEach { add(ThreadRow.Message(TranscriptEntry(it.localId, "user", it.text), receipt = it.receipt)) }
+            pending[index].orEmpty().forEach { add(ThreadRow.Message(TranscriptEntry(it.localId, "user", it.text, timestampUnixMs = it.sentAtUnixMs), receipt = it.receipt)) }
             if (index < transcript.size) {
                 val delivery = merged[index]
-                add(ThreadRow.Message(if (delivery == null) transcript[index] else transcript[index].copy(id = delivery.localId, text = delivery.text), receipt = delivery?.receipt))
+                add(ThreadRow.Message(if (delivery == null) transcript[index] else transcript[index].copy(id = delivery.localId, text = delivery.text, timestampUnixMs = transcript[index].timestampUnixMs ?: delivery.sentAtUnixMs), receipt = delivery?.receipt))
             }
         }
         val lastAssistant = transcript.lastOrNull { it.role == "assistant" }?.text?.trim()

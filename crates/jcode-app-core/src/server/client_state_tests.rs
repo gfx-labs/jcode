@@ -111,7 +111,9 @@ async fn session_activity_snapshot_uses_fallback_when_no_live_connection_is_mark
 #[tokio::test]
 async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy() {
     for tier in [Some("priority"), Some("flex"), None] {
-        assert_busy_history_service_tier(tier).await;
+        for timestamp in [None, Some(1_789_096_075_695_i64)] {
+            assert_busy_history_service_tier(tier, timestamp).await;
+        }
     }
 }
 
@@ -119,7 +121,7 @@ async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy(
     clippy::await_holding_lock,
     reason = "test intentionally keeps the agent busy lock held to exercise persisted-history fallback"
 )]
-async fn assert_busy_history_service_tier(tier: Option<&'static str>) {
+async fn assert_busy_history_service_tier(tier: Option<&'static str>, timestamp: Option<i64>) {
     let _guard = crate::storage::lock_test_env();
     let temp_home = tempfile::TempDir::new().expect("create temp home");
     let prev_home = std::env::var_os("JCODE_HOME");
@@ -140,7 +142,7 @@ async fn assert_busy_history_service_tier(tier: Option<&'static str>) {
             cache_control: None,
         }],
         display_role: None,
-        timestamp: None,
+        timestamp: timestamp.map(|value| chrono::DateTime::from_timestamp_millis(value).unwrap()),
         tool_duration_ms: None,
         token_usage: None,
     });
@@ -213,6 +215,7 @@ async fn assert_busy_history_service_tier(tier: Option<&'static str>) {
             assert_eq!(returned_session_id, session_id);
             assert_eq!(messages.len(), 1);
             assert_eq!(messages[0].content, "persisted fallback history");
+            assert_eq!(messages[0].timestamp_unix_ms, timestamp);
             assert_eq!(service_tier.as_deref(), tier);
             let activity = activity.expect("fallback activity snapshot");
             assert!(activity.is_processing);

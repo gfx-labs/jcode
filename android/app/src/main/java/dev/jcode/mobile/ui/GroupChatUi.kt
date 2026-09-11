@@ -64,6 +64,7 @@ internal fun ThreadEventCard(entry: TranscriptEntry, attribution: MessageAttribu
                     Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "Hide ${attribution.label} details" else "Show ${attribution.label} details", tint = Muted)
                 }
             }
+            MessageTimestamp(entry.timestampUnixMs)
             if (expanded) {
                 MarkdownMessage(entry.text, Modifier.padding(bottom = 8.dp), MaterialTheme.typography.bodyMedium)
             } else {
