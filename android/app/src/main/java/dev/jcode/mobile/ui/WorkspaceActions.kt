@@ -7,5 +7,7 @@ internal data class WorkspaceActions(
     val sendMessage: (String, String) -> Unit = { _, _ -> },
     val broadcast: (List<String>, String) -> Unit = { _, _ -> },
     val dismissError: () -> Unit = {},
+    val togglePin: (String) -> Unit = {},
+    val renameSession: (String, String) -> Unit = { _, _ -> },
     val loadDemo: () -> Unit = {},
 )
