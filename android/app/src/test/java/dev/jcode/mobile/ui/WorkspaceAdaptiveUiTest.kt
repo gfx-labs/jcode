@@ -110,4 +110,33 @@ class WorkspaceAdaptiveUiTest {
         assertTrue(input.bottom <= app.bottom)
         screenshot("large-font-short-window")
     }
+    @Test fun detailsBackAndSearchFilterSurviveWindowChange() {
+        val frame = mutableStateOf(Frame())
+        show(frame, mutableStateOf(state(null)))
+        compose.onNodeWithTag("session-search").performTextInput("jcode")
+        compose.onNodeWithText("Active 1").performClick()
+        compose.onNodeWithTag("session:fresh").performClick()
+        compose.onNodeWithContentDescription("Session details").performClick()
+        compose.onNodeWithText("/home/dev/projects/jcode").assertIsDisplayed()
+        compose.onNodeWithText("Agents (0)").performClick()
+        compose.onNodeWithText("No subagents").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back to thread").performClick()
+        compose.onNodeWithTag("thread-viewport").assertIsDisplayed()
+        compose.runOnIdle { frame.value = Frame(840, 900) }
+        compose.onNodeWithTag("session-search").assertTextContains("jcode")
+        compose.onNodeWithText("Active 1").assertIsSelected()
+        compose.runOnIdle { frame.value = Frame() }
+        compose.onNodeWithContentDescription("Back to sessions").performClick()
+        compose.onNodeWithTag("session-search").assertTextContains("jcode")
+    }
+    @Test fun offlineDraftSurvivesReconnectWithoutAutomaticSend() {
+        val data = mutableStateOf(state().copy(connection = ConnectionStatus.DISCONNECTED))
+        show(mutableStateOf(Frame()), data)
+        compose.onNodeWithTag("message-input").performTextInput("Offline draft")
+        compose.onNodeWithContentDescription("Send message to Gateway improvements").assertIsNotEnabled()
+        compose.runOnIdle { data.value = data.value.copy(connection = ConnectionStatus.CONNECTED) }
+        compose.onNodeWithTag("message-input").assertTextContains("Offline draft")
+        compose.onNodeWithContentDescription("Send message to Gateway improvements").assertIsEnabled()
+    }
+
 }
