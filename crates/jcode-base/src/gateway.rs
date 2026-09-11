@@ -41,6 +41,7 @@ pub use registry::DeviceRegistry;
 /// Default gateway port ("jc" on phone keypad = 52, but we use 7643)
 pub const DEFAULT_PORT: u16 = 7643;
 const WEBSOCKET_KEEPALIVE_INTERVAL_SECS: u64 = 20;
+const WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Gateway configuration
 #[derive(Debug, Clone)]
@@ -219,6 +220,16 @@ async fn handle_ws_connection(
         device_id,
     })?;
 
+    bridge_websocket(ws_stream, bridge_stream, device_name).await;
+    Ok(())
+}
+
+/// Relay the authenticated connection without changing its session ownership.
+async fn bridge_websocket(
+    ws_stream: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    bridge_stream: crate::transport::Stream,
+    device_name: String,
+) {
     // Bridge WebSocket frames <-> newline-delimited JSON on the bridge stream
     let (ws_sink, ws_source) = ws_stream.split();
     let ws_sink = Arc::new(tokio::sync::Mutex::new(ws_sink));
@@ -254,7 +265,12 @@ async fn handle_ws_connection(
                         break;
                     }
                 }
-                Ok(Message::Close(_)) => break,
+                Ok(Message::Close(_)) => {
+                    // Tungstenite queues the close reply while reading. Flush
+                    // it before dropping the TCP stream.
+                    let _ = sink_for_ping.lock().await.flush().await;
+                    break;
+                }
                 Ok(Message::Ping(data)) => {
                     let mut sink = sink_for_ping.lock().await;
                     let _ = sink.send(Message::Pong(data)).await;
@@ -267,8 +283,10 @@ async fn handle_ws_connection(
 
     let keepalive_device_name = device_name.clone();
     let keepalive = tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(WEBSOCKET_KEEPALIVE_INTERVAL_SECS));
+        let period = Duration::from_secs(WEBSOCKET_KEEPALIVE_INTERVAL_SECS);
+        // interval() ticks immediately. A one-shot request can finish before
+        // that initial Ping's Pong arrives, racing socket shutdown on a LAN.
+        let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         loop {
             interval.tick().await;
             let mut sink = sink_for_keepalive.lock().await;
@@ -288,7 +306,7 @@ async fn handle_ws_connection(
         loop {
             line.clear();
             match bridge_reader.read_line(&mut line).await {
-                Ok(0) => break, // EOF
+                Ok(0) => return true, // All backend events have been flushed.
                 Ok(_) => {
                     let trimmed = line.trim_end().to_string();
                     if !trimmed.is_empty() {
@@ -301,6 +319,7 @@ async fn handle_ws_connection(
                 Err(_) => break,
             }
         }
+        false
     });
 
     // Wait for either direction to finish
@@ -308,18 +327,39 @@ async fn handle_ws_connection(
     tokio::pin!(unix_to_ws);
     tokio::pin!(keepalive);
 
-    tokio::select! {
-        _ = &mut ws_to_unix => {}
-        _ = &mut unix_to_ws => {}
-        _ = &mut keepalive => {}
+    let backend_eof = tokio::select! {
+        _ = &mut ws_to_unix => false,
+        result = &mut unix_to_ws => matches!(result, Ok(true)),
+        _ = &mut keepalive => false,
+    };
+
+    keepalive.abort();
+    if backend_eof {
+        // One-shot controls close their backend after replying. Do not turn
+        // that ordinary EOF into an abrupt TCP reset: mobile clients may still
+        // be reading the reply or writing a Pong. Stop pings, send a normal
+        // Close after the flushed events, and keep reading for the peer's Close.
+        // Bound the whole handshake so an unresponsive peer cannot leak a task.
+        let _ = tokio::time::timeout(WEBSOCKET_CLOSE_TIMEOUT, async {
+            let close = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "Request complete".into(),
+            };
+            ws_sink
+                .lock()
+                .await
+                .send(Message::Close(Some(close)))
+                .await?;
+            let _ = (&mut ws_to_unix).await;
+            Ok::<_, tokio_tungstenite::tungstenite::Error>(())
+        })
+        .await;
     }
 
     ws_to_unix.abort();
     unix_to_ws.abort();
-    keepalive.abort();
 
     logging::info(&format!("Gateway: {} disconnected", device_name));
-    Ok(())
 }
 
 /// Finds the end of HTTP headers (`\r\n\r\n`), returning the offset of the
@@ -617,3 +657,7 @@ fn system_hostname() -> Option<String> {
 #[cfg(test)]
 #[path = "gateway_tests.rs"]
 mod gateway_tests;
+
+#[cfg(test)]
+#[path = "gateway_lifecycle_tests.rs"]
+mod gateway_lifecycle_tests;
