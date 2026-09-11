@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.sp
 import org.commonmark.node.*
 import org.commonmark.node.Paragraph as MdParagraph
 import org.commonmark.node.Text as MdText
-import org.commonmark.renderer.text.TextContentRenderer
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import org.commonmark.node.Image as MdImage
@@ -55,10 +54,61 @@ internal fun safeMarkdownLink(destination: String): String? = runCatching {
     }
 }.getOrNull()
 
+private val structuralMarkdownParser = Parser.builder().build()
+
+/** Extension visitors recurse, so screen the core parser's tree before running them. */
+internal fun parseSafeMarkdown(source: String): Node {
+    val structural = structuralMarkdownParser.parse(source)
+    var node: Node? = structural
+    var depth = 0
+    var visited = 0
+    while (node != null) {
+        if (depth > 48 || visited++ > 10000) return structural
+        val current: Node = node
+        if (current.firstChild != null) { node = current.firstChild; depth++ }
+        else {
+            var cursor = current
+            while (cursor !== structural && cursor.next == null) {
+                cursor = cursor.parent ?: break
+                depth--
+            }
+            node = if (cursor === structural) null else cursor.next
+        }
+    }
+    return markdownParser.parse(source)
+}
+
+/** Iterative and bounded: never delegate deep remote content to a recursive renderer. */
+internal fun boundedMarkdownText(root: Node): String = buildString {
+    var node: Node? = root
+    var visited = 0
+    while (node != null && visited++ < 10000 && length < 16000) {
+        val current: Node = node ?: break
+        val literal = when (current) {
+            is MdText -> current.literal
+            is Code -> current.literal
+            is FencedCodeBlock -> current.literal
+            is IndentedCodeBlock -> current.literal
+            is HtmlInline -> current.literal
+            is HtmlBlock -> current.literal
+            is SoftLineBreak, is HardLineBreak -> "\n"
+            else -> ""
+        }
+        append(literal.take(16000 - length))
+        if (current.firstChild != null) node = current.firstChild
+        else {
+            var cursor = current
+            while (cursor !== root && cursor.next == null) cursor = cursor.parent ?: break
+            node = if (cursor === root) null else cursor.next
+        }
+    }
+    if (node != null) append("\n[Additional deeply nested content omitted]")
+}
+
 @Composable
 internal fun MarkdownMessage(source: String, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
     val resolvedStyle = if (style.color == Color.Unspecified) style.copy(color = Ink) else style
-    val document = remember(source) { markdownParser.parse(source) }
+    val document = remember(source) { parseSafeMarkdown(source) }
     // Preserve plain transcript text semantics and line breaks, including tall live output.
     val plain = remember(source) {
         document.children().all { it is MdParagraph && it.children().all { n -> n is MdText || n is SoftLineBreak } } &&
@@ -74,7 +124,7 @@ internal fun MarkdownMessage(source: String, modifier: Modifier = Modifier, styl
 
 @Composable
 private fun MarkdownBlock(node: Node, style: TextStyle, depth: Int) {
-    if (depth > 24) { Text(TextContentRenderer.builder().build().render(node), style = style); return }
+    if (depth > 24) { Text(boundedMarkdownText(node), style = style); return }
     when (node) {
         is MdParagraph -> Text(markdownInline(node), style = style)
         is Heading -> Text(markdownInline(node), style = style.copy(
@@ -115,7 +165,7 @@ private fun markdownInline(node: Node): AnnotatedString {
     return remember(node, linkColor, codeBackground) {
         buildAnnotatedString {
             fun visit(current: Node, depth: Int = 0) {
-                if (depth > 48) { append(TextContentRenderer.builder().build().render(current)); return }
+                if (depth > 48) { append(boundedMarkdownText(current)); return }
                 fun children() { current.children().forEach { visit(it, depth + 1) } }
                 when (current) {
                     is MdText -> append(current.literal)
