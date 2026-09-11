@@ -55,7 +55,7 @@ class ThreadViewportUiTest {
     @Test fun userScrollUpPreservesReadingPositionAndJumpButtonReturnsToLatest() {
         val state = mutableStateOf(MobileState(transcripts = mapOf("s" to history())))
         show(state)
-        compose.onNodeWithTag("viewport").performTouchInput { swipeDown(durationMillis = 600) }
+        compose.onNodeWithTag("thread-message-list").performTouchInput { swipeDown(durationMillis = 600) }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Jump to latest messages").assertIsDisplayed()
         compose.runOnIdle {
