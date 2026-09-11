@@ -51,7 +51,7 @@ internal fun ThreadParticipants(state: MobileState, session: MobileSession, chil
 }
 
 @Composable
-internal fun ThreadEventCard(entry: TranscriptEntry, attribution: MessageAttribution) {
+internal fun ThreadEventCard(entry: TranscriptEntry, attribution: MessageAttribution, onQuote: ((String) -> Unit)? = null) {
     var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
     val background = attribution.label.startsWith("Background") || attribution.label == "Shell output"
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
@@ -59,12 +59,13 @@ internal fun ThreadEventCard(entry: TranscriptEntry, attribution: MessageAttribu
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (background) Icons.Outlined.Terminal else Icons.Outlined.Info, null, Modifier.size(18.dp), tint = Muted)
                 Text(attribution.label, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = Muted)
+                MessageActions(attribution.label, entry.text, onQuote)
                 IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(48.dp)) {
                     Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "Hide ${attribution.label} details" else "Show ${attribution.label} details", tint = Muted)
                 }
             }
             if (expanded) {
-                androidx.compose.foundation.text.selection.SelectionContainer { Text(entry.text, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 8.dp)) }
+                MarkdownMessage(entry.text, Modifier.padding(bottom = 8.dp), MaterialTheme.typography.bodyMedium)
             } else {
                 val summary = entry.text.trimStart().lineSequence().firstOrNull().orEmpty()
                     .replace(Regex("^\\*\\*[^*]+\\*\\*\\s*"), "").replace("`", "")
