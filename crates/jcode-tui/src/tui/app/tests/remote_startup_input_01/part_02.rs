@@ -184,6 +184,36 @@ fn test_remote_available_models_updated_after_refresh_shows_summary_and_updates_
 }
 
 #[test]
+fn test_remote_account_notification_renders_as_system_message() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Notification {
+            from_session: "jcode".to_string(),
+            from_name: Some("Jcode".to_string()),
+            notification_type: crate::protocol::NotificationType::Message {
+                scope: Some("account".to_string()),
+                channel: None,
+                tldr: None,
+            },
+            message: "Renamed openai account openai-1 to Work.".to_string(),
+        },
+        &mut remote,
+    );
+
+    let last = app.display_messages.last().expect("display message");
+    assert_eq!(last.role, "system");
+    assert!(last.content.contains("Renamed openai account openai-1 to Work."));
+    assert_eq!(
+        app.status_notice(),
+        Some("Renamed openai account openai-1 to Work.".to_string())
+    );
+}
+
+#[test]
 fn test_remote_runtime_activity_notification_renders_as_system_message() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();

@@ -2764,6 +2764,18 @@ pub(in crate::tui::app) fn handle_server_event(
                 ));
                 return false;
             }
+            let account_scope = matches!(
+                &notification_type,
+                crate::protocol::NotificationType::Message {
+                    scope: Some(scope),
+                    ..
+                } if scope == "account"
+            );
+            if account_scope {
+                app.push_display_message(DisplayMessage::system(message.clone()));
+                app.set_status_notice(message.clone());
+                return false;
+            }
             app.push_display_message(DisplayMessage::swarm(
                 presentation.title.clone(),
                 presentation.message.clone(),
