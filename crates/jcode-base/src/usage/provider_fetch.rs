@@ -282,29 +282,25 @@ pub(super) async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
         && let Ok(json) = resp.json::<serde_json::Value>().await
         && let Some(data) = json.get("data")
     {
-        let total_credits = data
-            .get("total_credits")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let total_usage = data
-            .get("total_usage")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let balance = total_credits - total_usage;
+        let total_credits = data.get("total_credits").and_then(|v| v.as_f64());
+        let total_usage = data.get("total_usage").and_then(|v| v.as_f64());
+        if let (Some(total_credits), Some(total_usage)) = (total_credits, total_usage) {
+            let balance = total_credits - total_usage;
 
-        if total_credits > 0.0 {
-            let usage_pct = usage_percent_from_used_limit(total_usage, total_credits);
-            limits.push(UsageLimit {
-                name: "Credits".to_string(),
-                usage_percent: usage_pct,
-                resets_at: None,
-            });
+            if total_credits > 0.0 {
+                let usage_pct = usage_percent_from_used_limit(total_usage, total_credits);
+                limits.push(UsageLimit {
+                    name: "Credits".to_string(),
+                    usage_percent: usage_pct,
+                    resets_at: None,
+                });
+            }
+
+            extra_info.push((
+                "Balance".to_string(),
+                format!("${:.2} / ${:.2}", balance, total_credits),
+            ));
         }
-
-        extra_info.push((
-            "Balance".to_string(),
-            format!("${:.2} / ${:.2}", balance, total_credits),
-        ));
     }
 
     if let Ok(resp) = key_resp
@@ -329,11 +325,12 @@ pub(super) async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
         extra_info.push(("This week".to_string(), format!("${:.2}", usage_weekly)));
         extra_info.push(("This month".to_string(), format!("${:.2}", usage_monthly)));
 
-        if let Some(limit) = data.get("limit").and_then(|v| v.as_f64()) {
-            let remaining = data
-                .get("limit_remaining")
+        if let (Some(limit), Some(remaining)) = (
+            data.get("limit")
                 .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+                .filter(|limit| *limit > 0.0),
+            data.get("limit_remaining").and_then(|v| v.as_f64()),
+        ) {
             let pct = usage_percent_from_remaining_limit(remaining, limit);
             limits.push(UsageLimit {
                 name: "Key limit".to_string(),
@@ -348,7 +345,11 @@ pub(super) async fn fetch_openrouter_usage_report() -> Option<ProviderUsage> {
     }
 
     if limits.is_empty() && extra_info.is_empty() {
-        return None;
+        return Some(ProviderUsage {
+            provider_name: "OpenRouter".into(),
+            error: Some("Provider quota information is unavailable".into()),
+            ..Default::default()
+        });
     }
 
     Some(ProviderUsage {
@@ -445,7 +446,11 @@ pub(super) async fn fetch_antigravity_usage_report() -> Option<ProviderUsage> {
     }
 
     if limits.is_empty() && extra_info.is_empty() {
-        return None;
+        return Some(ProviderUsage {
+            provider_name: "Antigravity".into(),
+            error: Some("Provider quota information is unavailable".into()),
+            ..Default::default()
+        });
     }
 
     Some(ProviderUsage {
@@ -601,8 +606,12 @@ pub(super) async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
         if let Some(quotas) = json.get("limited_user_quotas").and_then(|v| v.as_object()) {
             for (name, value) in quotas {
                 if let Some(obj) = value.as_object() {
-                    let used = obj.get("used").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let limit = obj.get("limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let (Some(used), Some(limit)) = (
+                        obj.get("used").and_then(|v| v.as_f64()),
+                        obj.get("limit").and_then(|v| v.as_f64()),
+                    ) else {
+                        continue;
+                    };
                     if limit > 0.0 {
                         let pct = usage_percent_from_used_limit(used, limit);
                         limits.push(UsageLimit {

@@ -16,6 +16,7 @@ struct PersistedSoftInterrupt {
 #[serde(rename_all = "snake_case")]
 enum PersistedSoftInterruptSource {
     User,
+    MobileUser([u8; 16]),
     System,
     BackgroundTask,
 }
@@ -24,6 +25,7 @@ impl From<SoftInterruptSource> for PersistedSoftInterruptSource {
     fn from(value: SoftInterruptSource) -> Self {
         match value {
             SoftInterruptSource::User => Self::User,
+            SoftInterruptSource::MobileUser(id) => Self::MobileUser(id),
             SoftInterruptSource::System => Self::System,
             SoftInterruptSource::BackgroundTask => Self::BackgroundTask,
         }
@@ -34,6 +36,7 @@ impl From<PersistedSoftInterruptSource> for SoftInterruptSource {
     fn from(value: PersistedSoftInterruptSource) -> Self {
         match value {
             PersistedSoftInterruptSource::User => Self::User,
+            PersistedSoftInterruptSource::MobileUser(id) => Self::MobileUser(id),
             PersistedSoftInterruptSource::System => Self::System,
             PersistedSoftInterruptSource::BackgroundTask => Self::BackgroundTask,
         }

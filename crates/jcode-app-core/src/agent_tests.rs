@@ -366,6 +366,65 @@ fn tool_output_to_content_blocks_preserves_labeled_images() {
 }
 
 #[tokio::test]
+async fn identical_mobile_interrupts_keep_distinct_stored_and_history_ids() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    let ids = [
+        *uuid::Uuid::new_v4().as_bytes(),
+        *uuid::Uuid::new_v4().as_bytes(),
+    ];
+    for id in ids {
+        agent.queue_soft_interrupt(
+            "identical text".into(),
+            Vec::new(),
+            false,
+            SoftInterruptSource::MobileUser(id),
+        );
+    }
+    let injected = agent.inject_soft_interrupts();
+    assert_eq!(injected.len(), 2, "distinct sends must not coalesce");
+    let expected: Vec<_> = ids
+        .into_iter()
+        .map(|id| format!("mobile:{}", uuid::Uuid::from_bytes(id)))
+        .collect();
+    let stored: Vec<_> = agent
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.id.starts_with("mobile:"))
+        .collect();
+    assert_eq!(
+        stored
+            .iter()
+            .map(|message| message.id.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        stored
+            .iter()
+            .all(|message| message.role == Role::User && message.display_role.is_none())
+    );
+    for history in [
+        agent.get_history(),
+        agent.get_history_and_rendered_images().0,
+        agent
+            .get_history_and_rendered_images_with_compacted_history(0)
+            .0,
+    ] {
+        assert_eq!(
+            history
+                .into_iter()
+                .filter_map(|message| message.message_id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn queued_soft_interrupt_images_are_injected_as_image_blocks() {
     let provider: Arc<dyn Provider> = Arc::new(NativeAutoCompactionProvider);
     let registry = Registry::new(provider.clone()).await;

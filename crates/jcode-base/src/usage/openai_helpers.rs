@@ -135,10 +135,14 @@ pub(super) fn classify_openai_limits(limits: &[UsageLimit]) -> OpenAIUsageData {
 }
 
 fn parse_f32_value(value: &serde_json::Value) -> Option<f32> {
-    if let Some(n) = value.as_f64() {
-        return Some(n as f32);
-    }
-    value.as_str().and_then(|s| s.trim().parse::<f32>().ok())
+    let parsed = if let Some(n) = value.as_f64() {
+        Some(n as f32)
+    } else {
+        value.as_str().and_then(|s| s.trim().parse::<f32>().ok())
+    };
+    // Strings can parse as NaN/Infinity, and finite JSON f64 values can
+    // overflow f32. Reject both before clamping manufactures a valid quota.
+    parsed.filter(|number| number.is_finite() && *number >= 0.0)
 }
 
 pub(super) fn parse_usage_percent_from_obj(

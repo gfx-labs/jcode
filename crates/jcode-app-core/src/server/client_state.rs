@@ -318,7 +318,7 @@ pub(super) async fn handle_get_compacted_history(
             (
                 rendered_messages
                     .into_iter()
-                    .map(rendered_to_history_message)
+                    .map(|msg| rendered_to_history_message(msg, &session))
                     .collect(),
                 images,
                 info,
@@ -360,8 +360,17 @@ pub(super) async fn handle_get_compacted_history(
     .await
 }
 
-fn rendered_to_history_message(msg: crate::session::RenderedMessage) -> HistoryMessage {
+fn rendered_to_history_message(
+    msg: crate::session::RenderedMessage,
+    session: &crate::session::Session,
+) -> HistoryMessage {
     HistoryMessage {
+        message_id: msg
+            .stored_index
+            .and_then(|index| session.messages.get(index))
+            .map(|stored| &stored.id)
+            .filter(|id| id.starts_with("mobile:"))
+            .cloned(),
         role: msg.role,
         content: msg.content,
         tool_calls: if msg.tool_calls.is_empty() {
@@ -507,12 +516,11 @@ async fn send_history_from_persisted_session(
         .reasoning_effort
         .clone()
         .or_else(|| provider.reasoning_effort());
-    drop(session);
-
     let messages = rendered_messages
         .into_iter()
-        .map(rendered_to_history_message)
+        .map(|msg| rendered_to_history_message(msg, &session))
         .collect();
+    drop(session);
     let side_panel = crate::side_panel::snapshot_for_session(session_id).unwrap_or_default();
 
     let (all_sessions, current_client_count) = {

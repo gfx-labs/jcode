@@ -14,6 +14,7 @@ private val backgroundEnvelope = Regex("^\\*\\*(Background task(?: started| prog
  */
 fun messageAttribution(entry: TranscriptEntry): MessageAttribution {
     val role = entry.displayRole?.takeIf { it.isNotBlank() } ?: entry.role
+    if (role == "user" && (entry.messageId?.startsWith("mobile:") == true || entry.id.startsWith("local:"))) return MessageAttribution("You", isHuman = true)
     if (role == "assistant") return MessageAttribution("Jcode")
     if (role == "tool") return MessageAttribution("Tool output")
     val text = entry.text.trimStart().replaceFirst(timestampEnvelope, "")

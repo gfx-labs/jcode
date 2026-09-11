@@ -70,6 +70,45 @@ impl Agent {
         event_tx: mpsc::UnboundedSender<ServerEvent>,
         display_role: Option<crate::session::StoredDisplayRole>,
     ) -> Result<()> {
+        self.run_once_streaming_mpsc_with_identity(
+            user_message,
+            images,
+            system_reminder,
+            event_tx,
+            display_role,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn run_once_streaming_mpsc_with_mobile_id(
+        &mut self,
+        user_message: &str,
+        images: Vec<(String, String)>,
+        system_reminder: Option<String>,
+        event_tx: mpsc::UnboundedSender<ServerEvent>,
+        mobile_id: [u8; 16],
+    ) -> Result<()> {
+        self.run_once_streaming_mpsc_with_identity(
+            user_message,
+            images,
+            system_reminder,
+            event_tx,
+            None,
+            Some(mobile_id),
+        )
+        .await
+    }
+
+    async fn run_once_streaming_mpsc_with_identity(
+        &mut self,
+        user_message: &str,
+        images: Vec<(String, String)>,
+        system_reminder: Option<String>,
+        event_tx: mpsc::UnboundedSender<ServerEvent>,
+        display_role: Option<crate::session::StoredDisplayRole>,
+        mobile_id: Option<[u8; 16]>,
+    ) -> Result<()> {
         // Inject any pending notifications before the user message
         let alerts = self.take_alerts();
         if !alerts.is_empty() {
@@ -90,7 +129,12 @@ impl Agent {
         self.current_turn_system_reminder =
             system_reminder.filter(|value| !value.trim().is_empty());
 
-        self.append_user_context_message_with_display_role(user_message, images, display_role)?;
+        self.append_user_context_message_with_identity(
+            user_message,
+            images,
+            display_role,
+            mobile_id,
+        )?;
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
@@ -116,6 +160,16 @@ impl Agent {
         images: Vec<(String, String)>,
         display_role: Option<crate::session::StoredDisplayRole>,
     ) -> Result<()> {
+        self.append_user_context_message_with_identity(user_message, images, display_role, None)
+    }
+
+    fn append_user_context_message_with_identity(
+        &mut self,
+        user_message: &str,
+        images: Vec<(String, String)>,
+        display_role: Option<crate::session::StoredDisplayRole>,
+        mobile_id: Option<[u8; 16]>,
+    ) -> Result<()> {
         let mut blocks: Vec<ContentBlock> = images
             .into_iter()
             .map(|(media_type, data)| ContentBlock::Image { media_type, data })
@@ -133,6 +187,13 @@ impl Agent {
         }
 
         self.add_message_with_display_role(Role::User, blocks, display_role);
+        if let Some(id) = mobile_id {
+            self.session
+                .messages
+                .last_mut()
+                .expect("just appended user message")
+                .id = format!("mobile:{}", uuid::Uuid::from_bytes(id));
+        }
         self.session.save()
     }
 
@@ -778,6 +839,12 @@ impl Agent {
         crate::session::render_messages(&self.session)
             .into_iter()
             .map(|msg| HistoryMessage {
+                message_id: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .map(|stored| &stored.id)
+                    .filter(|id| id.starts_with("mobile:"))
+                    .cloned(),
                 role: msg.role,
                 content: msg.content,
                 tool_calls: if msg.tool_calls.is_empty() {
@@ -797,6 +864,12 @@ impl Agent {
         let history = messages
             .into_iter()
             .map(|msg| HistoryMessage {
+                message_id: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .map(|stored| &stored.id)
+                    .filter(|id| id.starts_with("mobile:"))
+                    .cloned(),
                 role: msg.role,
                 content: msg.content,
                 tool_calls: if msg.tool_calls.is_empty() {
@@ -826,6 +899,12 @@ impl Agent {
         let history = messages
             .into_iter()
             .map(|msg| HistoryMessage {
+                message_id: msg
+                    .stored_index
+                    .and_then(|index| self.session.messages.get(index))
+                    .map(|stored| &stored.id)
+                    .filter(|id| id.starts_with("mobile:"))
+                    .cloned(),
                 role: msg.role,
                 content: msg.content,
                 tool_calls: if msg.tool_calls.is_empty() {

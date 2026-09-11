@@ -271,6 +271,48 @@ fn test_parse_usage_percent_supports_used_limit_shape() {
 }
 
 #[test]
+fn test_parse_usage_percent_rejects_invalid_negative_and_overflow_values() {
+    for invalid in [
+        serde_json::json!(-1),
+        serde_json::json!("-0.5"),
+        serde_json::json!("NaN"),
+        serde_json::json!("Infinity"),
+        serde_json::json!("-Infinity"),
+        serde_json::json!("1e100"),
+        serde_json::json!(1e100),
+    ] {
+        for key in [
+            "usage_percent",
+            "used_percent",
+            "percent_used",
+            "utilization",
+        ] {
+            let mut obj = serde_json::Map::new();
+            obj.insert(key.into(), invalid.clone());
+            assert_eq!(
+                openai_helpers::parse_usage_percent_from_obj(&obj),
+                None,
+                "{key}: {invalid}"
+            );
+        }
+        for key in ["used", "remaining"] {
+            let mut obj = serde_json::Map::new();
+            obj.insert(key.into(), invalid.clone());
+            obj.insert("limit".into(), serde_json::json!(100));
+            assert_eq!(openai_helpers::parse_usage_percent_from_obj(&obj), None);
+            obj.insert(key.into(), serde_json::json!(10));
+            obj.insert("limit".into(), invalid.clone());
+            assert_eq!(openai_helpers::parse_usage_percent_from_obj(&obj), None);
+        }
+    }
+    let zero = serde_json::json!({"usage_percent": "0"});
+    assert_eq!(
+        openai_helpers::parse_usage_percent_from_obj(zero.as_object().unwrap()),
+        Some(0.0)
+    );
+}
+
+#[test]
 fn test_parse_usage_percent_supports_remaining_limit_shape() {
     let mut obj = serde_json::Map::new();
     obj.insert("remaining".to_string(), serde_json::json!(60));
@@ -832,4 +874,17 @@ fn anthropic_model_scoped_exhaustion_matches_display_name_to_catalog_id() {
         ..Default::default()
     };
     assert!(!below_limit.model_scoped_exhausted("claude-fable-5"));
+}
+#[test]
+fn missing_anthropic_primary_quota_is_not_treated_as_zero_usage() {
+    let missing: UsageResponse =
+        serde_json::from_str(r#"{"five_hour":{"utilization":0.0}}"#).unwrap();
+    assert!(!anthropic_primary_quotas_present(&missing));
+    let empty: UsageResponse = serde_json::from_str(r#"{"five_hour":{},"seven_day":{}}"#).unwrap();
+    assert!(!anthropic_primary_quotas_present(&empty));
+    let zero: UsageResponse = serde_json::from_str(
+        r#"{"five_hour":{"utilization":0.0},"seven_day":{"utilization":0.0}}"#,
+    )
+    .unwrap();
+    assert!(anthropic_primary_quotas_present(&zero));
 }

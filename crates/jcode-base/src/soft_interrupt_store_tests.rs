@@ -58,3 +58,31 @@ fn append_take_and_clear_round_trip() {
         crate::env::remove_var("JCODE_HOME");
     }
 }
+
+#[test]
+fn mobile_source_round_trip_preserves_distinct_receipts_and_legacy_user() {
+    let pending: Vec<PersistedSoftInterrupt> = [1_u8, 2]
+        .into_iter()
+        .map(|byte| {
+            SoftInterruptMessage {
+                content: "duplicate text".into(),
+                images: Vec::new(),
+                urgent: false,
+                source: SoftInterruptSource::MobileUser([byte; 16]),
+            }
+            .into()
+        })
+        .collect();
+    let json = serde_json::to_string(&pending).unwrap();
+    let restored: Vec<PersistedSoftInterrupt> = serde_json::from_str(&json).unwrap();
+    let restored: Vec<SoftInterruptMessage> = restored.into_iter().map(Into::into).collect();
+    assert_eq!(restored[0].source, SoftInterruptSource::MobileUser([1; 16]));
+    assert_eq!(restored[1].source, SoftInterruptSource::MobileUser([2; 16]));
+    assert_eq!(restored[0].content, restored[1].content);
+    let legacy: PersistedSoftInterrupt =
+        serde_json::from_str(r#"{"content":"old","urgent":false,"source":"user"}"#).unwrap();
+    assert_eq!(
+        SoftInterruptMessage::from(legacy).source,
+        SoftInterruptSource::User
+    );
+}

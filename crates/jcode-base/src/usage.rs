@@ -98,6 +98,14 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
         .await
         .context("Failed to parse usage response")?;
 
+    // UsageData's primary windows are non-optional. Missing remote values
+    // cannot be represented as zero without inventing a full remaining quota.
+    if !anthropic_primary_quotas_present(&data) {
+        let err = anthropic_usage_error("Provider response omitted quota utilization".into());
+        store_anthropic_usage(cache_key, err);
+        anyhow::bail!("Provider response omitted quota utilization");
+    }
+
     let usage = UsageData {
         five_hour: data
             .five_hour
@@ -142,6 +150,17 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
 
     store_anthropic_usage(cache_key, usage.clone());
     Ok(usage)
+}
+
+fn anthropic_primary_quotas_present(data: &UsageResponse) -> bool {
+    [&data.five_hour, &data.seven_day]
+        .into_iter()
+        .all(|window| {
+            window
+                .as_ref()
+                .and_then(|w| w.utilization)
+                .is_some_and(|value| value.is_finite() && value >= 0.0)
+        })
 }
 
 /// Fetch usage from all connected providers with OAuth credentials.

@@ -95,12 +95,56 @@ pub(super) async fn idle_live_agent(
 /// finish rendering the externally started turn.
 pub(super) async fn spawn_tracked_live_turn(
     session_id: &str,
+    agent: OwnedMutexGuard<Agent>,
+    message: String,
+    system_reminder: Option<String>,
+    display_role: Option<crate::session::StoredDisplayRole>,
+    status_detail: Option<String>,
+    swarm: LiveTurnSwarmContext,
+) {
+    spawn_tracked_turn_internal(
+        session_id,
+        agent,
+        message,
+        system_reminder,
+        display_role,
+        status_detail,
+        swarm,
+        None,
+    )
+    .await;
+}
+
+pub(super) async fn spawn_tracked_mobile_turn(
+    session_id: &str,
+    agent: OwnedMutexGuard<Agent>,
+    message: String,
+    mobile_id: [u8; 16],
+    status_detail: Option<String>,
+    swarm: LiveTurnSwarmContext,
+) {
+    spawn_tracked_turn_internal(
+        session_id,
+        agent,
+        message,
+        None,
+        None,
+        status_detail,
+        swarm,
+        Some(mobile_id),
+    )
+    .await;
+}
+
+pub(super) async fn spawn_tracked_turn_internal(
+    session_id: &str,
     mut agent: OwnedMutexGuard<Agent>,
     message: String,
     system_reminder: Option<String>,
     display_role: Option<crate::session::StoredDisplayRole>,
     status_detail: Option<String>,
     swarm: LiveTurnSwarmContext,
+    mobile_id: Option<[u8; 16]>,
 ) {
     update_member_status(
         session_id,
@@ -118,7 +162,17 @@ pub(super) async fn spawn_tracked_live_turn(
     let session_id = session_id.to_string();
     tokio::spawn(async move {
         let start_message_index = agent.message_count();
-        let result = if let Some(display_role) = display_role {
+        let result = if let Some(mobile_id) = mobile_id {
+            agent
+                .run_once_streaming_mpsc_with_mobile_id(
+                    &message,
+                    vec![],
+                    system_reminder,
+                    event_tx.clone(),
+                    mobile_id,
+                )
+                .await
+        } else if let Some(display_role) = display_role {
             agent
                 .run_once_streaming_mpsc_with_display_role(
                     &message,

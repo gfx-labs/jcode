@@ -13,6 +13,8 @@ pub struct SoftInterruptMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoftInterruptSource {
     User,
+    /// Server-generated mobile receipt UUID bytes.
+    MobileUser([u8; 16]),
     System,
     BackgroundTask,
 }
