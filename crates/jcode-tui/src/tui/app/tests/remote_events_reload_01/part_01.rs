@@ -469,6 +469,8 @@ fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming
             id: 2,
             session_id: "session_rewind_preview".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "user".to_string(),
                 content: "first message kept by the rewind".to_string(),
                 tool_calls: None,
@@ -577,6 +579,8 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
             id: 3,
             session_id: "session_midstream_dup".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "user".to_string(),
                 content: "truncated payload from another client's rewind".to_string(),
                 tool_calls: None,
@@ -658,6 +662,8 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
                 id: 3,
                 session_id: "session_midstream_dup".to_string(),
                 messages: vec![crate::protocol::HistoryMessage {
+                    timestamp_unix_ms: None,
+                    message_id: None,
                     role: "user".to_string(),
                     content: "truncated payload from another client's rewind".to_string(),
                     tool_calls: None,
@@ -759,6 +765,8 @@ fn test_handle_server_event_history_same_session_rewind_then_late_done_does_not_
             id: 2,
             session_id: "session_rewind_done_race".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "user".to_string(),
                 content: "first message kept by the rewind".to_string(),
                 tool_calls: None,

@@ -1002,3 +1002,506 @@ async fn resume_all_skips_session_with_completed_turn() {
         crate::env::remove_var("JCODE_HOME");
     }
 }
+
+#[tokio::test]
+async fn mobile_snapshots_are_global_nonblocking_and_read_only() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let agent = Arc::new(Mutex::new(Agent::new(
+        provider.clone(),
+        Registry::new(provider).await,
+    )));
+    let session_id = agent.lock().await.session_id().to_owned();
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        session_id.clone(),
+        agent.clone(),
+    )])));
+    let (mut member, _attachment) = live_member(&session_id);
+    member.working_dir = Some(PathBuf::from("/non-git/example"));
+    member.task_label = Some("mobile snapshot task".into());
+    member.report_back_to_session_id = Some("parent".into());
+    member.latest_completion_report = Some("validated result".into());
+    member.output_tail = Some("streaming now".into());
+    member.runtime.model = Some("cached-model".into());
+    let (stale, _stale_attachment) = live_member("stale-not-live");
+    let members = Arc::new(RwLock::new(HashMap::from([
+        (session_id.clone(), member),
+        ("stale-not-live".into(), stale),
+    ])));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let busy_guard = agent.lock().await;
+    let snapshots = timeout(
+        Duration::from_millis(200),
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections),
+    )
+    .await
+    .expect("must not wait on busy agent");
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].session_id, session_id);
+    assert_eq!(snapshots[0].status, "running");
+    assert_eq!(
+        snapshots[0].report_back_to_session_id.as_deref(),
+        Some("parent")
+    );
+    assert_eq!(
+        snapshots[0].latest_completion_report.as_deref(),
+        Some("validated result")
+    );
+    assert_eq!(snapshots[0].provider_model.as_deref(), Some("cached-model"));
+    assert_eq!(snapshots[0].output_tail.as_deref(), Some("streaming now"));
+    assert_eq!(
+        snapshots[0].working_dir.as_deref(),
+        Some("/non-git/example")
+    );
+    assert!(snapshots[0].swarm_id.is_none());
+    assert_eq!(sessions.read().await.len(), 1);
+    assert_eq!(members.read().await[&session_id].event_txs.len(), 1);
+    drop(busy_guard);
+    // A live global agent remains discoverable even with no swarm record.
+    members.write().await.clear();
+    let snapshots =
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections)
+            .await;
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].provider_name.as_deref(), Some("mock"));
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    crate::server::comm_sync::handle_comm_read_context(
+        52,
+        session_id.clone(),
+        session_id.clone(),
+        &sessions,
+        &members,
+        &tx,
+    )
+    .await;
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerEvent::CommContextHistory { id: 52, .. }
+    ));
+    crate::server::comm_sync::handle_comm_read_context(
+        53,
+        "unrelated".into(),
+        session_id,
+        &sessions,
+        &members,
+        &tx,
+    )
+    .await;
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        ServerEvent::Error { id: 53, .. }
+    ));
+}
+
+#[tokio::test]
+async fn mobile_delivery_queues_once_as_user_and_rejects_unknown_targets() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let agent = Arc::new(Mutex::new(Agent::new(
+        provider.clone(),
+        Registry::new(provider).await,
+    )));
+    let session_id = agent.lock().await.session_id().to_owned();
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        session_id.clone(),
+        agent.clone(),
+    )])));
+    let busy_guard = agent.lock().await;
+    let queue = busy_guard.soft_interrupt_queue();
+    let queues = Arc::new(RwLock::new(HashMap::from([(
+        session_id.clone(),
+        queue.clone(),
+    )])));
+    let (member, mut attachment) = live_member(&session_id);
+    let members = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), member)])));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let (swarms, history, counter, events) = empty_swarm_status_state();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    for (id, target, content) in [
+        (61, session_id.clone(), "hello"),
+        (62, "unknown".into(), "hello"),
+        (63, session_id.clone(), "  "),
+    ] {
+        crate::server::mobile_control::handle_mobile_message(
+            id,
+            target,
+            content.into(),
+            NotifySessionContext {
+                sessions: &sessions,
+                soft_interrupt_queues: &queues,
+                client_connections: &connections,
+                swarm_members: &members,
+                swarms_by_id: &swarms,
+                event_history: &history,
+                event_counter: &counter,
+                swarm_event_tx: &events,
+                client_event_tx: &tx,
+            },
+        )
+        .await;
+        match rx.try_recv().unwrap() {
+            ServerEvent::MobileDelivery {
+                id: actual,
+                status,
+                message_id,
+                ..
+            } => {
+                assert_eq!(actual, id);
+                assert_eq!(status, if id == 61 { "accepted" } else { "rejected" });
+                assert_eq!(message_id.is_some(), id == 61);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let queued = queue.lock().unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].content, "hello");
+    assert!(matches!(
+        queued[0].source,
+        jcode_agent_runtime::SoftInterruptSource::MobileUser(_)
+    ));
+    assert!(
+        attachment.try_recv().is_err(),
+        "no duplicate wake notification"
+    );
+    assert_eq!(members.read().await[&session_id].event_txs.len(), 1);
+}
+
+#[test]
+fn mobile_output_tail_is_utf8_safe_and_bounded() {
+    let text = "界".repeat(3000);
+    let tail = crate::server::mobile_control::bounded_tail(&text);
+    assert!(tail.len() <= 4096);
+    assert!(text.ends_with(&tail));
+}
+
+#[tokio::test]
+async fn mobile_pending_wake_handles_identical_cancelled_and_removed_sessions() {
+    let _env = crate::storage::lock_test_env();
+    let _home = SplitTestHome::new();
+    for disposition in ["deliver", "cancel", "remove"] {
+        let provider = Arc::new(StreamingMockProvider::default());
+        for _ in 0..3 {
+            provider.queue_response(vec![
+                StreamEvent::TextDelta("response".into()),
+                StreamEvent::MessageEnd { stop_reason: None },
+            ]);
+        }
+        let provider_dyn: Arc<dyn Provider> = provider;
+        let agent = Arc::new(Mutex::new(Agent::new(
+            provider_dyn.clone(),
+            Registry::new(provider_dyn).await,
+        )));
+        let mut busy = agent.lock().await;
+        busy.push_alert("unrelated notification before mobile intake".into());
+        let id = busy.session_id().to_owned();
+        let queue = busy.soft_interrupt_queue();
+        let sessions = Arc::new(RwLock::new(HashMap::from([(id.clone(), agent.clone())])));
+        let queues = Arc::new(RwLock::new(HashMap::from([(id.clone(), queue.clone())])));
+        let (member, _attachment) = live_member(&id);
+        let members = Arc::new(RwLock::new(HashMap::from([(id.clone(), member)])));
+        let connections = Arc::new(RwLock::new(HashMap::new()));
+        let (swarms, history, counter, events) = empty_swarm_status_state();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut receipt_ids = Vec::new();
+        for request_id in [71, 72] {
+            crate::server::mobile_control::handle_mobile_message(
+                request_id,
+                id.clone(),
+                "identical mobile input".into(),
+                NotifySessionContext {
+                    sessions: &sessions,
+                    soft_interrupt_queues: &queues,
+                    client_connections: &connections,
+                    swarm_members: &members,
+                    swarms_by_id: &swarms,
+                    event_history: &history,
+                    event_counter: &counter,
+                    swarm_event_tx: &events,
+                    client_event_tx: &tx,
+                },
+            )
+            .await;
+            match rx.try_recv().unwrap() {
+                ServerEvent::MobileDelivery {
+                    status,
+                    message_id: Some(message_id),
+                    ..
+                } => {
+                    assert_eq!(status, "accepted");
+                    assert!(
+                        uuid::Uuid::parse_str(message_id.strip_prefix("mobile:").unwrap()).is_ok()
+                    );
+                    receipt_ids.push(message_id);
+                }
+                other => panic!("expected correlated acceptance, got {other:?}"),
+            }
+        }
+        assert_ne!(receipt_ids[0], receipt_ids[1]);
+        assert_eq!(queue.lock().unwrap().len(), 2);
+        if disposition == "cancel" {
+            queue.lock().unwrap().clear();
+        }
+        if disposition == "remove" {
+            sessions.write().await.clear();
+        }
+        // Let both waiters queue behind the held mutex. Tokio mutex fairness
+        // makes the subsequent lock a barrier after the queued wake tasks.
+        tokio::task::yield_now().await;
+        drop(busy);
+        let settled = timeout(Duration::from_secs(5), agent.lock()).await.unwrap();
+        let delivered: usize = settled
+            .messages()
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .map(|m| {
+                m.content_preview()
+                    .matches("identical mobile input")
+                    .count()
+            })
+            .sum();
+        let history_ids: Vec<_> = settled
+            .get_history()
+            .into_iter()
+            .filter_map(|message| message.message_id)
+            .collect();
+        if disposition == "deliver" {
+            assert_eq!(history_ids, receipt_ids);
+        } else {
+            assert!(history_ids.is_empty());
+        }
+        assert_eq!(
+            delivered,
+            if disposition == "deliver" { 2 } else { 0 },
+            "{disposition}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mobile_activity_age_uses_metrics_without_waiting_for_busy_agent() {
+    let agent = new_split_test_agent().await;
+    let busy = agent.lock().await;
+    let session_id = busy.session_id().to_owned();
+    crate::session_metrics::forget(&session_id);
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        session_id.clone(),
+        agent.clone(),
+    )])));
+    let (mut member, _attachment) = live_member(&session_id);
+    member.status = "running".into();
+    let members = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), member)])));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let snapshots = timeout(
+        Duration::from_millis(200),
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections),
+    )
+    .await
+    .expect("unknown busy snapshot must not wait for the agent");
+    assert_eq!(snapshots[0].last_activity_age_secs, None);
+
+    crate::session_metrics::record_activity(&session_id);
+    let snapshots = timeout(
+        Duration::from_millis(200),
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections),
+    )
+    .await
+    .expect("metrics must be available while the agent lock is held");
+    let observed = snapshots[0]
+        .last_activity_age_secs
+        .expect("recorded activity");
+    assert!(observed <= crate::session_metrics::last_activity_age_secs(&session_id).unwrap());
+    crate::session_metrics::forget(&session_id);
+    drop(busy);
+}
+
+#[tokio::test]
+async fn mobile_activity_age_falls_back_to_restored_message_timestamp_and_prefers_metrics() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let mut session = crate::session::Session::create_with_id(
+        format!("mobile-age-restored-{}", uuid::Uuid::new_v4()),
+        None,
+        None,
+    );
+    session.ensure_initial_session_context_message();
+    let activity_at = chrono::Utc::now() - chrono::Duration::hours(48);
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "old substantive request".into(),
+            cache_control: None,
+        }],
+    );
+    session.messages.last_mut().unwrap().timestamp = Some(activity_at);
+    // Newer synthetic notices must not hide the old substantive activity.
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "<system-reminder>restored context</system-reminder>".into(),
+            cache_control: None,
+        }],
+    );
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "restore status display".into(),
+            cache_control: None,
+        }],
+    );
+    session.messages.last_mut().unwrap().display_role =
+        Some(crate::session::StoredDisplayRole::System);
+    session.updated_at = activity_at;
+    let session_id = session.id.clone();
+    let agent = Arc::new(Mutex::new(Agent::new_with_session(
+        provider.clone(),
+        Registry::new(provider).await,
+        session,
+        None,
+    )));
+    assert!(
+        agent.lock().await.session_for_split().updated_at > activity_at,
+        "restore touches metadata but must not promote conversation activity"
+    );
+    crate::session_metrics::forget(&session_id);
+    let sessions = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), agent)])));
+    let (mut member, _attachment) = live_member(&session_id);
+    member.status = "running".into(); // A stale running flag is not activity.
+    let members = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), member)])));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let snapshots =
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections)
+            .await;
+    let observed = snapshots[0].last_activity_age_secs.unwrap();
+    assert!(observed >= 48 * 3600);
+    assert!(observed <= (chrono::Utc::now() - activity_at).num_seconds() as u64);
+
+    crate::session_metrics::record_activity(&session_id);
+    let snapshots =
+        crate::server::mobile_control::live_session_snapshots(&sessions, &members, &connections)
+            .await;
+    assert!(
+        snapshots[0].last_activity_age_secs.unwrap()
+            <= crate::session_metrics::last_activity_age_secs(&session_id).unwrap()
+    );
+    crate::session_metrics::forget(&session_id);
+}
+
+#[tokio::test]
+async fn mobile_activity_age_orders_known_first_with_stable_session_id_ties() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let suffix = uuid::Uuid::new_v4().to_string();
+    let members = Arc::new(RwLock::new(HashMap::new()));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let mut entries = Vec::new();
+    let mut busy_guards = Vec::new();
+    for (name, age) in [
+        ("unknown-b", None),
+        ("old", Some(7200)),
+        ("recent-b", Some(0)),
+        ("unknown-a", None),
+        ("recent-a", Some(0)),
+    ] {
+        let id = format!("mobile-age-{name}-{suffix}");
+        let mut session = crate::session::Session::create_with_id(id.clone(), None, None);
+        session.ensure_initial_session_context_message();
+        // A future timestamp clamps to zero, giving deterministic known-age ties.
+        let activity_at = if age == Some(0) {
+            chrono::Utc::now() + chrono::Duration::hours(1)
+        } else {
+            chrono::Utc::now() - chrono::Duration::seconds(age.unwrap_or(0))
+        };
+        session.add_message(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "persisted response".into(),
+                cache_control: None,
+            }],
+        );
+        session.messages.last_mut().unwrap().timestamp = Some(activity_at);
+        session.updated_at = activity_at;
+        let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            provider.clone(),
+            Registry::new(provider.clone()).await,
+            session,
+            None,
+        )));
+        crate::session_metrics::forget(&id);
+        if age.is_none() {
+            busy_guards.push(agent.clone().lock_owned().await);
+        }
+        entries.push((id, agent));
+    }
+    let expected: Vec<_> = ["recent-a", "recent-b", "old", "unknown-a", "unknown-b"]
+        .into_iter()
+        .map(|name| format!("mobile-age-{name}-{suffix}"))
+        .collect();
+    for _ in 0..3 {
+        entries.reverse();
+        let sessions = Arc::new(RwLock::new(entries.iter().cloned().collect()));
+        let snapshots = timeout(
+            Duration::from_millis(200),
+            crate::server::mobile_control::live_session_snapshots(
+                &sessions,
+                &members,
+                &connections,
+            ),
+        )
+        .await
+        .expect("sorting must not wait for unknown busy sessions");
+        assert_eq!(
+            snapshots
+                .iter()
+                .map(|s| s.session_id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(snapshots[0].last_activity_age_secs, Some(0));
+        assert_eq!(snapshots[1].last_activity_age_secs, Some(0));
+        assert!(snapshots[2].last_activity_age_secs.unwrap() >= 7200);
+        assert_eq!(snapshots[3].last_activity_age_secs, None);
+        assert_eq!(snapshots[4].last_activity_age_secs, None);
+    }
+    drop(busy_guards);
+}
+
+#[tokio::test]
+async fn mobile_activity_age_empty_and_legacy_sessions_use_creation_not_restore_time() {
+    for legacy in [false, true] {
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let mut session = crate::session::Session::create_with_id(
+            format!("mobile-age-legacy-{}", uuid::Uuid::new_v4()),
+            None,
+            None,
+        );
+        session.created_at = chrono::Utc::now() - chrono::Duration::days(7);
+        let created_at = session.created_at;
+        if legacy {
+            session.add_message(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "legacy request without timestamp".into(),
+                    cache_control: None,
+                }],
+            );
+            session.messages.last_mut().unwrap().timestamp = None;
+        }
+        let id = session.id.clone();
+        let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            provider.clone(),
+            Registry::new(provider).await,
+            session,
+            None,
+        )));
+        crate::session_metrics::forget(&id);
+        let sessions = Arc::new(RwLock::new(HashMap::from([(id, agent)])));
+        let members = Arc::new(RwLock::new(HashMap::new()));
+        let connections = Arc::new(RwLock::new(HashMap::new()));
+        let snapshots = crate::server::mobile_control::live_session_snapshots(
+            &sessions,
+            &members,
+            &connections,
+        )
+        .await;
+        let age = snapshots[0].last_activity_age_secs.unwrap();
+        assert!(age >= 7 * 24 * 3600);
+        assert!(age <= (chrono::Utc::now() - created_at).num_seconds() as u64);
+    }
+}

@@ -23,7 +23,7 @@ pub(super) struct CommResyncPlanContext<'a> {
     pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
 }
 
-fn live_activity_snapshot(
+pub(super) fn live_activity_snapshot(
     connections: &HashMap<String, ClientConnectionInfo>,
     session_id: &str,
     fallback_processing: bool,
@@ -154,6 +154,11 @@ async fn ensure_same_swarm_access(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) -> bool {
+    // A session may always inspect itself, including outside a git/swarm root.
+    // Transport access is owner-trusted; this does not widen cross-session reads.
+    if req_session_id == target_session {
+        return true;
+    }
     let (req_swarm, target_swarm) = {
         let members = swarm_members.read().await;
         (
@@ -271,6 +276,47 @@ pub(super) async fn handle_comm_status(
     )
     .await
     {
+        return;
+    }
+
+    if !swarm_members.read().await.contains_key(&target_session) {
+        let snapshots = super::mobile_control::live_session_snapshots(
+            sessions,
+            swarm_members,
+            client_connections,
+        )
+        .await;
+        if let Some(info) = snapshots
+            .into_iter()
+            .find(|s| s.session_id == target_session)
+        {
+            let _ = client_event_tx.send(ServerEvent::CommStatusResponse {
+                id,
+                snapshot: AgentStatusSnapshot {
+                    session_id: info.session_id,
+                    friendly_name: info.friendly_name,
+                    swarm_id: info.swarm_id,
+                    status: Some(info.status),
+                    detail: info.detail,
+                    role: None,
+                    is_headless: None,
+                    live_attachments: None,
+                    status_age_secs: None,
+                    last_activity_age_secs: None,
+                    joined_age_secs: None,
+                    files_touched: Vec::new(),
+                    activity: info.activity,
+                    provider_name: info.provider_name,
+                    provider_model: info.provider_model,
+                },
+            });
+        } else {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("Unknown session '{target_session}'"),
+                retry_after_secs: None,
+            });
+        }
         return;
     }
 

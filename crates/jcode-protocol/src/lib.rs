@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 mod comm_format;
 mod notifications;
+mod mobile_usage;
+pub use mobile_usage::{MobileProviderUsage, MobileUsageLimit};
 
 pub use comm_format::*;
 pub use notifications::{FeatureToggle, NotificationType};
@@ -50,6 +52,12 @@ pub enum CommDeliveryMode {
 /// A message in conversation history (for sync)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessage {
+    /// Actual persisted message time in Unix milliseconds, absent for legacy or synthetic messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp_unix_ms: Option<i64>,
+    /// Server-generated identity of the actual persisted mobile user message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,6 +205,49 @@ pub struct ContextEntry {
     pub from_session: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_name: Option<String>,
+}
+
+/// A best-effort snapshot of a live session, independent of swarm membership.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LiveSessionInfo {
+    pub session_id: String,
+    pub status: String,
+    /// Seconds since last observed activity, or unknown if unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_age_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_completion_report: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub friendly_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_back_to_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tail: Option<String>,
+    #[serde(default)]
+    pub todo_items: Vec<SwarmTodoItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos_completed: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todos_total: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<SessionActivitySnapshot>,
 }
 
 /// Info about an agent
@@ -572,7 +623,10 @@ impl Request {
             Request::Clear { id } => *id,
             Request::Rewind { id, .. } => *id,
             Request::RewindUndo { id } => *id,
-            Request::Ping { id } => *id,
+            Request::Ping { id }
+            | Request::ListSessions { id }
+            | Request::MobileUsage { id }
+            | Request::MobileMessage { id, .. } => *id,
             Request::GetState { id } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
@@ -648,6 +702,9 @@ impl Request {
         matches!(
             self,
             Request::Ping { .. }
+                | Request::ListSessions { .. }
+                | Request::MobileUsage { .. }
+                | Request::MobileMessage { .. }
                 | Request::CommShare { .. }
                 | Request::CommRead { .. }
                 | Request::CommMessage { .. }
@@ -738,3 +795,105 @@ fn decode_legacy_set_route_model(line: &str) -> Option<Request> {
 #[cfg(test)]
 #[path = "protocol_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod mobile_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn mobile_controls_are_lightweight_and_preserve_ids() {
+        for wire in [
+            r#"{"type":"list_sessions","id":41}"#,
+            r#"{"type":"mobile_usage","id":41}"#,
+            r#"{"type":"mobile_message","id":41,"session_id":"root","content":"hello"}"#,
+            r#"{"type":"comm_read_context","id":41,"session_id":"root","target_session":"root"}"#,
+            r#"{"type":"comm_status","id":41,"session_id":"root","target_session":"root"}"#,
+        ] {
+            let request = decode_request(wire).unwrap();
+            assert_eq!(request.id(), 41);
+            assert!(request.is_lightweight_control_request());
+            let roundtrip = decode_request(&serde_json::to_string(&request).unwrap()).unwrap();
+            assert_eq!(roundtrip.id(), 41);
+        }
+    }
+
+    #[test]
+    fn mobile_responses_use_stable_wire_names_and_optional_metadata() {
+        let event = ServerEvent::SessionsList {
+            id: 41,
+            sessions: vec![LiveSessionInfo {
+                session_id: "root".into(),
+                status: "ready".into(),
+                ..Default::default()
+            }],
+            server_name: None,
+        };
+        let wire: serde_json::Value = serde_json::from_str(&encode_event(&event)).unwrap();
+        assert_eq!(wire["type"], "sessions_list");
+        assert_eq!(wire["id"], 41);
+        assert_eq!(wire["sessions"][0]["session_id"], "root");
+        assert!(wire.get("server_name").is_none());
+        let _: ServerEvent = serde_json::from_value(wire).unwrap();
+        let event = ServerEvent::MobileDelivery {
+            id: 42,
+            session_id: "root".into(),
+            status: "accepted".into(),
+            message: "queued".into(),
+            message_id: Some("mobile:00000000-0000-0000-0000-000000000001".into()),
+        };
+        let wire: serde_json::Value = serde_json::from_str(&encode_event(&event)).unwrap();
+        assert_eq!(wire["type"], "mobile_delivery");
+        assert_eq!(wire["status"], "accepted");
+        assert_eq!(
+            wire["message_id"],
+            "mobile:00000000-0000-0000-0000-000000000001"
+        );
+        let legacy: ServerEvent = serde_json::from_value(serde_json::json!({
+            "type": "mobile_delivery", "id": 42, "session_id": "root",
+            "status": "accepted", "message": "queued"
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ServerEvent::MobileDelivery {
+                message_id: None,
+                ..
+            }
+        ));
+        let legacy_history: HistoryMessage = serde_json::from_value(serde_json::json!({
+            "role": "user", "content": "legacy"
+        }))
+        .unwrap();
+        assert!(legacy_history.message_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod live_session_activity_protocol_tests {
+    use super::LiveSessionInfo;
+
+    #[test]
+    fn live_session_activity_age_is_backward_compatible() {
+        let mut snapshot: LiveSessionInfo =
+            serde_json::from_str(r#"{"session_id":"old-server","status":"ready"}"#).unwrap();
+        assert_eq!(snapshot.last_activity_age_secs, None);
+        assert!(
+            serde_json::to_value(&snapshot)
+                .unwrap()
+                .get("last_activity_age_secs")
+                .is_none()
+        );
+        for age in [0, 3600, u64::MAX] {
+            snapshot.last_activity_age_secs = Some(age);
+            let wire = serde_json::to_value(&snapshot).unwrap();
+            assert_eq!(wire["last_activity_age_secs"], age);
+            let decoded: LiveSessionInfo = serde_json::from_value(wire).unwrap();
+            assert_eq!(decoded.last_activity_age_secs, Some(age));
+        }
+        let snapshot: LiveSessionInfo = serde_json::from_str(
+            r#"{"session_id":"old-server","status":"ready","last_activity_age_secs":null}"#,
+        )
+        .unwrap();
+        assert_eq!(snapshot.last_activity_age_secs, None);
+    }
+}

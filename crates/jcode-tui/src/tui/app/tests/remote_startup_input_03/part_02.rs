@@ -216,6 +216,8 @@ fn test_initial_history_bootstrap_skips_resubmit_when_prompt_already_in_history(
                 id: 1,
                 session_id: session_id.to_string(),
                 messages: vec![crate::protocol::HistoryMessage {
+                    timestamp_unix_ms: None,
+                    message_id: None,
                     role: "user".to_string(),
                     content: "continue implementing the fix".to_string(),
                     tool_calls: None,

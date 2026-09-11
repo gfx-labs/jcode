@@ -494,6 +494,7 @@ pub(super) async fn handle_client(
                         request,
                         Arc::clone(&writer),
                         LightweightControlContext {
+                            server_name: &server_name,
                             sessions: &sessions,
                             global_session_id: &global_session_id,
                             provider_template: &provider_template,
@@ -686,12 +687,47 @@ pub(super) async fn handle_client(
     let writer_clone = Arc::clone(&writer);
     let client_connection_id_for_events = client_connection_id.clone();
     let client_connections_for_events = Arc::clone(&client_connections);
+    let members_for_events = Arc::clone(&swarm_members);
     let event_handle = tokio::spawn(async move {
+        let mut output_tail = String::new();
+        let mut tail_session_id = String::new();
+        let mut reset_tail = true;
         while let Some(event) = client_event_rx.recv().await {
+            // Mirror bounded text for root/non-git sessions too, not only
+            // inline workers. Per-connection accumulation avoids duplicating
+            // deltas when the same session has multiple attached clients.
+            if let ServerEvent::TextDelta { text } = &event {
+                let target = client_connections_for_events
+                    .read()
+                    .await
+                    .get(&client_connection_id_for_events)
+                    .map(|info| info.session_id.clone());
+                if let Some(target) = target {
+                    if reset_tail || tail_session_id != target {
+                        output_tail.clear();
+                        tail_session_id = target.clone();
+                        reset_tail = false;
+                    }
+                    output_tail.push_str(text);
+                    output_tail = super::mobile_control::bounded_tail(&output_tail);
+                    if let Some(member) = members_for_events.write().await.get_mut(&target) {
+                        member.output_tail = Some(output_tail.clone());
+                    }
+                }
+            } else if matches!(
+                &event,
+                ServerEvent::Done { .. } | ServerEvent::Error { .. } | ServerEvent::Interrupted
+            ) {
+                reset_tail = true;
+            }
+
             {
                 let mut connections = client_connections_for_events.write().await;
                 if let Some(info) = connections.get_mut(&client_connection_id_for_events) {
                     match &event {
+                        ServerEvent::TextDelta { .. } => {
+                            info.is_processing = true;
+                        }
                         ServerEvent::ToolStart { name, .. } => {
                             info.is_processing = true;
                             info.current_tool_name = Some(name.clone());
@@ -1520,6 +1556,25 @@ pub(super) async fn handle_client(
                 }
             }
 
+            Request::MobileUsage { id } => {
+                let _ = client_event_tx.send(super::mobile_usage::usage_event(id).await);
+            }
+            Request::ListSessions { id } => {
+                let snapshots = super::mobile_control::live_session_snapshots(&sessions, &swarm_members, &client_connections).await;
+                let _ = client_event_tx.send(ServerEvent::SessionsList {
+                    id, sessions: snapshots, server_name: Some(server_name.clone()),
+                });
+            }
+            Request::MobileMessage { id, session_id, content } => {
+                super::mobile_control::handle_mobile_message(id, session_id, content,
+                    NotifySessionContext {
+                        sessions: &sessions, soft_interrupt_queues: &soft_interrupt_queues,
+                        client_connections: &client_connections, swarm_members: &swarm_members,
+                        swarms_by_id: &swarms_by_id, event_history: &event_history,
+                        event_counter: &event_counter, swarm_event_tx: &swarm_event_tx,
+                        client_event_tx: &client_event_tx,
+                    }).await;
+            }
             Request::Ping { id } => {
                 let json = encode_event(&ServerEvent::Pong { id, native_ssh_protocol: Some(1) });
                 let mut w = writer.lock().await;

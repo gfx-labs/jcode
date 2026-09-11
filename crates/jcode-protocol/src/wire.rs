@@ -36,6 +36,22 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Request {
+    /// Read-only global live session discovery. Does not attach a client.
+    #[serde(rename = "list_sessions")]
+    ListSessions { id: u64 },
+
+    /// Read-only provider quota report, without attaching to a session.
+    #[serde(rename = "mobile_usage")]
+    MobileUsage { id: u64 },
+
+    /// Trusted owner message without subscribing or impersonating a swarm member.
+    #[serde(rename = "mobile_message")]
+    MobileMessage {
+        id: u64,
+        session_id: String,
+        content: String,
+    },
+
     /// Send a message to the agent
     #[serde(rename = "message")]
     Message {
@@ -749,6 +765,34 @@ pub enum Request {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    #[serde(rename = "mobile_usage")]
+    MobileUsage {
+        id: u64,
+        scope: String,
+        providers: Vec<MobileProviderUsage>,
+        error: Option<String>,
+        /// Time this sanitized snapshot was assembled, not a provider timestamp.
+        fetched_at_unix_secs: u64,
+        from_cache: bool,
+    },
+    #[serde(rename = "sessions_list")]
+    SessionsList {
+        id: u64,
+        sessions: Vec<LiveSessionInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_name: Option<String>,
+    },
+    /// Acceptance means received/queued, not that a model turn has completed.
+    #[serde(rename = "mobile_delivery")]
+    MobileDelivery {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        session_id: String,
+        status: String,
+        message: String,
+    },
+
     /// An autonomous wake was requested. In external wake mode this event is
     /// emitted instead of starting or injecting into a turn.
     #[serde(rename = "wake_requested")]

@@ -4,6 +4,7 @@
 //! without making actual API calls.
 
 mod mock_provider;
+mod mobile_observer;
 mod test_support;
 
 mod ambient;

@@ -55,6 +55,7 @@ pub(super) fn parse_swarm_spawn_mode(
 }
 
 pub(super) struct LightweightControlContext<'a> {
+    pub(super) server_name: &'a str,
     pub(super) sessions: &'a SessionAgents,
     pub(super) global_session_id: &'a Arc<RwLock<String>>,
     pub(super) provider_template: &'a Arc<dyn Provider>,
@@ -82,6 +83,7 @@ pub(super) async fn handle_lightweight_control_request(
     context: LightweightControlContext<'_>,
 ) -> Result<()> {
     let LightweightControlContext {
+        server_name,
         sessions,
         global_session_id,
         provider_template,
@@ -134,6 +136,46 @@ pub(super) async fn handle_lightweight_control_request(
     });
 
     match request {
+        Request::MobileUsage { id } => {
+            let _ = client_event_tx.send(super::mobile_usage::usage_event(id).await);
+        }
+        Request::ListSessions { id } => {
+            let snapshots = super::mobile_control::live_session_snapshots(
+                sessions,
+                swarm_members,
+                client_connections,
+            )
+            .await;
+            let _ = client_event_tx.send(ServerEvent::SessionsList {
+                id,
+                sessions: snapshots,
+                server_name: Some(server_name.to_owned()),
+            });
+        }
+        Request::MobileMessage {
+            id,
+            session_id,
+            content,
+        } => {
+            super::mobile_control::handle_mobile_message(
+                id,
+                session_id,
+                content,
+                super::client_actions::NotifySessionContext {
+                    sessions,
+                    soft_interrupt_queues,
+                    client_connections,
+                    swarm_members,
+                    swarms_by_id,
+                    event_history,
+                    event_counter,
+                    swarm_event_tx,
+                    client_event_tx: &client_event_tx,
+                },
+            )
+            .await;
+        }
+
         Request::CommShare {
             id,
             session_id: req_session_id,

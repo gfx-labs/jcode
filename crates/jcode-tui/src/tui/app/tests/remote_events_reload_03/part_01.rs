@@ -134,6 +134,8 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             id: 1,
             session_id: "ses_test_123".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "I was working on something".to_string(),
                 tool_calls: None,
@@ -207,6 +209,8 @@ fn test_handle_server_event_history_uses_server_owned_reload_recovery_directive(
         id: 1,
         session_id: "ses_server_owned_reload".to_string(),
         messages: vec![crate::protocol::HistoryMessage {
+            timestamp_unix_ms: None,
+            message_id: None,
             role: "assistant".to_string(),
             content: "Reconnect me from server history".to_string(),
             tool_calls: None,
@@ -288,6 +292,8 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             id: 1,
             session_id: "ses_test_456".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "Normal response".to_string(),
                 tool_calls: None,
@@ -351,6 +357,8 @@ fn test_handle_server_event_history_after_reload_reports_no_continuation_needed(
             id: 1,
             session_id: "ses_reload_done".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                timestamp_unix_ms: None,
+                message_id: None,
                 role: "assistant".to_string(),
                 content: "Finished before reload".to_string(),
                 tool_calls: None,

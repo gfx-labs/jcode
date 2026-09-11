@@ -441,6 +441,8 @@ fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
         id: 101,
         session_id: "ses_test_456".to_string(),
         messages: vec![HistoryMessage {
+            timestamp_unix_ms: None,
+            message_id: None,
             role: "assistant".to_string(),
             content: "hello".to_string(),
             tool_calls: None,
@@ -532,6 +534,8 @@ fn test_compacted_history_event_roundtrip() -> Result<()> {
         id: 77,
         session_id: "ses_compact_123".to_string(),
         messages: vec![HistoryMessage {
+            timestamp_unix_ms: None,
+            message_id: None,
             role: "assistant".to_string(),
             content: "older response".to_string(),
             tool_calls: None,
@@ -635,5 +639,31 @@ fn test_error_event_retry_after_back_compat_default() -> Result<()> {
     assert_eq!(id, 7);
     assert_eq!(message, "oops");
     assert_eq!(retry_after_secs, None);
+    Ok(())
+}
+
+#[test]
+fn test_history_message_timestamp_roundtrip_and_legacy_absence() -> Result<()> {
+    for timestamp in [None, Some(1_789_096_075_695_i64), Some(-1)] {
+        let message = HistoryMessage {
+            timestamp_unix_ms: timestamp,
+            message_id: None,
+            role: "assistant".to_string(),
+            content: "hello".to_string(),
+            tool_calls: None,
+            tool_data: None,
+        };
+        let value = serde_json::to_value(&message)?;
+        assert_eq!(value.get("timestamp_unix_ms").is_some(), timestamp.is_some());
+        let decoded: HistoryMessage = serde_json::from_value(value)?;
+        assert_eq!(decoded.timestamp_unix_ms, timestamp);
+    }
+    for json in [
+        r#"{"role":"user","content":"legacy"}"#,
+        r#"{"role":"user","content":"legacy","timestamp_unix_ms":null}"#,
+    ] {
+        let decoded: HistoryMessage = serde_json::from_str(json)?;
+        assert_eq!(decoded.timestamp_unix_ms, None);
+    }
     Ok(())
 }

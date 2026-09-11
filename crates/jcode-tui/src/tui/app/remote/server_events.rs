@@ -403,6 +403,8 @@ mod history_dedup_tests {
 
     fn message(role: &str, content: &str) -> HistoryMessage {
         HistoryMessage {
+            timestamp_unix_ms: None,
+            message_id: None,
             role: role.to_string(),
             content: content.to_string(),
             tool_calls: None,
