@@ -25,7 +25,7 @@ private fun usageTime(value: String): String = runCatching {
 @Composable
 internal fun ProviderUsagePage(usage: ProviderUsageState, state: MobileState, onRefresh: () -> Unit) {
     LaunchedEffect(Unit) { onRefresh() }
-    LazyColumn(Modifier.fillMaxSize().testTag("provider-usage-page"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(Modifier.fillMaxSize().testTag("provider-usage-page"), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -47,7 +47,7 @@ internal fun ProviderUsagePage(usage: ProviderUsageState, state: MobileState, on
         items(usage.providers.sortedByDescending { provider -> state.sessions.any { it.providerName.isNotBlank() && canonicalUsageProvider(it.providerName) == canonicalUsageProvider(provider.provider) } }) { provider ->
             val sessions = state.sessions.filter { it.providerName.isNotBlank() && canonicalUsageProvider(it.providerName) == canonicalUsageProvider(provider.provider) }
             Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(provider.name.ifBlank { provider.provider }, style = MaterialTheme.typography.titleLarge)
                     if (sessions.isNotEmpty()) {
                         Text("In use · ${sessions.size} session${if (sessions.size == 1) "" else "s"}", color = Teal, style = MaterialTheme.typography.labelMedium)

@@ -1,6 +1,7 @@
 package dev.jcode.mobile.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
@@ -24,10 +25,14 @@ internal val quickMessages = listOf(
 )
 
 @Composable
-internal fun QuickMessages(draft: String, onDraft: (String) -> Unit) {
+internal fun QuickMessages(draft: String, onDraft: (String) -> Unit, compact: Boolean = false) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        TextButton(onClick = { expanded = true }) {
+        if (compact) {
+            IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Outlined.ChatBubbleOutline, "Quick messages")
+            }
+        } else TextButton(onClick = { expanded = true }) {
             Icon(Icons.Outlined.ChatBubbleOutline, null)
             Text(" Quick messages")
         }

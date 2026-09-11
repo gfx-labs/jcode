@@ -28,7 +28,7 @@ internal fun senderColor(name: String): Color {
 @Composable
 internal fun SenderAvatar(name: String, modifier: Modifier = Modifier, small: Boolean = false) {
     val color = senderColor(name)
-    Box(modifier.size(if (small) 22.dp else 30.dp).background(color.copy(alpha = .15f), CircleShape), contentAlignment = Alignment.Center) {
+    Box(modifier.size(if (small) 20.dp else 24.dp).background(color.copy(alpha = .15f), CircleShape), contentAlignment = Alignment.Center) {
         Text(name.trim().take(1).uppercase().ifBlank { "?" }, color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
     }
 }
@@ -38,8 +38,8 @@ internal fun ThreadParticipants(state: MobileState, session: MobileSession, chil
     val agent = session.agentName.ifBlank { session.name }
     val senders = state.transcripts[session.id].orEmpty().mapNotNull { messageAttribution(it).sender }
     val names = (listOf("You", agent) + children.map { it.agentName.ifBlank { it.name } } + senders).distinct()
-    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 7.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         names.forEach { name ->
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
                 SenderAvatar(name, small = true)
@@ -55,7 +55,7 @@ internal fun ThreadEventCard(entry: TranscriptEntry, attribution: MessageAttribu
     var expanded by rememberSaveable(entry.id) { mutableStateOf(false) }
     val background = attribution.label.startsWith("Background") || attribution.label == "Shell output"
     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (background) Icons.Outlined.Terminal else Icons.Outlined.Info, null, Modifier.size(18.dp), tint = Muted)
                 Text(attribution.label, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = Muted)

@@ -116,7 +116,7 @@ internal fun MarkdownMessage(source: String, modifier: Modifier = Modifier, styl
     }
     SelectionContainer(modifier) {
         if (plain) Text(source, style = resolvedStyle)
-        else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             document.children().forEach { MarkdownBlock(it, resolvedStyle, 0) }
         }
     }
@@ -128,8 +128,8 @@ private fun MarkdownBlock(node: Node, style: TextStyle, depth: Int) {
     when (node) {
         is MdParagraph -> Text(markdownInline(node), style = style)
         is Heading -> Text(markdownInline(node), style = style.copy(
-            fontSize = when (node.level) { 1 -> 25.sp; 2 -> 22.sp; 3 -> 19.sp; else -> 17.sp },
-            lineHeight = when (node.level) { 1 -> 32.sp; 2 -> 29.sp; else -> 25.sp }, fontWeight = FontWeight.Bold))
+            fontSize = when (node.level) { 1 -> 22.sp; 2 -> 20.sp; 3 -> 18.sp; else -> 17.sp },
+            lineHeight = when (node.level) { 1 -> 28.sp; 2 -> 26.sp; else -> 23.sp }, fontWeight = FontWeight.Bold))
         is FencedCodeBlock -> MarkdownCode(node.literal, node.info.substringBefore(' '))
         is IndentedCodeBlock -> MarkdownCode(node.literal, "code")
         is BlockQuote -> {
@@ -138,14 +138,14 @@ private fun MarkdownBlock(node: Node, style: TextStyle, depth: Int) {
                 node.children().forEach { MarkdownBlock(it, style.copy(color = Muted), depth + 1) }
             }
         }
-        is BulletList, is OrderedList -> Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        is BulletList, is OrderedList -> Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             val start = if (node is OrderedList) node.startNumber else 1
             node.children().forEachIndexed { index, item ->
                 val marker = (item.children() + item.children().flatMap { it.children() }).filterIsInstance<TaskListItemMarker>().firstOrNull()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(if (marker != null) (if (marker.isChecked) "☑" else "☐") else if (node is OrderedList) "${start + index}." else "•",
                         style = style, color = if (marker?.isChecked == true) Teal else Ink, modifier = Modifier.widthIn(min = 16.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         item.children().forEach { MarkdownBlock(it, style, depth + 1) }
                     }
                 }
@@ -211,7 +211,7 @@ internal fun MarkdownCode(code: String, language: String = "code") {
                 }
             }
             Text(code.trimEnd('\n'), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium,
-                softWrap = false, modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
+                softWrap = false, modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 8.dp, end = 8.dp, bottom = 8.dp))
         }
     }
 }
@@ -228,8 +228,8 @@ private fun MarkdownTable(table: TableBlock, style: TextStyle) {
                 Row {
                     cells.forEach { cell ->
                         val alignment = when (cell.alignment) { TableCell.Alignment.CENTER -> TextAlign.Center; TableCell.Alignment.RIGHT -> TextAlign.End; else -> TextAlign.Start }
-                        Box(Modifier.width(cellWidth).background(if (cell.isHeader) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent).padding(9.dp)) {
-                            Text(markdownInline(cell), style = style.copy(fontSize = 14.sp, lineHeight = 21.sp,
+                        Box(Modifier.width(cellWidth).background(if (cell.isHeader) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent).padding(horizontal = 8.dp, vertical = 5.dp)) {
+                            Text(markdownInline(cell), style = style.copy(fontSize = 14.sp, lineHeight = 19.sp,
                                 fontWeight = if (cell.isHeader) FontWeight.SemiBold else FontWeight.Normal, textAlign = alignment), modifier = Modifier.fillMaxWidth())
                         }
                     }

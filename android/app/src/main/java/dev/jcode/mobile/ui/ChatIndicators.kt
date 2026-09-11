@@ -48,7 +48,7 @@ internal fun AgentActivityIndicator(state: MobileState, session: MobileSession) 
     if (active.isEmpty()) return
     val animation = rememberInfiniteTransition(label = "Agent activity")
     val pulse by animation.animateFloat(.35f, 1f, infiniteRepeatable(tween(850), RepeatMode.Reverse), label = "Activity dots")
-    Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp).testTag("agent-activity"), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp).testTag("agent-activity"), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         active.take(3).forEach { agent ->
             val name = agent.agentName.ifBlank { agent.name }
             val label = if (agent.currentTool.isNotBlank()) "$name is using ${agent.currentTool}…" else "$name is working…"
