@@ -1236,6 +1236,15 @@ impl App {
                 self.account_picker_overlay = None;
                 Ok(Some(command))
             }
+            OverlayAction::ForwardToInput(c) => {
+                // The overlay handed back a `/` that starts a command. Close it
+                // and seed the command input so the user can type the rest of a
+                // slash command (e.g. `/account openai rename ...`).
+                self.account_picker_overlay = None;
+                self.input.insert(self.cursor_pos, c);
+                self.cursor_pos += c.len_utf8();
+                Ok(None)
+            }
         }
     }
 }

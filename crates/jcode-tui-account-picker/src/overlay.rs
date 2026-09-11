@@ -41,6 +41,10 @@ pub enum OverlayAction {
     Continue,
     Close,
     Execute(AccountPickerCommand),
+    /// The user typed `/` on an empty filter: they are starting a slash
+    /// command, not filtering. Close the overlay and forward the keystroke to
+    /// the normal command input so a typed `/account ... rename ...` runs.
+    ForwardToInput(char),
 }
 
 impl AccountPicker {
@@ -363,6 +367,12 @@ impl AccountPicker {
                 if !modifiers.contains(KeyModifiers::CONTROL)
                     && !modifiers.contains(KeyModifiers::ALT) =>
             {
+                // A `/` typed on an empty filter starts a slash command, not a
+                // filter. Hand it back to the command input so the overlay does
+                // not swallow a typed `/account ... rename ...`.
+                if c == '/' && self.filter.is_empty() {
+                    return Ok(OverlayAction::ForwardToInput(c));
+                }
                 self.filter.push(c);
                 self.apply_filter();
             }
@@ -852,6 +862,35 @@ fn estimate_summary_bytes(summary: &AccountPickerSummary) -> usize {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+
+    #[test]
+    fn slash_on_empty_filter_forwards_to_input_instead_of_filtering() {
+        let mut picker = AccountPicker::new(
+            " Accounts ",
+            vec![AccountPickerItem::action(
+                "openai",
+                "OpenAI",
+                "Switch openai-otter",
+                "make active",
+                AccountPickerCommand::SubmitInput("/account openai switch openai-otter".to_string()),
+            )],
+        );
+
+        // Typing `/` on an empty filter must hand the key back to the command
+        // input so a typed `/account ... rename ...` is not swallowed.
+        let action = picker
+            .handle_overlay_key(KeyCode::Char('/'), KeyModifiers::NONE)
+            .expect("overlay key");
+        assert!(matches!(action, OverlayAction::ForwardToInput('/')));
+        assert!(picker.filter.is_empty(), "slash must not become a filter");
+
+        // A non-slash character still filters as before.
+        let action = picker
+            .handle_overlay_key(KeyCode::Char('o'), KeyModifiers::NONE)
+            .expect("overlay key");
+        assert!(matches!(action, OverlayAction::Continue));
+        assert_eq!(picker.filter, "o");
+    }
 
     #[test]
     fn test_account_picker_preserves_underlying_background_outside_panels() {

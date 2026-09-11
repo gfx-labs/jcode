@@ -53,7 +53,7 @@ impl App {
         let remainder = remainder.trim();
 
         match first {
-            "switch" | "use" | "add" | "login" | "remove" | "rm" | "delete"
+            "switch" | "use" | "add" | "login" | "remove" | "rm" | "delete" | "rename"
             | "default-provider" | "default-model" => return None,
             "list" | "ls" => {
                 return Some(InlinePickerPreviewRequest::Account {
@@ -87,8 +87,8 @@ impl App {
                     filter: String::new(),
                 }),
                 "settings" | "login" | "add" | "switch" | "use" | "remove" | "rm" | "delete"
-                | "transport" | "effort" | "fast" | "premium" | "api-base" | "api-key-name"
-                | "env-file" | "default-model" => None,
+                | "rename" | "transport" | "effort" | "fast" | "premium" | "api-base"
+                | "api-key-name" | "env-file" | "default-model" => None,
                 _ => Some(InlinePickerPreviewRequest::Account {
                     provider_filter: Some(provider_filter),
                     filter: remainder.to_string(),
