@@ -1246,6 +1246,47 @@ pub(super) async fn handle_notify_auth_changed(
 #[path = "provider_control_tests.rs"]
 mod provider_control_tests;
 
+pub(super) fn handle_rename_account(
+    id: u64,
+    provider: &str,
+    label: &str,
+    new_label: &str,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let result = match provider {
+        "claude" => crate::auth::claude::rename_account(label, new_label),
+        "openai" => crate::auth::codex::rename_account(label, new_label),
+        _ => Err(anyhow::anyhow!(
+            "Provider does not support account renaming"
+        )),
+    };
+    match result {
+        Ok(()) => {
+            let _ = client_event_tx.send(ServerEvent::Notification {
+                from_session: "jcode".to_string(),
+                from_name: Some("Jcode".to_string()),
+                notification_type: NotificationType::Message {
+                    scope: Some("account".to_string()),
+                    channel: None,
+                    tldr: None,
+                },
+                message: format!(
+                    "Renamed {provider} account {label} to {}.",
+                    new_label.trim()
+                ),
+            });
+            let _ = client_event_tx.send(ServerEvent::Done { id });
+        }
+        Err(error) => {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message: format!("Failed to rename account: {error}"),
+                retry_after_secs: None,
+            });
+        }
+    }
+}
+
 pub(super) async fn handle_switch_anthropic_account(
     id: u64,
     label: String,

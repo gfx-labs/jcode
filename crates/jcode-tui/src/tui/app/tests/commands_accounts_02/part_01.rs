@@ -337,8 +337,18 @@ fn test_account_picker_supports_arrow_and_vim_navigation() {
             .expect("inline account picker should open")
             .selected;
         let picker = app.inline_interactive_state.as_ref().unwrap();
-        assert!(picker.entries.iter().any(|entry| entry.name == "OpenAI Otter"));
-        assert!(picker.entries.iter().any(|entry| entry.name == "OpenAI Fox"));
+        assert!(
+            picker
+                .entries
+                .iter()
+                .any(|entry| entry.name == "OpenAI Otter")
+        );
+        assert!(
+            picker
+                .entries
+                .iter()
+                .any(|entry| entry.name == "OpenAI Fox")
+        );
 
         app.handle_key(KeyCode::Down, KeyModifiers::empty())
             .unwrap();
@@ -825,5 +835,74 @@ fn test_improve_resume_uses_saved_mode_and_current_todos() {
                 if text.contains("Resume improvement mode")
                     && text.contains("Refactor command parsing")
         ));
+    });
+}
+
+#[test]
+fn remote_account_rename_prompt_sends_command_not_model_message() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.prompt_account_value(
+        "New account name".into(),
+        "/account openai rename \"Old name\"".into(),
+        None,
+        "Rename account".into(),
+    );
+    app.input = "New  name".into();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        use tokio::io::AsyncBufReadExt;
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        remote.mark_history_loaded();
+        let mut peer = tokio::io::BufReader::new(remote.take_dummy_peer().unwrap());
+        super::remote::handle_remote_key(&mut app, KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+            .await
+            .unwrap();
+        assert!(
+            !app.is_processing,
+            "Account names must not be sent to the model"
+        );
+        assert!(app.pending_account_input.is_none());
+        let mut line = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(1), peer.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(serde_json::from_str::<crate::protocol::Request>(&line).unwrap(),
+            crate::protocol::Request::RenameAccount { provider, label, new_label, .. }
+            if provider == "openai" && label == "Old name" && new_label == "New  name")
+        );
+    });
+}
+
+#[test]
+fn remote_account_rename_prompt_empty_and_cancel_never_send_requests() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        remote.mark_history_loaded();
+        for value in ["", "/cancel"] {
+            app.prompt_account_value(
+                "New name".into(),
+                "/account claude rename old".into(),
+                None,
+                "Rename".into(),
+            );
+            app.input = value.into();
+            super::remote::handle_remote_key(
+                &mut app,
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                &mut remote,
+            )
+            .await
+            .unwrap();
+            assert!(!app.is_processing);
+            assert_eq!(remote.next_request_id_for_test(), 1);
+            assert_eq!(app.pending_account_input.is_some(), value.is_empty());
+        }
     });
 }

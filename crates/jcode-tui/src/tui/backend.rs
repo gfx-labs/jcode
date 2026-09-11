@@ -1123,6 +1123,23 @@ impl RemoteConnection {
         .await
     }
 
+    pub async fn rename_account(
+        &mut self,
+        provider: &str,
+        label: &str,
+        new_label: &str,
+    ) -> Result<()> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::RenameAccount {
+            id,
+            provider: provider.to_string(),
+            label: label.to_string(),
+            new_label: new_label.to_string(),
+        })
+        .await
+    }
+
     /// Send a response for a client debug request
     pub async fn send_client_debug_response(&mut self, id: u64, output: String) -> Result<()> {
         self.send_request(Request::ClientDebugResponse { id, output })

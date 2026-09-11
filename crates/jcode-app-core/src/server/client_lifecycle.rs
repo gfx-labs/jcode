@@ -39,7 +39,7 @@ use super::comm_sync::{
     handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
 use super::provider_control::{
-    handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
+    handle_cycle_model, handle_notify_auth_changed, handle_refresh_models, handle_rename_account,
     handle_set_compaction_mode, handle_set_model, handle_set_premium_mode,
     handle_set_reasoning_effort, handle_set_route, handle_set_service_tier, handle_set_transport,
     handle_switch_anthropic_account, handle_switch_openai_account,
@@ -2104,6 +2104,10 @@ pub(super) async fn handle_client(
                     &client_event_tx,
                 )
                 .await;
+            }
+
+            Request::RenameAccount { id, provider, label, new_label } => {
+                handle_rename_account(id, &provider, &label, &new_label, &client_event_tx);
             }
 
             Request::SwitchAnthropicAccount { id, label } => {

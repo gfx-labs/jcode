@@ -69,7 +69,7 @@ impl App {
         lines.extend(format_account_table(&headers, &rows));
         lines.push(String::new());
         lines.push(
-            "Commands: /account openai switch <label>, /account openai add, /account openai remove <label>"
+            "Commands: /account openai switch <label>, /account openai add, /account openai remove <label>, /account openai rename <old-name> <new name>"
                 .to_string(),
         );
 
@@ -121,7 +121,7 @@ impl App {
         lines.extend(format_account_table(&headers, &rows));
         lines.push(String::new());
         lines.push(
-            "Commands: /account claude switch <label>, /account claude add, /account claude remove <label>"
+            "Commands: /account claude switch <label>, /account claude add, /account claude remove <label>, /account claude rename <old-name> <new name>"
                 .to_string(),
         );
 
@@ -175,6 +175,22 @@ impl App {
                     "/account {} add {}",
                     provider.id, label
                 )),
+            ));
+            items.push(crate::tui::account_picker::AccountPickerItem::action(
+                provider.id,
+                provider.display_name,
+                format!("Rename account `{label}`"),
+                "Change the saved name without switching accounts",
+                crate::tui::account_picker::AccountPickerCommand::PromptValue {
+                    prompt: format!("New name for {label}:"),
+                    command_prefix: format!(
+                        "/account {} rename {}",
+                        provider.id,
+                        serde_json::to_string(&label).expect("string serializes")
+                    ),
+                    empty_value: None,
+                    status_notice: "Account: enter a new name".to_string(),
+                },
             ));
             items.push(crate::tui::account_picker::AccountPickerItem::action(
                 provider.id,
@@ -239,6 +255,22 @@ impl App {
             items.push(crate::tui::account_picker::AccountPickerItem::action(
                 provider.id,
                 provider.display_name,
+                format!("Rename account `{label}`"),
+                "Change the saved name without switching accounts",
+                crate::tui::account_picker::AccountPickerCommand::PromptValue {
+                    prompt: format!("New name for {label}:"),
+                    command_prefix: format!(
+                        "/account {} rename {}",
+                        provider.id,
+                        serde_json::to_string(&label).expect("string serializes")
+                    ),
+                    empty_value: None,
+                    status_notice: "Account: enter a new name".to_string(),
+                },
+            ));
+            items.push(crate::tui::account_picker::AccountPickerItem::action(
+                provider.id,
+                provider.display_name,
                 format!("Remove account `{label}`"),
                 format!("Delete saved credentials for `{label}`"),
                 crate::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
@@ -250,22 +282,8 @@ impl App {
     }
 }
 
-/// A provider name is enough when there is only one login. Animal names are
-/// useful only when multiple logins of that provider need distinguishing.
-pub(super) fn account_display_name(provider: &str, label: &str, account_count: usize) -> String {
-    if account_count <= 1 {
-        return provider.to_string();
-    }
-    let animal = label
-        .rsplit_once('-')
-        .map(|(_, animal)| animal)
-        .unwrap_or(label);
-    let mut chars = animal.chars();
-    let animal = chars
-        .next()
-        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-        .unwrap_or_else(|| "Account".to_string());
-    format!("{provider} {animal}")
+pub(super) fn account_display_name(_provider: &str, label: &str, _account_count: usize) -> String {
+    label.to_string()
 }
 
 /// Anthropic exposes the subscription kind but not an explicit work/personal
@@ -284,15 +302,26 @@ mod account_display_tests {
     use super::*;
 
     #[test]
-    fn animals_only_distinguish_duplicate_provider_logins() {
-        assert_eq!(account_display_name("Claude", "claude-otter", 1), "Claude");
+    fn custom_names_remain_visible_even_for_single_account() {
+        assert_eq!(
+            account_display_name("Claude", "My Work-account", 1),
+            "My Work-account"
+        );
+    }
+
+    #[test]
+    fn saved_names_are_shown_verbatim() {
+        assert_eq!(
+            account_display_name("Claude", "claude-otter", 1),
+            "claude-otter"
+        );
         assert_eq!(
             account_display_name("Claude", "claude-otter", 2),
-            "Claude Otter"
+            "claude-otter"
         );
         assert_eq!(
             account_display_name("Claude", "claude-fox", 2),
-            "Claude Fox"
+            "claude-fox"
         );
     }
 

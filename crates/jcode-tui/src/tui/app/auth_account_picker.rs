@@ -1144,13 +1144,25 @@ impl App {
         pending: PendingAccountInput,
         input: String,
     ) {
+        if let Some(command) = self.prepare_pending_account_input(pending, input) {
+            self.input = command;
+            self.cursor_pos = self.input.len();
+            self.submit_input();
+        }
+    }
+
+    pub(crate) fn prepare_pending_account_input(
+        &mut self,
+        pending: PendingAccountInput,
+        input: String,
+    ) -> Option<String> {
         let trimmed = input.trim();
         if trimmed == "/cancel" {
             self.push_display_message(DisplayMessage::system(
                 "Account action cancelled.".to_string(),
             ));
             self.set_status_notice("Account: cancelled");
-            return;
+            return None;
         }
 
         match pending {
@@ -1166,11 +1178,9 @@ impl App {
                         provider_id,
                         display_name,
                     });
-                    return;
+                    return None;
                 }
-                self.input = format!("/account {} add {}", provider_id, trimmed);
-                self.cursor_pos = self.input.len();
-                self.submit_input();
+                Some(format!("/account {} add {}", provider_id, trimmed))
             }
             PendingAccountInput::CommandValue {
                 prompt,
@@ -1191,14 +1201,12 @@ impl App {
                             empty_value: None,
                             status_notice,
                         });
-                        return;
+                        return None;
                     }
                 } else {
                     trimmed.to_string()
                 };
-                self.input = format!("{} {}", command_prefix, value);
-                self.cursor_pos = self.input.len();
-                self.submit_input();
+                Some(format!("{} {}", command_prefix, value))
             }
         }
     }

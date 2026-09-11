@@ -381,6 +381,14 @@ pub enum Request {
     #[serde(rename = "switch_openai_account")]
     SwitchOpenAiAccount { id: u64, label: String },
 
+    #[serde(rename = "rename_account")]
+    RenameAccount {
+        id: u64,
+        provider: String,
+        label: String,
+        new_label: String,
+    },
+
     /// Send stdin input to a running command that requested it
     #[serde(rename = "stdin_response")]
     StdinResponse {

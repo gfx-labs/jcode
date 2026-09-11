@@ -416,8 +416,9 @@ pub fn import_at(
                 credential.expires_at,
             )?;
             serde_json::to_vec(&super::codex::JcodeOpenAiAuthFile {
+                account_aliases: Default::default(),
                 openai_accounts: vec![super::codex::OpenAiAccount {
-                    label: "openai-otter".into(),
+                    label: super::codex::primary_account_label(),
                     access_token: credential.access_token,
                     refresh_token: credential.refresh_token,
                     id_token: credential.id_token,
@@ -425,7 +426,7 @@ pub fn import_at(
                     expires_at: credential.expires_at,
                     email: None,
                 }],
-                active_openai_account: Some("openai-otter".into()),
+                active_openai_account: Some(super::codex::primary_account_label()),
             })
         }
         TransferProvider::Claude => {
@@ -439,11 +440,11 @@ pub fn import_at(
             #[derive(Serialize)]
             struct Store {
                 anthropic_accounts: Vec<super::claude::AnthropicAccount>,
-                active_anthropic_account: &'static str,
+                active_anthropic_account: String,
             }
             serde_json::to_vec(&Store {
                 anthropic_accounts: vec![super::claude::AnthropicAccount {
-                    label: "claude-otter".into(),
+                    label: super::claude::primary_account_label(),
                     access: credential.access,
                     refresh: credential.refresh,
                     expires: credential.expires,
@@ -451,7 +452,7 @@ pub fn import_at(
                     scopes: credential.scopes,
                     subscription_type: credential.subscription_type,
                 }],
-                active_anthropic_account: "claude-otter",
+                active_anthropic_account: super::claude::primary_account_label(),
             })
         }
     }

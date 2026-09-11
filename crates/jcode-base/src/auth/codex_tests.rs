@@ -396,7 +396,7 @@ fn load_credentials_reads_legacy_oauth_without_changing_external_permissions() {
 }
 
 #[test]
-fn load_auth_file_renames_existing_labels_to_animal_scheme() {
+fn load_auth_file_preserves_existing_labels() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
     let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
@@ -429,7 +429,75 @@ fn load_auth_file_renames_existing_labels_to_animal_scheme() {
             .iter()
             .map(|account| account.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["openai-otter", "openai-fox"]
+        vec!["personal", "work"]
     );
-    assert_eq!(auth.active_openai_account.as_deref(), Some("openai-fox"));
+    assert_eq!(auth.active_openai_account.as_deref(), Some("work"));
+}
+
+#[test]
+fn rename_preserves_identity_and_refresh_through_old_names() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+    set_active_account_override(None);
+    let auth: JcodeOpenAiAuthFile = serde_json::from_value(serde_json::json!({
+        "openai_accounts": [{"label":"original","access_token":"access", "refresh_token":"refresh"}],
+        "active_openai_account": "original"
+    })).unwrap();
+    save_auth_file(&auth).unwrap();
+    set_active_account_override(Some("original".into()));
+    assert!(rename_account("original", "  ").is_err());
+    assert!(rename_account("original", "bad\nname").is_err());
+    rename_account("original", "Work / personal 🦊").unwrap();
+    rename_account("Work / personal 🦊", "Final name").unwrap();
+    assert_eq!(active_account_label().as_deref(), Some("Final name"));
+    assert_eq!(
+        load_credentials_for_account("original")
+            .unwrap()
+            .access_token,
+        "access"
+    );
+    update_account_tokens("original", "updated", "rotated", None, None, Some(200)).unwrap();
+    assert_eq!(
+        load_credentials_for_account("Final name")
+            .unwrap()
+            .access_token,
+        "updated"
+    );
+    rename_account("Final name", "original").unwrap();
+    assert_eq!(
+        load_credentials_for_account("Final name")
+            .unwrap()
+            .access_token,
+        "updated"
+    );
+    assert_eq!(list_accounts().unwrap()[0].label, "original");
+    set_active_account_override(None);
+}
+
+#[test]
+fn adding_after_rename_never_replaces_existing_credentials() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
+    set_active_account_override(None);
+    let auth: JcodeOpenAiAuthFile = serde_json::from_value(serde_json::json!({
+        "openai_accounts": [{"label":"openai-1","access_token":"original", "refresh_token":"refresh"}],
+        "active_openai_account": "openai-1"
+    })).unwrap();
+    save_auth_file(&auth).unwrap();
+    rename_account("openai-1", "Work").unwrap();
+    let next = next_account_label().unwrap();
+    let target = login_target_label(Some(&next)).unwrap();
+    assert_eq!(target, "openai-2");
+    let mut added = auth.openai_accounts[0].clone();
+    added.label = target;
+    added.access_token = "new".into();
+    assert_eq!(upsert_account(added).unwrap(), "openai-2");
+    assert_eq!(list_accounts().unwrap().len(), 2);
+    assert_eq!(
+        load_credentials_for_account("Work").unwrap().access_token,
+        "original"
+    );
+    set_active_account_override(None);
 }

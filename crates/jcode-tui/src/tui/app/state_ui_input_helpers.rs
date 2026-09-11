@@ -918,6 +918,14 @@ impl App {
                     "Start or refresh login for this provider",
                 ));
             }
+            suggestions.push((
+                "/account claude rename".into(),
+                "Rename a saved Claude account",
+            ));
+            suggestions.push((
+                "/account openai rename".into(),
+                "Rename a saved OpenAI account",
+            ));
             suggestions.push(("/account claude add".into(), "Add a new Claude account"));
             suggestions.push(("/account openai add".into(), "Add a new OpenAI account"));
             suggestions.push((
@@ -934,6 +942,13 @@ impl App {
                         format!("/account claude switch {}", account.label),
                         "Switch to this Claude account",
                     ));
+                    suggestions.push((
+                        format!(
+                            "/account claude rename {}",
+                            serde_json::to_string(&account.label).expect("string serializes")
+                        ),
+                        "Rename this saved account",
+                    ));
                 }
             }
             if let Ok(accounts) = crate::auth::codex::list_accounts() {
@@ -941,6 +956,13 @@ impl App {
                     suggestions.push((
                         format!("/account openai switch {}", account.label),
                         "Switch to this OpenAI account",
+                    ));
+                    suggestions.push((
+                        format!(
+                            "/account openai rename {}",
+                            serde_json::to_string(&account.label).expect("string serializes")
+                        ),
+                        "Rename this saved account",
                     ));
                 }
             }
@@ -1681,8 +1703,10 @@ impl App {
                 | "/account default-provider"
                 | "/account default-model"
                 | "/account claude switch"
+                | "/account claude rename"
                 | "/account claude remove"
                 | "/account openai switch"
+                | "/account openai rename"
                 | "/account openai remove"
                 | "/usage"
                 | "/subscription"

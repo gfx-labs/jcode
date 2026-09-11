@@ -73,6 +73,7 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("Subscribe", Covered),
     ("SwitchAnthropicAccount", ClientInternal),
     ("SwitchOpenAiAccount", ClientInternal),
+    ("RenameAccount", ClientInternal),
     ("Transcript", ClientInternal),
     ("Transfer", ClientInternal),
     ("TriggerMemoryExtraction", ClientInternal),

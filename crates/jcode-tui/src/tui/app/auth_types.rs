@@ -116,6 +116,11 @@ pub(crate) enum PendingAccountInput {
 
 #[derive(Debug, Clone)]
 pub(crate) enum AccountCommand {
+    Rename {
+        provider_id: String,
+        label: String,
+        new_label: String,
+    },
     OpenOverlay {
         provider_filter: Option<String>,
     },

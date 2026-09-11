@@ -656,6 +656,17 @@ async fn handle_remote_key_internal(
         }
     }
 
+    if code == KeyCode::Enter
+        && !modifiers.contains(KeyModifiers::SHIFT)
+        && let Some(pending) = app.pending_account_input.take()
+    {
+        let prepared = input::take_prepared_input(app);
+        if let Some(command) = app.prepare_pending_account_input(pending, prepared.expanded) {
+            app_mod::auth::handle_account_command_remote(app, &command, remote).await?;
+        }
+        return Ok(());
+    }
+
     if app.handle_command_suggestion_key(code, modifiers) {
         return Ok(());
     }

@@ -610,6 +610,7 @@ impl Request {
             Request::NotifyAuthChanged { id, .. } => *id,
             Request::SwitchAnthropicAccount { id, .. } => *id,
             Request::SwitchOpenAiAccount { id, .. } => *id,
+            Request::RenameAccount { id, .. } => *id,
             Request::StdinResponse { id, .. } => *id,
             Request::AgentRegister { id, .. } => *id,
             Request::AgentTask { id, .. } => *id,

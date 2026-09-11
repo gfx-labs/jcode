@@ -112,10 +112,39 @@ pub(crate) async fn handle_account_command_remote(
     Ok(true)
 }
 
+fn split_account_word(input: &str) -> (&str, &str) {
+    input
+        .split_once(char::is_whitespace)
+        .map(|(word, rest)| (word, rest.trim_start()))
+        .unwrap_or((input, ""))
+}
+
+// The old name is a JSON string when quoted. The new name is the literal remainder.
+fn parse_rename_value(value: &str) -> Result<(String, String), String> {
+    let usage = "Usage: /account <claude|openai> rename <old-name|\"old name\"> <new name>";
+    let (label, rest) = if value.starts_with('"') {
+        let mut stream = serde_json::Deserializer::from_str(value).into_iter::<String>();
+        let label = stream.next().ok_or(usage)?.map_err(|_| usage.to_string())?;
+        let rest = &value[stream.byte_offset()..];
+        if !rest.starts_with(char::is_whitespace) {
+            return Err(usage.to_string());
+        }
+        (label, rest.trim())
+    } else {
+        let (label, rest) = split_account_word(value);
+        (label.to_string(), rest.trim())
+    };
+    if label.is_empty() || rest.is_empty() {
+        return Err(usage.to_string());
+    }
+    Ok((label, rest.to_string()))
+}
+
 fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>> {
-    let rest = trimmed
-        .strip_prefix("/account")
-        .or_else(|| trimmed.strip_prefix("/accounts"))?;
+    let (command, rest) = split_account_word(trimmed);
+    if !matches!(command, "/account" | "/accounts") {
+        return None;
+    }
     let rest = rest.trim();
     if rest.is_empty() {
         return Some(Ok(AccountCommand::OpenOverlay {
@@ -123,10 +152,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
         }));
     }
 
-    let mut parts = rest.split_whitespace();
-    let first = parts.next()?;
-    let remainder = parts.collect::<Vec<_>>().join(" ");
-    let remainder = remainder.trim();
+    let (first, remainder) = split_account_word(rest);
 
     match first {
         "doctor" => {
@@ -192,12 +218,20 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
             }));
         }
 
-        let mut provider_parts = remainder.split_whitespace();
-        let subcommand = provider_parts.next().unwrap_or_default();
-        let value = provider_parts.collect::<Vec<_>>().join(" ");
-        let value = value.trim();
+        let (subcommand, value) = split_account_word(remainder);
 
         let parsed = match subcommand {
+            "rename" if matches!(provider.id, "claude" | "openai") => {
+                let (label, new_label) = match parse_rename_value(value) {
+                    Ok(value) => value,
+                    Err(error) => return Some(Err(error)),
+                };
+                AccountCommand::Rename {
+                    provider_id,
+                    label,
+                    new_label,
+                }
+            }
             "doctor" => AccountCommand::Doctor {
                 provider_id: Some(provider.id.to_string()),
             },
@@ -310,7 +344,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
                 if matches!(provider.id, "claude" | "openai") {
                     return Some(Ok(AccountCommand::Switch {
                         provider_id: provider.id.to_string(),
-                        label: other.to_string(),
+                        label: remainder.to_string(),
                     }));
                 }
                 return Some(Err(format!(
@@ -324,7 +358,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
     }
 
     Some(Ok(AccountCommand::SwitchShorthand {
-        label: first.to_string(),
+        label: rest.to_string(),
     }))
 }
 
@@ -406,6 +440,26 @@ pub(crate) fn execute_account_command_local(app: &mut App, command: AccountComma
                 provider_id
             ))),
         },
+        AccountCommand::Rename {
+            provider_id,
+            label,
+            new_label,
+        } => {
+            let result = match provider_id.as_str() {
+                "claude" => crate::auth::claude::rename_account(&label, &new_label),
+                "openai" => crate::auth::codex::rename_account(&label, &new_label),
+                _ => Err(anyhow::anyhow!(
+                    "Provider does not support account renaming"
+                )),
+            };
+            match result {
+                Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+                    "Renamed account {label} to {}.",
+                    new_label.trim()
+                ))),
+                Err(error) => app.push_display_message(DisplayMessage::error(error.to_string())),
+            }
+        }
         AccountCommand::SwitchShorthand { label } => app.switch_account_by_label(&label),
         AccountCommand::Remove { provider_id, label } => match provider_id.as_str() {
             "claude" => app.remove_account(&label),
@@ -450,6 +504,16 @@ pub(crate) async fn execute_account_command_remote(
     remote: &mut crate::tui::backend::RemoteConnection,
 ) -> anyhow::Result<()> {
     match command {
+        AccountCommand::Rename {
+            provider_id,
+            label,
+            new_label,
+        } => {
+            remote
+                .rename_account(&provider_id, &label, &new_label)
+                .await?;
+        }
+
         AccountCommand::OpenOverlay { provider_filter } => {
             if app.should_open_inline_account_picker(provider_filter.as_deref()) {
                 app.open_account_picker(provider_filter.as_deref());
@@ -972,6 +1036,7 @@ fn render_provider_settings_markdown(app: &App, provider_id: &str) -> String {
             lines.push("Commands:".to_string());
             lines.push("  - /account claude add".to_string());
             lines.push("  - /account claude switch <label>".to_string());
+            lines.push("  - /account claude rename <old-name> <new name> (quote old names containing spaces)".to_string());
             lines.push("  - /account claude remove <label>".to_string());
         }
         "openai" => {
@@ -1163,6 +1228,22 @@ fn render_auth_doctor_markdown(provider_filter: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_command_and_spaced_labels_parse_without_loss() {
+        let parsed = parse_account_command(r#"/account openai rename "old name" New  / name"#)
+            .unwrap()
+            .unwrap();
+        let debug = format!("{parsed:?}");
+        assert!(debug.starts_with("Rename"), "{debug}");
+        assert!(debug.contains("old name"));
+        assert!(debug.contains("New  / name"));
+        assert!(
+            matches!(parse_account_command("/accounts openai switch Work  name"),
+            Some(Ok(AccountCommand::Switch { label, .. })) if label == "Work  name")
+        );
+        assert!(parse_account_command("/accounting").is_none());
+    }
 
     #[test]
     fn parse_account_doctor_subcommands() {

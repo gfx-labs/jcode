@@ -34,6 +34,7 @@ fn jcode_auth_file_default_is_empty() {
 #[test]
 fn jcode_auth_file_roundtrip() {
     let auth = JcodeAuthFile {
+        account_aliases: Default::default(),
         anthropic_accounts: vec![AnthropicAccount {
             label: "work".to_string(),
             access: "acc_123".to_string(),
@@ -106,7 +107,7 @@ fn real_jcode_home_is_not_treated_as_a_sandbox() {
 }
 
 #[test]
-fn load_auth_file_renames_existing_labels_to_animal_scheme() {
+fn load_auth_file_preserves_existing_labels() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
@@ -141,14 +142,15 @@ fn load_auth_file_renames_existing_labels_to_animal_scheme() {
             .iter()
             .map(|account| account.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["claude-otter", "claude-fox"]
+        vec!["personal", "work"]
     );
-    assert_eq!(auth.active_anthropic_account.as_deref(), Some("claude-fox"));
+    assert_eq!(auth.active_anthropic_account.as_deref(), Some("work"));
 }
 
 #[test]
 fn jcode_auth_file_multi_account() {
     let auth = JcodeAuthFile {
+        account_aliases: Default::default(),
         anthropic_accounts: vec![
             AnthropicAccount {
                 label: "personal".to_string(),
@@ -600,4 +602,72 @@ impl Drop for EnvStringGuard {
             crate::env::remove_var(self.key);
         }
     }
+}
+
+#[test]
+fn rename_preserves_identity_and_refresh_through_old_names() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    set_active_account_override(None);
+    let auth: JcodeAuthFile = serde_json::from_value(serde_json::json!({
+        "anthropic_accounts": [{"label":"original","access":"access", "refresh":"refresh", "expires":100}],
+        "active_anthropic_account": "original"
+    })).unwrap();
+    save_auth_file(&auth).unwrap();
+    set_active_account_override(Some("original".into()));
+    assert!(rename_account("original", "  ").is_err());
+    assert!(rename_account("original", "bad\nname").is_err());
+    rename_account("original", "Work / personal 🦊").unwrap();
+    rename_account("Work / personal 🦊", "Final name").unwrap();
+    assert_eq!(active_account_label().as_deref(), Some("Final name"));
+    assert_eq!(
+        load_credentials_for_account("original")
+            .unwrap()
+            .access_token,
+        "access"
+    );
+    update_account_tokens("original", "updated", "rotated", 200).unwrap();
+    assert_eq!(
+        load_credentials_for_account("Final name")
+            .unwrap()
+            .access_token,
+        "updated"
+    );
+    rename_account("Final name", "original").unwrap();
+    assert_eq!(
+        load_credentials_for_account("Final name")
+            .unwrap()
+            .access_token,
+        "updated"
+    );
+    assert_eq!(list_accounts().unwrap()[0].label, "original");
+    set_active_account_override(None);
+}
+
+#[test]
+fn adding_after_rename_never_replaces_existing_credentials() {
+    let _lock = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    set_active_account_override(None);
+    let auth: JcodeAuthFile = serde_json::from_value(serde_json::json!({
+        "anthropic_accounts": [{"label":"claude-1","access":"original", "refresh":"refresh", "expires":100}],
+        "active_anthropic_account": "claude-1"
+    })).unwrap();
+    save_auth_file(&auth).unwrap();
+    rename_account("claude-1", "Work").unwrap();
+    let next = next_account_label().unwrap();
+    let target = login_target_label(Some(&next)).unwrap();
+    assert_eq!(target, "claude-2");
+    let mut added = auth.anthropic_accounts[0].clone();
+    added.label = target;
+    added.access = "new".into();
+    assert_eq!(upsert_account(added).unwrap(), "claude-2");
+    assert_eq!(list_accounts().unwrap().len(), 2);
+    assert_eq!(
+        load_credentials_for_account("Work").unwrap().access_token,
+        "original"
+    );
+    set_active_account_override(None);
 }

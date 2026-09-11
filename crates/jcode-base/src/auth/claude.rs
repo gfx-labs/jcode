@@ -76,6 +76,8 @@ pub struct AnthropicAccount {
 /// Backwards-compatible: also reads the old single-account `{"anthropic": {...}}` layout.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JcodeAuthFile {
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub account_aliases: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub anthropic_accounts: Vec<AnthropicAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,7 +118,11 @@ pub fn next_account_label() -> Result<String> {
     let auth = load_auth_file()?;
     Ok(crate::auth::account_store::next_account_label(
         ACCOUNT_LABEL_PREFIX,
-        auth.anthropic_accounts.len(),
+        auth.anthropic_accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .chain(auth.account_aliases.keys().map(String::as_str))
+            .chain(auth.account_aliases.values().map(String::as_str)),
     ))
 }
 
@@ -125,6 +131,7 @@ pub fn login_target_label(requested: Option<&str>) -> Result<String> {
     Ok(crate::auth::account_store::login_target_label(
         ACCOUNT_LABEL_PREFIX,
         requested,
+        &auth.account_aliases,
         auth.active_anthropic_account,
         &auth.anthropic_accounts,
         |account| account.label.as_str(),
@@ -326,9 +333,7 @@ pub fn load_auth_file() -> Result<JcodeAuthFile> {
     }
 
     if relabel_accounts(&mut auth) {
-        crate::logging::info(
-            "Renaming Claude accounts to animal labels (claude-otter, claude-fox, ...)",
-        );
+        crate::logging::info("Repairing active Claude account selection");
         save_auth_file(&auth)?;
     }
 
@@ -340,6 +345,7 @@ pub fn save_auth_file(auth: &JcodeAuthFile) -> Result<()> {
     let auth_path = jcode_path()?;
 
     let clean = JcodeAuthFile {
+        account_aliases: auth.account_aliases.clone(),
         anthropic_accounts: auth.anthropic_accounts.clone(),
         active_anthropic_account: auth.active_anthropic_account.clone(),
         anthropic: None,
@@ -359,7 +365,9 @@ pub fn list_accounts() -> Result<Vec<AnthropicAccount>> {
 pub fn active_account_label() -> Option<String> {
     let auth = load_auth_file().ok()?;
     crate::auth::account_store::active_account_label(
-        get_active_account_override(),
+        get_active_account_override().map(|label| {
+            crate::auth::account_store::resolve_label(&auth.account_aliases, &label).to_string()
+        }),
         auth.active_anthropic_account,
         &auth.anthropic_accounts,
         |account| account.label.as_str(),
@@ -368,7 +376,11 @@ pub fn active_account_label() -> Option<String> {
 
 /// Persist the active account choice to disk (and set the runtime override).
 pub fn set_active_account(label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     crate::auth::account_store::set_active_account(
         label,
         &auth.anthropic_accounts,
@@ -383,14 +395,16 @@ pub fn set_active_account(label: &str) -> Result<()> {
 
 /// Add or update an account. Returns the label used.
 pub fn upsert_account(account: AnthropicAccount) -> Result<String> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
     let label = crate::auth::account_store::upsert_account(
         ACCOUNT_LABEL_PREFIX,
         &mut auth.anthropic_accounts,
         &mut auth.active_anthropic_account,
         account,
-        |account| account.label.as_str(),
-        |account, label| account.label = label,
+        &auth.account_aliases,
+        |a| a.label.as_str(),
+        |a, label| a.label = label,
     );
     save_auth_file(&auth)?;
     Ok(label)
@@ -398,7 +412,11 @@ pub fn upsert_account(account: AnthropicAccount) -> Result<String> {
 
 /// Remove an account by label.
 pub fn remove_account(label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     let before = auth.anthropic_accounts.len();
     auth.anthropic_accounts.retain(|a| a.label != label);
     if auth.anthropic_accounts.len() == before {
@@ -420,6 +438,7 @@ pub fn remove_account(label: &str) -> Result<()> {
 
 /// Remove every stored Anthropic account in one write.
 pub fn clear_accounts() -> Result<usize> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
     let removed = auth.anthropic_accounts.len();
     auth.anthropic_accounts.clear();
@@ -431,7 +450,11 @@ pub fn clear_accounts() -> Result<usize> {
 
 /// Update tokens for a specific account (called after token refresh).
 pub fn update_account_tokens(label: &str, access: &str, refresh: &str, expires: i64) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     if let Some(account) = auth
         .anthropic_accounts
         .iter_mut()
@@ -449,7 +472,11 @@ pub fn update_account_tokens(label: &str, access: &str, refresh: &str, expires: 
 
 /// Update profile metadata for a specific account.
 pub fn update_account_profile(label: &str, email: Option<String>) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     if let Some(account) = auth
         .anthropic_accounts
         .iter_mut()
@@ -611,6 +638,9 @@ pub fn load_credentials() -> Result<ClaudeCredentials> {
 /// Load credentials for a specific jcode account by label.
 pub fn load_credentials_for_account(label: &str) -> Result<ClaudeCredentials> {
     let auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     let account = auth
         .anthropic_accounts
         .iter()
@@ -636,6 +666,8 @@ fn load_jcode_credentials() -> Result<ClaudeCredentials> {
     let active_label = get_active_account_override()
         .or(auth.active_anthropic_account)
         .unwrap_or_else(primary_account_label);
+    let active_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, &active_label);
 
     let account = auth
         .anthropic_accounts
@@ -947,3 +979,24 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
 #[cfg(test)]
 #[path = "claude_tests.rs"]
 mod tests;
+
+pub fn rename_account(label: &str, new_label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
+    let mut auth = load_auth_file()?;
+    crate::auth::account_store::rename_account(
+        &mut auth.anthropic_accounts,
+        &mut auth.active_anthropic_account,
+        &mut auth.account_aliases,
+        label,
+        new_label,
+        |a| a.label.as_str(),
+        |a, label| a.label = label,
+    )?;
+    save_auth_file(&auth)?;
+    if get_active_account_override().as_deref() == Some(label) {
+        set_active_account_override(Some(new_label.trim().to_string()));
+    }
+    super::AuthStatus::invalidate_cache();
+    crate::logging::info("Renamed saved claude account");
+    Ok(())
+}

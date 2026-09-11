@@ -33,6 +33,8 @@ pub struct OpenAiAccount {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JcodeOpenAiAuthFile {
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub account_aliases: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub openai_accounts: Vec<OpenAiAccount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,7 +77,11 @@ pub fn next_account_label() -> Result<String> {
     let auth = load_auth_file()?;
     Ok(crate::auth::account_store::next_account_label(
         ACCOUNT_LABEL_PREFIX,
-        auth.openai_accounts.len(),
+        auth.openai_accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .chain(auth.account_aliases.keys().map(String::as_str))
+            .chain(auth.account_aliases.values().map(String::as_str)),
     ))
 }
 
@@ -84,6 +90,7 @@ pub fn login_target_label(requested: Option<&str>) -> Result<String> {
     Ok(crate::auth::account_store::login_target_label(
         ACCOUNT_LABEL_PREFIX,
         requested,
+        &auth.account_aliases,
         auth.active_openai_account,
         &auth.openai_accounts,
         |account| account.label.as_str(),
@@ -168,9 +175,7 @@ pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
     };
 
     if relabel_accounts(&mut auth) {
-        crate::logging::info(
-            "Renaming OpenAI accounts to animal labels (openai-otter, openai-fox, ...)",
-        );
+        crate::logging::info("Repairing active OpenAI account selection");
         save_auth_file(&auth)?;
     }
 
@@ -180,6 +185,7 @@ pub fn load_auth_file() -> Result<JcodeOpenAiAuthFile> {
 pub fn save_auth_file(auth: &JcodeOpenAiAuthFile) -> Result<()> {
     let auth_path = jcode_auth_path()?;
     let clean = JcodeOpenAiAuthFile {
+        account_aliases: auth.account_aliases.clone(),
         openai_accounts: auth.openai_accounts.clone(),
         active_openai_account: auth.active_openai_account.clone(),
     };
@@ -196,7 +202,9 @@ pub fn list_accounts() -> Result<Vec<OpenAiAccount>> {
 pub fn active_account_label() -> Option<String> {
     let auth = load_auth_file().ok()?;
     crate::auth::account_store::active_account_label(
-        get_active_account_override(),
+        get_active_account_override().map(|label| {
+            crate::auth::account_store::resolve_label(&auth.account_aliases, &label).to_string()
+        }),
         auth.active_openai_account,
         &auth.openai_accounts,
         |account| account.label.as_str(),
@@ -204,7 +212,11 @@ pub fn active_account_label() -> Option<String> {
 }
 
 pub fn set_active_account(label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     crate::auth::account_store::set_active_account(
         label,
         &auth.openai_accounts,
@@ -218,21 +230,27 @@ pub fn set_active_account(label: &str) -> Result<()> {
 }
 
 pub fn upsert_account(account: OpenAiAccount) -> Result<String> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
     let label = crate::auth::account_store::upsert_account(
         ACCOUNT_LABEL_PREFIX,
         &mut auth.openai_accounts,
         &mut auth.active_openai_account,
         account,
-        |account| account.label.as_str(),
-        |account, label| account.label = label,
+        &auth.account_aliases,
+        |a| a.label.as_str(),
+        |a, label| a.label = label,
     );
     save_auth_file(&auth)?;
     Ok(label)
 }
 
 pub fn remove_account(label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     let before = auth.openai_accounts.len();
     auth.openai_accounts
         .retain(|account| account.label != label);
@@ -254,6 +272,7 @@ pub fn remove_account(label: &str) -> Result<()> {
 }
 
 pub fn clear_accounts() -> Result<usize> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
     let removed = auth.openai_accounts.len();
     auth.openai_accounts.clear();
@@ -271,7 +290,11 @@ pub fn update_account_tokens(
     account_id: Option<String>,
     expires_at: Option<i64>,
 ) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     if let Some(account) = auth
         .openai_accounts
         .iter_mut()
@@ -295,7 +318,11 @@ pub fn update_account_tokens(
 }
 
 pub fn update_account_profile(label: &str, email: Option<String>) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
     let mut auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     if let Some(account) = auth
         .openai_accounts
         .iter_mut()
@@ -406,6 +433,9 @@ pub fn load_api_key_credentials() -> Result<CodexCredentials> {
 
 pub fn load_credentials_for_account(label: &str) -> Result<CodexCredentials> {
     let auth = load_auth_file()?;
+    let resolved_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, label).to_string();
+    let label = resolved_label.as_str();
     let account = auth
         .openai_accounts
         .iter()
@@ -441,6 +471,8 @@ fn load_jcode_credentials() -> Result<CodexCredentials> {
     let active_label = get_active_account_override()
         .or(auth.active_openai_account)
         .unwrap_or_else(primary_account_label);
+    let active_label =
+        crate::auth::account_store::resolve_label(&auth.account_aliases, &active_label);
 
     let account = auth
         .openai_accounts
@@ -585,3 +617,24 @@ fn resolve_expires_at(explicit: Option<i64>, access_token: &str) -> Option<i64> 
 #[cfg(test)]
 #[path = "codex_tests.rs"]
 mod tests;
+
+pub fn rename_account(label: &str, new_label: &str) -> Result<()> {
+    let _lock = crate::auth::account_store::lock_store(ACCOUNT_LABEL_PREFIX)?;
+    let mut auth = load_auth_file()?;
+    crate::auth::account_store::rename_account(
+        &mut auth.openai_accounts,
+        &mut auth.active_openai_account,
+        &mut auth.account_aliases,
+        label,
+        new_label,
+        |a| a.label.as_str(),
+        |a, label| a.label = label,
+    )?;
+    save_auth_file(&auth)?;
+    if get_active_account_override().as_deref() == Some(label) {
+        set_active_account_override(Some(new_label.trim().to_string()));
+    }
+    super::AuthStatus::invalidate_cache();
+    crate::logging::info("Renamed saved openai account");
+    Ok(())
+}
