@@ -11,8 +11,8 @@ pub use jcode_config_types::{
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    SessionNameStyle, SessionNamesConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout,
+    TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -154,6 +154,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_SCROLL_UP_FALLBACK_KEY",
     "JCODE_SCROLL_UP_KEY",
     "JCODE_SEARXNG_URL",
+    "JCODE_SESSION_NAME_STYLE",
     "JCODE_SHOW_AGENTGREP_OUTPUT",
     "JCODE_SHOW_BASH_OUTPUT",
     "JCODE_SHOW_DIFFS",
@@ -550,6 +551,11 @@ pub struct Config {
 
     /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
     pub launch_hotkeys: LaunchHotkeysConfig,
+
+    /// Session naming style. Skipped when default so saving config never
+    /// bakes the shipped default into the file.
+    #[serde(skip_serializing_if = "session_names_is_default")]
+    pub session_names: SessionNamesConfig,
 }
 
 /// Controls who owns autonomous wake execution.
@@ -836,6 +842,10 @@ mod color_tests;
 /// after the default flipped. Omitting default sections prevents a repeat.
 fn sponsors_is_default(sponsors: &SponsorsConfig) -> bool {
     sponsors.enabled && is_default_discovery_endpoint(&sponsors.endpoint)
+}
+
+fn session_names_is_default(session_names: &SessionNamesConfig) -> bool {
+    *session_names == SessionNamesConfig::default()
 }
 
 /// Endpoints that only ever came from a shipped default, never a user choice.

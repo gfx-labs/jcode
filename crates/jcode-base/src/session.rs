@@ -798,7 +798,14 @@ impl Session {
             .into_iter()
             .filter_map(|session_id| extract_session_name(&session_id).map(str::to_string))
             .collect::<HashSet<_>>();
-        let (id, short_name) = new_memorable_session_id_avoiding(&used_names);
+        let (id, short_name) = match crate::config::config().session_names.style {
+            crate::config::SessionNameStyle::Animals => {
+                new_memorable_session_id_avoiding(&used_names)
+            }
+            crate::config::SessionNameStyle::Alphanumber => {
+                jcode_core::alphanumber_id::new_alphanumber_session_id_avoiding(&used_names)
+            }
+        };
         let is_debug = default_is_test_session();
         let mut session = Self {
             id,

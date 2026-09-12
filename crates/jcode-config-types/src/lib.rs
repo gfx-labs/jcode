@@ -1590,6 +1590,44 @@ pub struct LaunchHotkeysConfig {
     pub imported: bool,
 }
 
+/// How new sessions pick their short display name.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionNameStyle {
+    /// Memorable animal names such as `hippo` or `otter` (default).
+    #[default]
+    Animals,
+    /// Letter+digit names such as `A1` or `K7`, skipping the confusable
+    /// characters `I`, `L`, `O`, and `0`.
+    Alphanumber,
+}
+
+impl SessionNameStyle {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Animals => "animals",
+            Self::Alphanumber => "alphanumber",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "animals" | "animal" => Some(Self::Animals),
+            "alphanumber" | "alphanumeric" => Some(Self::Alphanumber),
+            _ => None,
+        }
+    }
+}
+
+/// Session naming configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct SessionNamesConfig {
+    /// Naming style for new sessions: `animals` (default) or `alphanumber`.
+    /// Env override: `JCODE_SESSION_NAME_STYLE`.
+    pub style: SessionNameStyle,
+}
+
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;

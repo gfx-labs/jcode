@@ -735,6 +735,13 @@ impl Config {
             }
         }
 
+        // Session naming
+        if let Ok(v) = std::env::var("JCODE_SESSION_NAME_STYLE") {
+            if let Some(parsed) = super::SessionNameStyle::parse(&v) {
+                self.session_names.style = parsed;
+            }
+        }
+
         // Power management
         if let Ok(v) = std::env::var("JCODE_PREVENT_SLEEP_WHILE_STREAMING") {
             if let Some(parsed) = parse_env_bool(&v) {
