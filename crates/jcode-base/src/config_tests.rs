@@ -227,6 +227,36 @@ fn test_env_override_swarm_model() {
 }
 
 #[test]
+fn test_swarm_router_config_is_opt_in_and_keeps_fallback() {
+    let legacy: Config = toml::from_str("[agents]\nswarm_model = \"gpt-5.6-sol\"\n").unwrap();
+    assert!(!legacy.agents.swarm_router.enabled);
+    assert_eq!(legacy.agents.swarm_router.model, "jev-latest");
+    assert_eq!(legacy.agents.swarm_router.timeout_ms, 5_000);
+
+    let config: Config = toml::from_str(
+        r#"
+[agents]
+swarm_model = "gpt-5.6-sol"
+[agents.swarm_router]
+enabled = true
+candidates = ["openai-oauth:gpt-6-astra"]
+[agents.swarm_router.descriptions]
+"openai-oauth:gpt-6-astra" = "Preferred for hard debugging."
+"#,
+    )
+    .unwrap();
+    assert!(config.agents.swarm_router.enabled);
+    assert_eq!(config.agents.swarm_model, legacy.agents.swarm_model);
+    assert_eq!(config.agents.swarm_router.candidates.len(), 1);
+    assert_eq!(
+        config.agents.swarm_router.descriptions["openai-oauth:gpt-6-astra"],
+        "Preferred for hard debugging."
+    );
+    let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.agents.swarm_router, config.agents.swarm_router);
+}
+
+#[test]
 fn swarm_effort_parses_from_toml_and_env_override() {
     let _guard = crate::storage::lock_test_env();
     let prev = std::env::var_os("JCODE_SWARM_EFFORT");

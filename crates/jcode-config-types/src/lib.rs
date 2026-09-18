@@ -549,6 +549,12 @@ pub struct AgentsConfig {
     /// string to change the worker default. An explicit `model` in the swarm
     /// tool overrides this default for newly spawned workers.
     pub swarm_model: Option<String>,
+    /// Optional task-aware model router for spawned swarm agents.
+    ///
+    /// This is disabled by default. When enabled, an omitted per-spawn model is
+    /// selected from the currently available model-route catalog before falling
+    /// back to `swarm_model` and then coordinator inheritance.
+    pub swarm_router: SwarmRouterConfig,
     /// Optional default reasoning effort for spawned swarm/subagent sessions
     /// (`"low"`, `"medium"`, `"high"`, ...). Applied when a `swarm spawn`
     /// call does not pass an explicit `effort`. Leave unset to let workers
@@ -655,6 +661,7 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
+            swarm_router: SwarmRouterConfig::default(),
             swarm_effort: None,
             swarm_spawn_mode: SwarmSpawnMode::default(),
             swarm_gallery_max_pct: None,
@@ -669,6 +676,34 @@ impl Default for AgentsConfig {
             memory_embedding_base_url: None,
             memory_embedding_dim: None,
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
+        }
+    }
+}
+
+/// TypeSafe Jev-backed task-aware routing for newly spawned swarm agents.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SwarmRouterConfig {
+    /// Opt in to remote task-aware model selection.
+    pub enabled: bool,
+    /// TypeSafe system model used for the routing decision.
+    pub model: String,
+    /// Total request timeout in milliseconds.
+    pub timeout_ms: u64,
+    /// Optional allowlist of route-pinned model ids exposed as choices.
+    pub candidates: Vec<String>,
+    /// Optional policy descriptions keyed by route-pinned model id.
+    pub descriptions: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for SwarmRouterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: "jev-latest".to_string(),
+            timeout_ms: 5_000,
+            candidates: Vec::new(),
+            descriptions: std::collections::BTreeMap::new(),
         }
     }
 }

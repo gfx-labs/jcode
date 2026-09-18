@@ -7,8 +7,12 @@ a standard config file. Edit freely: override globally at
 
 Model routing guidance for spawned swarm agents. Pass `model` to choose a model
 for newly spawned workers, including workers created by assignment or `run_plan`.
-An explicit model overrides `agents.swarm_model`. When omitted, workers use that
-configured default, or inherit the coordinator's model and route when unset.
+An explicit model overrides automatic routing and `agents.swarm_model`. When
+omitted and `agents.swarm_router.enabled` is true, TypeSafe Jev selects an available
+model using the assigned task. Otherwise (or on routing failure), workers use
+the configured default, or inherit the coordinator's model and route when unset.
+Prefer omitting `model` to let the configured router choose. Pass a model only
+when the task requires a specific override.
 Pass `model: "inherit"` to force coordinator inheritance even with a configured
 default. Model selection does not change reused workers. Run `swarm list_models`
 to check available models/routes. Route-prefixed values such as

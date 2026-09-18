@@ -421,6 +421,7 @@ wake_mode = "internal"
 # Leave unset (or "inherit"/"coordinator") so workers inherit the model of the
 # session that spawned them. Set a concrete model to change the worker default.
 # An explicit `model` in the swarm tool overrides this default for new workers.
+# With swarm_router enabled, this is the fallback when automatic routing fails.
 # Env override: JCODE_SWARM_MODEL
 # swarm_model = "inherit"
 #
@@ -494,6 +495,22 @@ swarm_max_concurrent_agents = 32
 # memory_embedding_model = "text-embedding-3-small"
 # memory_embedding_base_url = "https://api.openai.com/v1"
 # memory_embedding_dim = 1536
+
+# Optional task-aware model selection for newly spawned swarm workers.
+# Sends the assigned task (not the conversation) to TypeSafe. Requires
+# TYPESAFE_API_KEY in the server environment or ~/.config/jcode/typesafe.env
+# (mode 0600). Explicit model overrides win.
+# Missing credentials, invalid answers, and API failures fall back to
+# agents.swarm_model, or coordinator inheritance when that is unset.
+# [agents.swarm_router]
+# enabled = false
+# model = "jev-latest"
+# timeout_ms = 5000
+# Empty candidates uses the available route catalog. Prefer a curated shortlist.
+# candidates = ["openai-oauth:gpt-5.6-sol", "openai-oauth:gpt-6-astra"]
+# [agents.swarm_router.descriptions]
+# "openai-oauth:gpt-5.6-sol" = "Preferred for scoped implementation and tests."
+# "openai-oauth:gpt-6-astra" = "Preferred for architecture and hard debugging."
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.

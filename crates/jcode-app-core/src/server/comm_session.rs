@@ -76,7 +76,10 @@ fn create_visible_spawn_session(
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let mut session = Session::create(None, None);
+    // A headed worker must be loadable before its first message so the new
+    // client restores the selected model, auth route, and effort. Untitled,
+    // empty sessions are intentionally not persisted by Session::save.
+    let mut session = Session::create(None, Some("Swarm worker".to_string()));
     session.working_dir = Some(cwd.display().to_string());
     if let Some(model) = model_override {
         session.model = Some(model.to_string());
@@ -606,8 +609,34 @@ pub(super) async fn spawn_swarm_agent(
     let agents_config = &crate::config::config().agents;
     let configured_swarm_model = agents_config.swarm_model.clone();
     let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
+    let normalized_requested_model = requested_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
+    let routed_model =
+        if super::swarm_model_router::should_route(normalized_requested_model.as_deref()) {
+            let routes = provider_template.model_routes();
+            super::swarm_model_router::select_swarm_model(
+                &agents_config.swarm_router,
+                initial_message.as_deref(),
+                &routes,
+            )
+            .await
+        } else {
+            None
+        };
+    if let Some(model) = routed_model.as_deref() {
+        crate::logging::info(&format!(
+            "Swarm model router selected available route {model}"
+        ));
+    } else if normalized_requested_model.is_none() && agents_config.swarm_router.enabled {
+        crate::logging::info(
+            "Swarm model router did not select a route; using configured fallback",
+        );
+    }
     let selection = resolve_swarm_spawn_selection(
-        requested_model.clone(),
+        normalized_requested_model.or(routed_model),
         configured_swarm_model.clone(),
         &coordinator,
     );

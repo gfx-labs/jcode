@@ -1891,7 +1891,8 @@ struct CommunicateInput {
     #[serde(default)]
     effort: Option<String>,
     /// Per-worker model override for spawn and assignment-created workers.
-    /// Takes precedence over agents.swarm_model; see list_models for routes.
+    /// Takes precedence over automatic routing and agents.swarm_model.
+    /// Omit to let the configured task-aware router choose. See list_models.
     #[serde(default)]
     model: Option<String>,
     /// Short human-readable label for a spawned agent shown in swarm UI.
@@ -2060,7 +2061,7 @@ impl Tool for CommunicateTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model for newly spawned workers (spawn, assign_task, assign_next, fill_slots, run_plan), e.g. 'gpt-6-astra' or 'openai-api:gpt-5.6-luna'. Overrides agents.swarm_model. Omit to use that default or inherit the coordinator if unset. Use 'inherit' to force the coordinator's model and route. Does not change reused workers. See list_models."
+                    "description": "Model for newly spawned workers (spawn, assign_task, assign_next, fill_slots, run_plan), e.g. 'gpt-6-astra' or 'openai-api:gpt-5.6-luna'. Explicit values override automatic routing and agents.swarm_model. Prefer omitting model so the configured TypeSafe Jev router can choose using the assigned task. Without routing, or on failure, uses agents.swarm_model or inherits the coordinator if unset. Use 'inherit' to force the coordinator's model and route. Does not change reused workers. See list_models."
                 },
                 "effort": {
                     "type": "string",
