@@ -356,6 +356,7 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
             messages: vec![crate::protocol::HistoryMessage {
                 timestamp_unix_ms: None,
                 message_id: None,
+                response_stats: None,
                 role: "user".to_string(),
                 content: "hello".to_string(),
                 tool_calls: None,

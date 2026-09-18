@@ -108,6 +108,7 @@ impl Config {
 **Gateway:**
 - Enabled: {}
 - Bind address: {}:{}
+- Connect host: {}
 
 **Ambient:**
 - Enabled: {}
@@ -308,6 +309,7 @@ impl Config {
             self.gateway.enabled,
             self.gateway.bind_addr,
             self.gateway.port,
+            self.gateway.connect_host.as_deref().unwrap_or("(auto)"),
             self.ambient.enabled,
             self.ambient.provider.as_deref().unwrap_or("(auto)"),
             self.ambient

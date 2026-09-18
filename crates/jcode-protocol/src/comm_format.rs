@@ -692,6 +692,7 @@ mod truncation_tests {
         let messages = vec![HistoryMessage {
             timestamp_unix_ms: None,
             message_id: None,
+            response_stats: None,
             role: "user".to_string(),
             content,
             tool_calls: None,

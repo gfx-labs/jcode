@@ -358,6 +358,7 @@ fn test_side_pane_images_event_roundtrip() -> Result<()> {
     let event = ServerEvent::SidePaneImages {
         session_id: "session_active".to_string(),
         images: vec![jcode_session_types::RenderedImage {
+            history_message_index: None,
             media_type: "image/png".to_string(),
             data: "base64-data".to_string(),
             label: Some("openclaw.png".to_string()),
@@ -443,6 +444,7 @@ fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
         messages: vec![HistoryMessage {
             timestamp_unix_ms: None,
             message_id: None,
+            response_stats: None,
             role: "assistant".to_string(),
             content: "hello".to_string(),
             tool_calls: None,
@@ -536,6 +538,7 @@ fn test_compacted_history_event_roundtrip() -> Result<()> {
         messages: vec![HistoryMessage {
             timestamp_unix_ms: None,
             message_id: None,
+            response_stats: None,
             role: "assistant".to_string(),
             content: "older response".to_string(),
             tool_calls: None,
@@ -648,6 +651,7 @@ fn test_history_message_timestamp_roundtrip_and_legacy_absence() -> Result<()> {
         let message = HistoryMessage {
             timestamp_unix_ms: timestamp,
             message_id: None,
+            response_stats: None,
             role: "assistant".to_string(),
             content: "hello".to_string(),
             tool_calls: None,

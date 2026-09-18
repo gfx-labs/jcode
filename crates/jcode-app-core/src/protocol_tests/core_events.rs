@@ -206,6 +206,7 @@ fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
         messages: vec![HistoryMessage {
             timestamp_unix_ms: None,
             message_id: None,
+            response_stats: None,
             role: "assistant".to_string(),
             content: "hello".to_string(),
             tool_calls: None,
@@ -299,6 +300,7 @@ fn test_compacted_history_event_roundtrip() -> Result<()> {
         messages: vec![HistoryMessage {
             timestamp_unix_ms: None,
             message_id: None,
+            response_stats: None,
             role: "assistant".to_string(),
             content: "older response".to_string(),
             tool_calls: None,

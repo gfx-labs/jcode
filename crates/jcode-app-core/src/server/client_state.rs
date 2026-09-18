@@ -216,11 +216,13 @@ pub(super) async fn handle_get_model_catalog(
                     .or_else(|_| Session::load_startup_stub(session_id))
                     .ok();
                 let persisted_model = persisted.as_ref().and_then(|session| session.model.clone());
+                let mut model_routes = provider.model_routes();
+                crate::model_usage::enrich_routes(&mut model_routes);
                 (
                     Some(provider.name().to_string()),
                     persisted_model.or_else(|| Some(provider.model())),
                     provider.available_models_display(),
-                    provider.model_routes(),
+                    model_routes,
                     provider.active_resolved_credential(),
                     provider.service_tier(),
                     provider.reasoning_effort(),
@@ -376,6 +378,7 @@ fn rendered_to_history_message(
             .map(|stored| &stored.id)
             .filter(|id| id.starts_with("mobile:"))
             .cloned(),
+        response_stats: msg.response_stats,
         role: msg.role,
         content: msg.content,
         tool_calls: if msg.tool_calls.is_empty() {
@@ -904,6 +907,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     tool_data: None,
                     stored_index: index,
+                    response_stats: None,
                 };
                 let history = rendered_to_history_message(rendered, &session);
                 assert_eq!(

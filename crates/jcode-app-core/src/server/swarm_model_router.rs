@@ -212,6 +212,7 @@ mod tests {
             api_method: api_method.to_string(),
             available,
             detail: "test route".to_string(),
+            usage: None,
             cheapness: None,
         }
     }

@@ -524,6 +524,7 @@ fn user_history_message(content: &str) -> crate::protocol::HistoryMessage {
     crate::protocol::HistoryMessage {
         timestamp_unix_ms: None,
         message_id: None,
+        response_stats: None,
         role: "user".to_string(),
         content: content.to_string(),
         tool_calls: None,

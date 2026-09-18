@@ -62,6 +62,37 @@ Rules:
 
 ## Protocol
 
+### Gateway listener and advertised host
+
+Configure `~/.jcode/config.toml` (or `$JCODE_HOME/config.toml`):
+
+```toml
+[gateway]
+enabled = true
+bind_addr = "127.0.0.1"
+port = 7643
+connect_host = "my-machine.example.ts.net"
+```
+
+`bind_addr` controls the listener. `connect_host` is the hostname or IP advertised
+by `jcode pair` and `/remote` status/pairing, without a scheme or port. Setting it
+does not change the listener or make it remotely reachable. Keep loopback for a
+tunnel/proxy, or bind to a reachable interface for direct access. Wildcard binds
+listen on all interfaces, so restrict access with a firewall or private network.
+
+Host precedence is nonblank `JCODE_GATEWAY_HOST`, nonblank `connect_host`, a
+specific `bind_addr`, then Tailscale MagicDNS and the system hostname. Blank
+overrides are ignored. For example, this works even with a loopback listener:
+
+```sh
+JCODE_GATEWAY_HOST=proxy.example.test jcode pair
+```
+
+The port still comes from `gateway.port`; this setting does not configure a
+separate proxy port or TLS scheme. The CLI reads configuration for each invocation.
+Listener changes require a server reload. Environment changes for daemon-side
+commands require restarting the daemon with that environment.
+
 Server side (already shipped, unchanged):
 
 - `jcode pair` CLI generates a 6-digit code (5 min TTL) and QR with

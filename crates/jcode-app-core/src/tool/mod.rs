@@ -11,9 +11,11 @@ mod computer;
 mod config_edit_notice;
 mod conversation_search;
 mod debug_socket;
+mod desktop_selfdev;
 mod discover;
 mod discover_secrets;
 mod edit;
+mod edit_stats;
 mod feedback;
 mod gmail;
 mod goal;
@@ -389,15 +391,17 @@ impl Registry {
                 session_search::SessionSearchTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "memory", memory::MemoryTool::new);
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "initiative",
-                goal::InitiativeTool::new,
-            );
+            // Initiative is temporarily unavailable. Keep its implementation and
+            // saved data intact so it can be restored without a migration.
             Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "desktop_selfdev",
+                desktop_selfdev::DesktopSelfDevTool::new,
+            );
             let nonzero: Vec<String> = timings
                 .iter()
                 .filter(|(_, ms)| *ms > 0)
@@ -771,6 +775,32 @@ impl Registry {
         let _in_flight = inflight::mark_tool_in_flight(&ctx.tool_call_id);
         let tools = self.tools.read().await;
         let resolved_name = Self::resolve_tool_name(name);
+        // Enforce product separation here too: batch/subcalls dispatch through
+        // the registry without going through Agent::validate_tool_allowed.
+        if matches!(
+            resolved_name,
+            "selfdev" | "debug_socket" | "desktop_selfdev" | "jcode_docs"
+        ) {
+            let desktop = ctx
+                .working_dir
+                .as_deref()
+                .and_then(jcode_selfdev_types::desktop_repo_root)
+                .is_some();
+            if desktop && resolved_name == "jcode_docs" {
+                anyhow::bail!(
+                    "Tool 'jcode_docs' is disabled in Desktop self-development mode. Read the working tree documentation instead."
+                );
+            }
+            if desktop && matches!(resolved_name, "selfdev" | "debug_socket") {
+                anyhow::bail!(
+                    "Tool '{}' targets Jcode CLI, not Desktop. Use 'desktop_selfdev'.",
+                    resolved_name
+                );
+            }
+            if !desktop && resolved_name == "desktop_selfdev" {
+                anyhow::bail!("Tool 'desktop_selfdev' requires a Jcode Desktop source checkout.");
+            }
+        }
         if let Some(policy) = session_tool_policy(&ctx.session_id) {
             if let Some(allowed) = policy.allowed_tools.as_ref()
                 && !tool_name_is_allowed(allowed, resolved_name)
