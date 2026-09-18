@@ -81,6 +81,7 @@ pub mod session_metrics;
 pub mod side_panel;
 pub mod sidecar;
 pub mod skill;
+pub mod skill_router;
 pub mod soft_interrupt_store;
 pub mod sponsors;
 pub mod stdin_detect;
