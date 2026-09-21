@@ -292,6 +292,10 @@ pub struct ContextInfo {
     pub prompt_overlay_chars: usize,
     /// Preferred tools section size (chars)
     pub preferred_tools_chars: usize,
+    /// Rules directory section size (chars)
+    pub rules_chars: usize,
+    /// Number of rule files loaded from rules directories
+    pub rules_files: usize,
     // === Dynamic (Conversation) ===
     /// Tool definitions sent to API (chars)
     pub tool_defs_chars: usize,
@@ -334,6 +338,7 @@ impl ContextInfo {
             + self.memory_chars
             + self.prompt_overlay_chars
             + self.preferred_tools_chars
+            + self.rules_chars
             + self.tool_defs_chars
     }
 
@@ -371,6 +376,9 @@ impl ContextInfo {
         }
         if self.preferred_tools_chars > 0 {
             parts.push(("tools", self.preferred_tools_chars, "🧰"));
+        }
+        if self.rules_chars > 0 {
+            parts.push(("rules", self.rules_chars, "📐"));
         }
         parts
     }
@@ -481,6 +489,14 @@ pub fn build_system_prompt_full_with_capabilities(
         load_preferred_tools_files_from_dir(working_dir);
     if let Some(content) = preferred_tools_content {
         info.preferred_tools_chars = preferred_tools_chars;
+        parts.push(content);
+    }
+
+    // Add optional rule directories (~/.agents/rules, ~/.jcode/rules, ./.jcode/rules)
+    let (rules_content, rules_chars, rules_files) = load_rules_dirs_from_dir(working_dir);
+    if let Some(content) = rules_content {
+        info.rules_chars = rules_chars;
+        info.rules_files = rules_files;
         parts.push(content);
     }
 
@@ -619,6 +635,14 @@ fn build_system_prompt_split_with_capabilities_and_agents_md(
         load_preferred_tools_files_from_dir(working_dir);
     if let Some(content) = preferred_tools_content {
         info.preferred_tools_chars = preferred_tools_chars;
+        static_parts.push(content);
+    }
+
+    // Add optional rule directories (static per user/project)
+    let (rules_content, rules_chars, rules_files) = load_rules_dirs_from_dir(working_dir);
+    if let Some(content) = rules_content {
+        info.rules_chars = rules_chars;
+        info.rules_files = rules_files;
         static_parts.push(content);
     }
 
@@ -1074,6 +1098,175 @@ fn load_preferred_tools_files_from_dir(working_dir: Option<&Path>) -> (Option<St
         (None, 0)
     } else {
         (Some(contents.join("\n\n")), total_chars)
+    }
+}
+
+/// Recursively collect markdown/text rule files under `dir`, sorted by relative path.
+fn collect_rule_files(dir: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > 8 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                walk(&path, depth + 1, out);
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("md") | Some("markdown") | Some("txt") | Some("mdc")
+            ) {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 0, &mut out);
+    out
+}
+
+/// Render one rules directory as a prompt section. Returns (section, raw_chars, file_count).
+fn load_rules_dir(dir: &Path, label: &str, max_bytes: usize) -> Option<(String, usize, usize)> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let files = collect_rule_files(dir);
+    if files.is_empty() {
+        return None;
+    }
+    let mut body = String::new();
+    let mut raw_chars = 0usize;
+    let mut count = 0usize;
+    for file in files {
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let content = content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if raw_chars + content.len() > max_bytes {
+            break;
+        }
+        let rel = file
+            .strip_prefix(dir)
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        body.push_str(&format!("## {}\n\n{}\n\n", rel, content));
+        raw_chars += content.len();
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    Some((
+        format!("# {}\n\n{}", label, body.trim_end()),
+        raw_chars,
+        count,
+    ))
+}
+
+/// Expand a leading `~/` (and bare `~`) to the user's home directory.
+fn expand_rules_path(raw: &str) -> Option<PathBuf> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return crate::storage::user_home_path(rest).ok();
+    }
+    if raw == "~" {
+        return crate::storage::user_home_path("").ok();
+    }
+    Some(PathBuf::from(raw))
+}
+
+/// Load rule directories configured under `[rules]` in config.toml.
+///
+/// Defaults (when `rules.use_default_dirs` is true): `./.jcode/rules/`,
+/// `~/.jcode/rules/`, and `~/.agents/rules/`. Extra directories come from
+/// `rules.dirs`, and `JCODE_RULES_DIRS` (path-separated) is always appended.
+fn load_rules_dirs_from_dir(working_dir: Option<&Path>) -> (Option<String>, usize, usize) {
+    load_rules_dirs_with_config(working_dir, &crate::config::config().rules)
+}
+
+fn load_rules_dirs_with_config(
+    working_dir: Option<&Path>,
+    rules: &crate::config::RulesConfig,
+) -> (Option<String>, usize, usize) {
+    if !rules.enabled {
+        return (None, 0, 0);
+    }
+    let project_dir = working_dir.unwrap_or(Path::new("."));
+    let mut candidates: Vec<(PathBuf, String)> = Vec::new();
+
+    if rules.use_default_dirs {
+        candidates.push((
+            project_dir.join(".jcode").join("rules"),
+            "Project Rules (.jcode/rules/)".to_string(),
+        ));
+        if let Ok(dir) = crate::storage::jcode_dir() {
+            candidates.push((
+                dir.join("rules"),
+                "Global Rules (~/.jcode/rules/)".to_string(),
+            ));
+        }
+        if let Ok(dir) = crate::storage::user_home_path(".agents/rules") {
+            candidates.push((dir, "Global Rules (~/.agents/rules/)".to_string()));
+        }
+    }
+
+    let configured = rules.dirs.iter().cloned().chain(
+        std::env::var("JCODE_RULES_DIRS")
+            .ok()
+            .into_iter()
+            .flat_map(|v| {
+                std::env::split_paths(&v)
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+            }),
+    );
+    for raw in configured {
+        let Some(dir) = expand_rules_path(&raw) else {
+            continue;
+        };
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            project_dir.join(dir)
+        };
+        candidates.push((dir, format!("Rules ({})", raw.trim())));
+    }
+
+    let max_bytes = rules.max_bytes_per_dir.max(1);
+    let mut sections = Vec::new();
+    let mut total_chars = 0usize;
+    let mut total_files = 0usize;
+    let mut seen = std::collections::HashSet::new();
+    for (dir, label) in candidates {
+        let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        if let Some((section, chars, count)) = load_rules_dir(&dir, &label, max_bytes) {
+            sections.push(section);
+            total_chars += chars;
+            total_files += count;
+        }
+    }
+
+    if sections.is_empty() {
+        (None, 0, 0)
+    } else {
+        (Some(sections.join("\n\n")), total_chars, total_files)
     }
 }
 

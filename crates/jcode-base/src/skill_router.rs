@@ -164,7 +164,10 @@ pub fn build_request_json(
     for c in candidates.iter().take(MAX_OPTIONS) {
         criteria.insert(c.name.as_str(), c.description.as_str());
     }
-    criteria.insert(NONE_OPTION, "No listed skill is clearly useful for this request");
+    criteria.insert(
+        NONE_OPTION,
+        "No listed skill is clearly useful for this request",
+    );
     let mut questions = HashMap::new();
     questions.insert(
         QUESTION_ID,
@@ -473,7 +476,10 @@ mod tests {
             })
             .collect();
         let v = build_request_json("m", "s", &many);
-        let n = v["questions"]["skill"]["criteria"].as_object().unwrap().len();
+        let n = v["questions"]["skill"]["criteria"]
+            .as_object()
+            .unwrap()
+            .len();
         assert_eq!(n, MAX_OPTIONS + 1);
         assert!(n <= 255);
     }

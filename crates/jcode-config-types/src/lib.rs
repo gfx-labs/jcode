@@ -1270,6 +1270,36 @@ impl Default for WebSearchConfig {
     }
 }
 
+/// Configuration for rule directories loaded into the system prompt.
+///
+/// Each configured directory is walked recursively; `.md`, `.markdown`, `.mdc`,
+/// and `.txt` files are concatenated into a single prompt section, sorted by
+/// relative path. Paths may start with `~/`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RulesConfig {
+    /// Load rule directories at all (default: true).
+    pub enabled: bool,
+    /// Extra rule directories to load, e.g. ["~/.agents/rules"].
+    pub dirs: Vec<String>,
+    /// Also load the built-in default locations: `./.jcode/rules/`,
+    /// `~/.jcode/rules/`, and `~/.agents/rules/` (default: true).
+    pub use_default_dirs: bool,
+    /// Maximum bytes loaded from any single rules directory (default: 262144).
+    pub max_bytes_per_dir: usize,
+}
+
+impl Default for RulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dirs: Vec::new(),
+            use_default_dirs: true,
+            max_bytes_per_dir: 256 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {

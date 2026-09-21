@@ -751,8 +751,7 @@ impl Config {
         }
         if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_MODEL") {
             let trimmed = v.trim();
-            self.agents.skill_suggestion_model =
-                (!trimmed.is_empty()).then(|| trimmed.to_string());
+            self.agents.skill_suggestion_model = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
         if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_BASE_URL") {
             let trimmed = v.trim();

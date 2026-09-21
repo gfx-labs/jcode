@@ -119,6 +119,81 @@ fn full_and_split_prompt_builders_use_the_same_one_line_skill_descriptions() {
 }
 
 #[test]
+fn rules_dirs_load_recursively_from_project_and_home() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().unwrap();
+    crate::env::set_var("JCODE_HOME", temp.path());
+    let home_rules = temp.path().join("external/.agents/rules/style");
+    std::fs::create_dir_all(&home_rules).unwrap();
+    std::fs::write(home_rules.join("neuter-praise.md"), "no praise please").unwrap();
+    std::fs::write(home_rules.join("ignored.png"), "binaryish").unwrap();
+
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let project_rules = project_dir.path().join(".jcode/rules");
+    std::fs::create_dir_all(&project_rules).unwrap();
+    std::fs::write(project_rules.join("local.md"), "project rule").unwrap();
+
+    let (content, chars, files) = load_rules_dirs_with_config(
+        Some(project_dir.path()),
+        &crate::config::RulesConfig::default(),
+    );
+
+    let content = content.expect("rules content");
+    assert!(content.contains("# Project Rules (.jcode/rules/)"));
+    assert!(content.contains("## local.md"));
+    assert!(content.contains("project rule"));
+    assert!(content.contains("# Global Rules (~/.agents/rules/)"));
+    assert!(content.contains("## style/neuter-praise.md"));
+    assert!(content.contains("no praise please"));
+    assert!(!content.contains("binaryish"));
+    assert_eq!(files, 2);
+    assert_eq!(chars, "project rule".len() + "no praise please".len());
+
+    match prev_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+}
+
+#[test]
+fn rules_config_dirs_and_disable_are_honored() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let temp = tempfile::TempDir::new().unwrap();
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let custom = tempfile::TempDir::new().unwrap();
+    std::fs::write(custom.path().join("a.md"), "custom rule").unwrap();
+    let project_dir = tempfile::TempDir::new().unwrap();
+
+    let rules = crate::config::RulesConfig {
+        enabled: true,
+        dirs: vec![custom.path().display().to_string()],
+        use_default_dirs: false,
+        max_bytes_per_dir: 256 * 1024,
+    };
+    let (content, chars, files) = load_rules_dirs_with_config(Some(project_dir.path()), &rules);
+    let content = content.expect("custom rules content");
+    assert!(content.contains("custom rule"));
+    assert_eq!(files, 1);
+    assert_eq!(chars, "custom rule".len());
+
+    let disabled = crate::config::RulesConfig {
+        enabled: false,
+        ..rules
+    };
+    let (content, chars, files) = load_rules_dirs_with_config(Some(project_dir.path()), &disabled);
+    assert!(content.is_none());
+    assert_eq!((chars, files), (0, 0));
+
+    match prev_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+}
+
+#[test]
 fn test_load_agents_md_files_uses_sandboxed_global_files() {
     let _guard = crate::storage::lock_test_env();
     let prev_home = std::env::var_os("JCODE_HOME");

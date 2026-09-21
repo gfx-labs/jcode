@@ -323,6 +323,18 @@ bing_market = "en-US"
 # set engine = "searxng" or add it to fallback_engines.
 # searxng_url = "https://searx.example.org"
 
+[rules]
+# Rule directories are loaded into the system prompt, like AGENTS.md. Every
+# .md/.markdown/.mdc/.txt file under each directory is included recursively,
+# sorted by relative path.
+enabled = true
+# Built-in locations: ./.jcode/rules/, ~/.jcode/rules/, and ~/.agents/rules/
+use_default_dirs = true
+# Extra directories to load. Relative paths resolve against the project dir.
+# dirs = ["~/.agents/rules"]
+# Safety cap on how much is read from any single directory.
+max_bytes_per_dir = 262144
+
 [tools]
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".

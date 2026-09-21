@@ -10,9 +10,9 @@ pub use jcode_config_types::{
     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,
     MarkdownSpacingMode, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig,
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
-    PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
-    SessionNameStyle, SessionNamesConfig, SponsorsConfig, SwarmSpawnMode, SwarmStripLayout,
-    TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    PowerConfig, ProviderConfig, ReasoningDisplayMode, RulesConfig, SafetyConfig, SessionNameStyle,
+    SessionNamesConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
+    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -556,6 +556,9 @@ pub struct Config {
 
     /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
     pub launch_hotkeys: LaunchHotkeysConfig,
+
+    /// Rule directories loaded into the system prompt
+    pub rules: RulesConfig,
 
     /// Session naming style. Skipped when default so saving config never
     /// bakes the shipped default into the file.
