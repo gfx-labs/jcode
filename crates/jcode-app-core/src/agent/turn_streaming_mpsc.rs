@@ -213,7 +213,7 @@ impl Agent {
                 }
                 messages_with_memory.push(memory_msg);
             }
-            if let Some(suggestion) = self.skill_router_nonblocking(&messages)
+            if let Some(suggestion) = self.skill_router_suggestion(&messages).await
                 && let Some(msg) = self.skill_router_injection_message(&suggestion)
             {
                 logging::info(&format!(
@@ -222,6 +222,10 @@ impl Agent {
                 ));
                 ephemeral_signature_messages.push(msg.clone());
                 messages_with_memory.push(msg);
+            }
+
+            if self.is_graceful_shutdown() {
+                break;
             }
 
             logging::info(&format!(

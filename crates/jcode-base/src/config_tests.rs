@@ -160,6 +160,72 @@ fn swarm_max_concurrent_agents_parses_and_allows_zero_for_unbounded() {
 }
 
 #[test]
+fn skill_suggestion_defaults_are_off_with_no_overrides() {
+    let cfg = Config::default();
+    assert_eq!(cfg.agents.skill_suggestion_backend, "off");
+    assert_eq!(cfg.agents.skill_suggestion_model, None);
+    assert_eq!(cfg.agents.skill_suggestion_base_url, None);
+    assert_eq!(cfg.agents.skill_suggestion_api_key_env, None);
+    assert_eq!(cfg.agents.skill_suggestion_min_confidence, None);
+}
+
+#[test]
+fn skill_suggestion_settings_parse_and_round_trip() {
+    let toml_src = "[agents]\n\
+        skill_suggestion_backend = \"jev\"\n\
+        skill_suggestion_model = \"jev-latest\"\n\
+        skill_suggestion_base_url = \"https://api.typesafe.ai/v1\"\n\
+        skill_suggestion_api_key_env = \"TYPESAFE_API_KEY\"\n\
+        skill_suggestion_min_confidence = 0.75\n";
+    let cfg: Config = toml::from_str(toml_src).expect("skill_suggestion settings should parse");
+    assert_eq!(cfg.agents.skill_suggestion_backend, "jev");
+    assert_eq!(
+        cfg.agents.skill_suggestion_model.as_deref(),
+        Some("jev-latest")
+    );
+    assert_eq!(
+        cfg.agents.skill_suggestion_base_url.as_deref(),
+        Some("https://api.typesafe.ai/v1")
+    );
+    assert_eq!(
+        cfg.agents.skill_suggestion_api_key_env.as_deref(),
+        Some("TYPESAFE_API_KEY")
+    );
+    assert!((cfg.agents.skill_suggestion_min_confidence.unwrap() - 0.75).abs() < 1e-6);
+
+    let serialized = toml::to_string(&cfg).expect("config should serialize");
+    let round_tripped: Config =
+        toml::from_str(&serialized).expect("serialized config should re-parse");
+    assert_eq!(round_tripped.agents.skill_suggestion_backend, "jev");
+    assert_eq!(
+        round_tripped.agents.skill_suggestion_min_confidence,
+        cfg.agents.skill_suggestion_min_confidence
+    );
+}
+
+#[test]
+fn skill_suggestion_env_overrides_apply_over_defaults() {
+    let _guard = crate::storage::lock_test_env();
+    let previous_backend = std::env::var_os("JCODE_SKILL_SUGGESTION_BACKEND");
+    let previous_model = std::env::var_os("JCODE_SKILL_SUGGESTION_MODEL");
+    let previous_confidence = std::env::var_os("JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE");
+    crate::env::set_var("JCODE_SKILL_SUGGESTION_BACKEND", "jev");
+    crate::env::set_var("JCODE_SKILL_SUGGESTION_MODEL", "jev-latest");
+    crate::env::set_var("JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE", "0.42");
+    let mut cfg = Config::default();
+    cfg.apply_env_overrides();
+    assert_eq!(cfg.agents.skill_suggestion_backend, "jev");
+    assert_eq!(
+        cfg.agents.skill_suggestion_model.as_deref(),
+        Some("jev-latest")
+    );
+    assert!((cfg.agents.skill_suggestion_min_confidence.unwrap() - 0.42).abs() < 1e-6);
+    restore_env_var("JCODE_SKILL_SUGGESTION_BACKEND", previous_backend);
+    restore_env_var("JCODE_SKILL_SUGGESTION_MODEL", previous_model);
+    restore_env_var("JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE", previous_confidence);
+}
+
+#[test]
 fn swarm_spawn_mode_parses_supported_values() {
     let cfg: Config = toml::from_str("[agents]\nswarm_spawn_mode = \"headless\"\n")
         .expect("headless swarm_spawn_mode should parse");

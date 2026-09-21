@@ -94,22 +94,15 @@ impl Agent {
         pending
     }
 
-    /// Skill-router (decision model) counterpart of the memory pipeline: on a
-    /// fresh user turn, consume last turn's suggestion (if any) and kick off
-    /// the next one in the background. Returns the skill prompt to inject.
-    /// No-op unless `agents.skill_suggestion_backend` is enabled.
-    pub(super) fn skill_router_nonblocking(
+    /// Route only fresh user turns, with a bounded async wait for this request.
+    pub(super) async fn skill_router_suggestion(
         &self,
         messages: &[Message],
-    ) -> Option<crate::skill_router::PendingSuggestion> {
-        if crate::skill_router::SkillRouterConfig::from_config().is_none() {
+    ) -> Option<crate::skill_router::SkillSuggestion> {
+        if !crate::message::ends_with_fresh_user_turn(messages) || self.active_skill.is_some() {
             return None;
         }
-        if !crate::message::ends_with_fresh_user_turn(messages) {
-            return None;
-        }
-        let session_id = self.session.id.clone();
-        let pending = crate::skill_router::take_pending(&session_id);
+        let cfg = crate::skill_router::SkillRouterConfig::from_config()?;
         let skills = self.current_skills_snapshot();
         let candidates: Vec<crate::skill_router::SkillCandidate> = skills
             .list()
@@ -119,29 +112,18 @@ impl Agent {
                 description: skill.description.clone(),
             })
             .collect();
-        // First user turn of a session: nothing could have prepared a
-        // suggestion yet, and jev is fast, so wait briefly for it inline.
-        // Later turns stay non-blocking (consume last, spawn next).
-        let first_turn = messages
-            .iter()
-            .filter(|m| m.role == crate::message::Role::User)
-            .count()
-            <= 1;
-        let suggestion = if first_turn && pending.is_none() {
-            crate::skill_router::suggest_inline(session_id, messages, candidates)
-        } else {
-            crate::skill_router::spawn_suggestion(session_id, messages, candidates);
-            pending
-        };
-        // Do not re-suggest the skill the user already activated.
-        suggestion.filter(|p| self.active_skill.as_deref() != Some(p.skill.as_str()))
+        tokio::select! {
+            biased;
+            _ = self.graceful_shutdown.notified() => None,
+            suggestion = crate::skill_router::suggest(&cfg, messages, &candidates) => suggestion,
+        }
     }
 
     /// Render an accepted suggestion as an ephemeral user-role reminder, the
     /// same shape memory injection uses so the transcript stays cache-friendly.
     pub(super) fn skill_router_injection_message(
         &self,
-        suggestion: &crate::skill_router::PendingSuggestion,
+        suggestion: &crate::skill_router::SkillSuggestion,
     ) -> Option<Message> {
         let skills = self.current_skills_snapshot();
         let skill = skills.get(&suggestion.skill)?;

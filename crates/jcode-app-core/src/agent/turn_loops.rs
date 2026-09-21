@@ -113,7 +113,10 @@ impl Agent {
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending =
                 self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
-            let skill_suggestion = self.skill_router_nonblocking(&messages);
+            let skill_suggestion = self.skill_router_suggestion(&messages).await;
+            if self.is_graceful_shutdown() {
+                break;
+            }
             // Use split prompt for better caching - static content cached, dynamic not
             self.log_prompt_prefix_accounting(&split_prompt, &tools);
 

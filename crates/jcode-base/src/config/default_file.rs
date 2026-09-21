@@ -512,6 +512,20 @@ swarm_max_concurrent_agents = 32
 # "openai-oauth:gpt-5.6-sol" = "Preferred for scoped implementation and tests."
 # "openai-oauth:gpt-6-astra" = "Preferred for architecture and hard debugging."
 
+# Optional per-turn skill suggestion. Opt-in: off by default. When set to
+# "jev", each fresh user turn asks a TypeSafe System One decision model
+# directly (POST {base_url}/systemone) which registered skill best fits the
+# request, injecting that skill's prompt when confident enough. Routing is a
+# bounded async wait performed before the provider request is sent. Requires
+# TYPESAFE_API_KEY in the server environment or ~/.config/jcode/typesafe.env
+# (mode 0600); see docs/SKILL_ROUTER.md.
+# Env override: JCODE_SKILL_SUGGESTION_BACKEND
+# skill_suggestion_backend = "off"
+# skill_suggestion_model = "jev-latest"
+# skill_suggestion_base_url = "https://api.typesafe.ai/v1"
+# skill_suggestion_api_key_env = "TYPESAFE_API_KEY"
+# skill_suggestion_min_confidence = 0.6
+
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.
 # Set JCODE_TERMINAL to force a supported terminal emulator instead.
