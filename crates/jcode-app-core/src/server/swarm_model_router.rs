@@ -152,11 +152,17 @@ async fn select_swarm_model_with_jev(
         return None;
     }
     let task = task.map(str::trim).filter(|task| !task.is_empty())?;
-    let resolved = resolve_router(config, jev).ok()?;
     let candidates = route_candidates(config, routes);
     if candidates.is_empty() {
         return None;
     }
+
+    // Shared choice validation requires two options. A sole available route
+    // needs neither a remote decision nor provider credentials.
+    if candidates.len() == 1 {
+        return Some(candidates[0].key.clone());
+    }
+    let resolved = resolve_router(config, jev).ok()?;
 
     let criteria = candidates
         .iter()
@@ -173,20 +179,16 @@ async fn select_swarm_model_with_jev(
             },
         },
     };
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(resolved.timeout)
-        .build()
+    let body = serde_json::to_value(&request).ok()?;
+    let client = crate::jev::JevClient::for_swarm_settings(resolved, &jev.provider).ok()?;
+    let response = client
+        .evaluate(
+            body["state"].clone(),
+            body["questions"].as_object()?.clone(),
+        )
+        .await
         .ok()?;
-    let mut request = client.post(&resolved.endpoint).json(&request);
-    if let Some(key) = &resolved.api_key {
-        request = request.bearer_auth(key);
-    }
-    let response = request.send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let answer: SystemOneResponse = response.json().await.ok()?;
+    let answer: SystemOneResponse = serde_json::from_value(response).ok()?;
     if answer.answers.model.kind != "choice" {
         return None;
     }
@@ -249,6 +251,19 @@ mod tests {
             )]),
             ..SwarmRouterConfig::default()
         }
+    }
+
+    fn transport_config() -> SwarmRouterConfig {
+        let mut cfg = config();
+        cfg.candidates.push("openai-oauth:gpt-5.6-sol".into());
+        cfg
+    }
+
+    fn transport_routes() -> [ModelRoute; 2] {
+        [
+            route("gpt-6-astra", "openai-oauth", true),
+            route("gpt-5.6-sol", "openai-oauth", true),
+        ]
     }
 
     async fn mock_server(
@@ -342,7 +357,7 @@ mod tests {
         let _home = tempfile::TempDir::new().unwrap();
         let _home_restore = EnvRestore::set("JCODE_HOME", _home.path());
         let _key_restore = EnvRestore::set(TYPESAFE_API_KEY_ENV, "test-key");
-        let routes = [route("gpt-6-astra", "openai-oauth", true)];
+        let routes = transport_routes();
         let (valid, valid_request) = mock_server(
             "200 OK",
             r#"{"answers":{"model":{"type":"choice","choice":"openai-oauth:gpt-6-astra","confidence":0.9,"probabilities":{}}}}"#,
@@ -350,7 +365,13 @@ mod tests {
         )
         .await;
         assert_eq!(
-            select_swarm_model_at(&config(), Some("implement feature"), &routes, &valid).await,
+            select_swarm_model_at(
+                &transport_config(),
+                Some("implement feature"),
+                &routes,
+                &valid
+            )
+            .await,
             Some("openai-oauth:gpt-6-astra".to_string())
         );
         let request = valid_request.await.unwrap();
@@ -369,7 +390,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            select_swarm_model_at(&config(), Some("task"), &routes, &invalid).await,
+            select_swarm_model_at(&transport_config(), Some("task"), &routes, &invalid).await,
             None
         );
     }
@@ -380,8 +401,8 @@ mod tests {
         let _home = tempfile::TempDir::new().unwrap();
         let _home_restore = EnvRestore::set("JCODE_HOME", _home.path());
         let _key_restore = EnvRestore::set(TYPESAFE_API_KEY_ENV, "test-key");
-        let routes = [route("gpt-6-astra", "openai-oauth", true)];
-        let mut short = config();
+        let routes = transport_routes();
+        let mut short = transport_config();
         short.timeout_ms = 10;
         let (slow, _) = mock_server("200 OK", "{}", Duration::from_millis(100)).await;
         assert_eq!(
@@ -390,15 +411,15 @@ mod tests {
         );
         let (failed, _) = mock_server("500 Internal Server Error", "{}", Duration::ZERO).await;
         assert_eq!(
-            select_swarm_model_at(&config(), Some("task"), &routes, &failed).await,
+            select_swarm_model_at(&transport_config(), Some("task"), &routes, &failed).await,
             None
         );
     }
 
     #[tokio::test]
-    async fn local_provider_selects_route_with_systemone_wire_shape_and_no_hosted_key() {
+    async fn hosted_provider_selects_route_with_systemone_wire_shape_and_auth() {
         let _lock = crate::storage::lock_test_env();
-        let _key = EnvRestore::set(TYPESAFE_API_KEY_ENV, "never-send-hosted-key");
+        let _key = EnvRestore::set(TYPESAFE_API_KEY_ENV, "hosted-test-key");
         let (base, rx) = mock_server(
             "200 OK",
             r#"{"answers":{"model":{"type":"choice","choice":"openai-oauth:gpt-6-astra"}}}"#,
@@ -406,40 +427,48 @@ mod tests {
         )
         .await;
         let jev = crate::config::JevConfig {
-            provider: "openjev".into(),
+            provider: "typesafe".into(),
             base_url: Some(base),
-            model: Some("local-model".into()),
+            model: Some("hosted-model".into()),
             ..Default::default()
         };
-        let routes = [route("gpt-6-astra", "openai-oauth", true)];
+        let routes = transport_routes();
         assert_eq!(
-            select_swarm_model_with_jev(&config(), &jev, Some("implement"), &routes)
+            select_swarm_model_with_jev(&transport_config(), &jev, Some("implement"), &routes)
                 .await
                 .as_deref(),
             Some("openai-oauth:gpt-6-astra")
         );
         let request = rx.await.unwrap();
         assert!(request.starts_with("POST /v1/systemone "));
-        assert!(!request.to_ascii_lowercase().contains("authorization:"));
-        assert!(!request.contains("never-send-hosted-key"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer hosted-test-key")
+        );
         let body: serde_json::Value =
             serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body["model"], "local-model");
+        assert_eq!(body["model"], "hosted-model");
         assert_eq!(body["questions"]["model"]["type"], "choice");
         assert_eq!(body["state"]["task"], "implement");
     }
 
     #[test]
-    fn shared_local_settings_and_swarm_overrides_are_bounded() {
+    fn shared_hosted_settings_and_swarm_overrides_are_bounded() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvRestore::set(TYPESAFE_API_KEY_ENV, "hosted-test-key");
         let mut jev = crate::config::JevConfig {
-            provider: "openjev".into(),
+            provider: "typesafe".into(),
             model: Some("global".into()),
             ..Default::default()
         };
         let mut cfg = config();
         let resolved = resolve_router(&cfg, &jev).unwrap();
         assert_eq!(resolved.model, "global");
-        assert_eq!(resolved.timeout, Duration::from_secs(15));
+        assert_eq!(
+            resolved.timeout,
+            Duration::from_millis(SwarmRouterConfig::default().timeout_ms)
+        );
         cfg.model = "swarm-custom".into();
         cfg.timeout_ms = u64::MAX;
         let resolved = resolve_router(&cfg, &jev).unwrap();
@@ -454,24 +483,33 @@ mod tests {
         assert!(resolve_router(&cfg, &jev).is_err());
     }
 
-    #[tokio::test]
-    #[ignore = "requires Open-Jev listening at 127.0.0.1:8791"]
-    async fn live_openjev_swarm_transport() {
+    #[test]
+    fn openjev_config_is_rejected() {
         let jev = crate::config::JevConfig {
             provider: "openjev".into(),
             ..Default::default()
         };
-        assert!(resolve_router(&config(), &jev).unwrap().api_key.is_none());
+        assert!(resolve_router(&config(), &jev).is_err());
+    }
+
+    #[tokio::test]
+    async fn no_available_candidates_abstains_without_network() {
+        let routes = [route("gpt-6-astra", "openai-oauth", false)];
+        assert_eq!(
+            select_swarm_model_at(&config(), Some("implement"), &routes, "http://127.0.0.1:1")
+                .await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn sole_candidate_returns_without_network_or_credentials() {
         let routes = [route("gpt-6-astra", "openai-oauth", true)];
-        let selected = select_swarm_model_with_jev(
-            &config(),
-            &jev,
-            Some("Implement a small Rust helper"),
-            &routes,
-        )
-        .await
-        .expect("local System One request succeeds");
-        assert_eq!(selected, "openai-oauth:gpt-6-astra");
+        assert_eq!(
+            select_swarm_model_at(&config(), Some("implement"), &routes, "http://127.0.0.1:1")
+                .await,
+            Some("openai-oauth:gpt-6-astra".into())
+        );
     }
 
     #[tokio::test]

@@ -6,7 +6,9 @@ This is opt-in and does not change the coordinator's model or existing workers.
 
 ## Configuration
 
-Select hosted TypeSafe (default) or local Open-Jev via [Jev providers](JEV_PROVIDERS.md).
+Select hosted TypeSafe (default) or OpenRouter via [Jev providers](JEV_PROVIDERS.md).
+Both require API keys. Local provider `openjev` is rejected, without a silent
+hosted fallback.
 The credential instructions below apply to hosted TypeSafe only.
 
 Export `TYPESAFE_API_KEY` in the environment that starts the Jcode daemon.
@@ -53,10 +55,10 @@ Omit `model` on `spawn`, `assign_task`, `assign_next`, `fill_slots`, and `run_pl
 to allow routing when those actions create a worker. Reusing a worker does not
 change its model. Reasoning `effort` remains independent.
 
-Routing uses the selected Jev provider endpoint with a typed Choice
+Routing uses the upstream `JevClient` and selected Jev provider endpoint with a typed Choice
 question. It sends the assigned initial task, not the full conversation. Task
 text may contain project information, so enable this only when sending that
-information to the selected provider is appropriate. Local Open-Jev keeps these requests on your configured local server. No task text, credentials, or raw API
+information to the selected hosted provider is appropriate. No task text, credentials, or raw API
 responses are written to routing logs. The network call is bounded by a timeout
 and an invalid or unavailable model cannot be used as a selection.
 
@@ -67,3 +69,8 @@ private credential file or start the daemon from the updated environment.
 
 API documentation: <https://docs.typesafe.ai/api.md>
 Choice guidance: <https://docs.typesafe.ai/primitives/choice.md>
+
+Config metadata checks are throttled to roughly 500 ms. Configuration edits need
+no daemon restart and affect new decisions, not existing workers. Non-default
+swarm model/timeout values override shared settings, while the legacy defaults
+inherit them. Memory shares `JevClient`, not this router's provider-selection knobs.

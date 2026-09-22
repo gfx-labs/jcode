@@ -10,8 +10,9 @@ routes *spawned agent models*, not skills.
 ## Enabling
 
 Select the shared provider in [Jev providers](JEV_PROVIDERS.md). Hosted TypeSafe
-is the default. Local Open-Jev needs no hosted API key and defaults to a 15-second
-request budget. The legacy override examples below apply to hosted TypeSafe.
+is the default, and OpenRouter is also supported. Both require hosted API keys.
+Local provider `openjev` is rejected without a silent hosted fallback.
+The legacy override examples below apply to hosted TypeSafe.
 
 ```toml
 [agents]
@@ -38,11 +39,11 @@ In hosted mode, if no key is found, the feature does nothing (fails open) regard
 
 ## Endpoint
 
-Requests use the shared provider endpoint: `/v1/systemone` for TypeSafe/Open-Jev,
-or OpenRouter's Decisions API when explicitly selected. Legacy
-`skill_suggestion_base_url` overrides append `/systemone`. Hosted requests use
-`Authorization: Bearer {api_key}`; local requests omit auth unless an explicit
-local key variable is configured. The question is a `choice` whose criteria are
+Requests use the upstream `JevClient` and shared provider endpoint:
+`/v1/systemone` for TypeSafe, or OpenRouter's Decisions API when explicitly
+selected. Legacy `skill_suggestion_base_url` overrides use the selected
+provider's endpoint normalization (`/systemone` or `/decisions`). Hosted requests require
+`Authorization: Bearer {api_key}`. The question is a `choice` whose criteria are
 the registered skill names and descriptions, plus an always-offered `none` option.
 
 ## What is sent, and when
@@ -64,7 +65,7 @@ the registered skill names and descriptions, plus an always-offered `none` optio
 
 Every fresh user turn performs a bounded async wait for a decision
 *before* the provider request for that turn is sent, up to an internal
-~1500ms hosted timeout (local defaults to 15 seconds, configurable in `[agents.jev]`):
+~1500ms default timeout (overridable in `[agents.jev]`):
 
 - The router is invoked and the turn waits for an answer before the
   provider call is made. If it answers in time and clears
@@ -97,5 +98,9 @@ invocation would already add.
 | `agents.skill_suggestion_api_key_env` | `"TYPESAFE_API_KEY"` | Env var name holding the bearer key. Env: `JCODE_SKILL_SUGGESTION_API_KEY_ENV` |
 | `agents.skill_suggestion_min_confidence` | `0.6` | Minimum confidence (0.0-1.0) to accept a suggestion. Env: `JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE` |
 
-All settings have safe built-in defaults; only `skill_suggestion_backend`
-needs to change to opt in.
+With the selected provider's credentials configured, only
+`skill_suggestion_backend` needs to change to opt in.
+
+Config-file changes hot reload for new decisions through metadata checks roughly
+every 500 ms, without a daemon restart. Environment changes require a new server
+environment. Memory uses the same client but an independent provider selector.

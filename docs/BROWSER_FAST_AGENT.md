@@ -3,9 +3,10 @@
 The shared app-core browser tool supports `action: "handoff"`. The normal agent
 supplies the goal, an explicit tab, optional exact actions, and any exact typing
 values. A bounded controller uses the [configured Jev provider](JEV_PROVIDERS.md)
-(hosted TypeSafe, local Open-Jev, or OpenRouter), or an explicitly selected
+(hosted TypeSafe or OpenRouter), or an explicitly selected
 subscription/BYOK route, to choose an offered action ID, `done`, `hand_back`,
-`script_needed`, or `text_needed`. Jev is the fast general-purpose classifier.
+`script_needed`, or `text_needed`. All Jev decisions use the upstream `JevClient` transport.
+Jev is the fast general-purpose classifier.
 The main LLM supplies generated code or text only when asked, then hands the
 next stretch back to Jev. Jev never generates executable browser arguments.
 
@@ -19,9 +20,12 @@ runtime, so Desktop and the TUI use the same controller.
 Check `browser` with `action: "status"` first and run setup only if not ready.
 By default, the browser honors `[agents.jev]`, including the `JCODE_JEV_PROVIDER` override,
 as described in [Jev providers](JEV_PROVIDERS.md). The default provider is TypeSafe
-(`TYPESAFE_API_KEY` or `typesafe.env`). Set `provider = "openjev"` for local
-inference without hosted credentials. Endpoint, model, explicit credential variable,
-and timeout overrides remain supported. Invalid configuration fails closed.
+(`TYPESAFE_API_KEY` or `typesafe.env`). Both shared providers require hosted
+credentials. Endpoint, model, explicit credential variable, and timeout overrides
+remain supported. Local provider `openjev` is rejected without silent hosted
+fallback. Invalid configuration fails closed. Config-file changes hot reload for
+new decisions through metadata checks roughly every 500 ms, with no restart.
+An in-progress handoff keeps its starting transport.
 
 For subscription access, sign in with `jcode account login` and explicitly set
 `JCODE_BROWSER_JEV_PROVIDER=jcode` (or `auto` for subscription-first selection).
@@ -35,8 +39,8 @@ A saved login alone is not proof of entitlement or deployed support.
 and AI/ML API, choosing the first configured credential. When set, this explicit
 browser-only selector takes precedence over `[agents.jev]` and uses the selected
 route's fixed endpoint/model, not shared endpoint overrides. When unset, shared
-configuration remains authoritative, so a local deployment never silently opts
-into hosted auto selection. This setting is separate from memory's Jev provider.
+configuration remains authoritative and never silently opts into auto selection.
+This setting is separate from memory's Jev provider.
 An entitlement, billing, or network error never silently switches to a personal paid key. Direct browser actions remain available.
 
 For OpenRouter BYOK, connect using `jcode login openrouter`. Credentials remain
@@ -130,7 +134,7 @@ isolated runtime directory and home. Never reuse a user session ID.
 The caller must prepare a disposable local fixture tab and an existing dedicated
 `BROWSER_SESSION`. Without that environment variable, the bridge can create an
 agent browser session/window automatically. The commands below do not create
-browser tabs. For hosted mode they assume the selected provider key is available in the
+browser tabs. They assume the selected provider key is available in the
 process environment, without putting its value in shell history or logs.
 
 ```bash
@@ -148,7 +152,6 @@ export JCODE_JEV_PROVIDER="${JCODE_JEV_PROVIDER:-typesafe}"
 case "$JCODE_JEV_PROVIDER" in
   typesafe) : "${TYPESAFE_API_KEY:?Provide TypeSafe credentials through the process environment}" ;;
   openrouter) : "${OPENROUTER_API_KEY:?Provide OpenRouter credentials through the process environment}" ;;
-  openjev) ;; # keyless loopback server must already be running
   *) echo "Unsupported Jev provider" >&2; exit 1 ;;
 esac
 : "${BROWSER_SESSION:?Use the existing dedicated fixture browser session}"

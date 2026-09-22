@@ -1,11 +1,11 @@
-//! Opt-in per-turn skill routing through the direct TypeSafe System One API.
+//! Opt-in per-turn skill routing through the shared hosted Jev client.
 //! Only the current request receives the result. Errors and timeouts fail open,
 //! and the async deadline never blocks a Tokio worker or queues stale suggestions.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::message::{ContentBlock, Message, Role};
@@ -29,6 +29,8 @@ pub const INLINE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// feature is off or unusable (no key); callers should then do nothing.
 #[derive(Clone)]
 pub struct SkillRouterConfig {
+    /// Hosted provider retained alongside legacy endpoint/model/key fields.
+    pub provider: String,
     pub model: String,
     pub base_url: String,
     pub api_key: Option<String>,
@@ -58,6 +60,7 @@ impl SkillRouterConfig {
         }
         let resolved = crate::jev::resolve_with_timeout(&jev, INLINE_TIMEOUT).ok()?;
         Some(Self {
+            provider: jev.provider.clone(),
             model: resolved.model,
             base_url: resolved.endpoint.trim_end_matches("/systemone").to_string(),
             endpoint: resolved.endpoint,
@@ -176,8 +179,10 @@ pub fn build_request_json(
 
 /// Parse a decisions response body into a [`SkillDecision`].
 pub fn parse_response(body: &str) -> Result<SkillDecision> {
-    let parsed: DecisionsResponse =
-        serde_json::from_str(body).context("parse decisions response")?;
+    // Serde diagnostics can quote provider-returned values, including echoed
+    // private context. Keep the shared client's error-redaction guarantee.
+    let parsed: DecisionsResponse = serde_json::from_str(body)
+        .map_err(|_| anyhow::anyhow!("Invalid typed Jev skill response"))?;
     let answer = parsed
         .answers
         .get(QUESTION_ID)
@@ -208,22 +213,37 @@ pub async fn decide(
     candidates: &[SkillCandidate],
 ) -> Result<SkillDecision> {
     let body = build_request_json(&cfg.model, state, candidates);
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(cfg.timeout)
-        .build()?;
-    let mut request = client.post(&cfg.endpoint).json(&body);
-    if let Some(key) = &cfg.api_key {
-        request = request.bearer_auth(key);
+    // A choice needs at least two options. With only `none`, abstain locally.
+    if body["questions"][QUESTION_ID]["criteria"]
+        .as_object()
+        .is_some_and(|criteria| criteria.len() < 2)
+    {
+        return Ok(SkillDecision {
+            choice: NONE_OPTION.into(),
+            confidence: 1.0,
+            probabilities: vec![(NONE_OPTION.into(), 1.0)],
+            input_tokens: 0,
+        });
     }
-    let response = request.send().await?;
-    // Do not log remote error bodies, which may echo private request content.
-    anyhow::ensure!(
-        response.status().is_success(),
-        "Jev request failed ({})",
-        response.status()
-    );
-    let decision = parse_response(&response.text().await?)?;
+    let client = crate::jev::JevClient::for_skill_settings(
+        crate::jev::ResolvedJev {
+            model: cfg.model.clone(),
+            endpoint: cfg.endpoint.clone(),
+            api_key: cfg.api_key.clone(),
+            timeout: cfg.timeout,
+        },
+        &cfg.provider,
+    )?;
+    let response = client
+        .evaluate(
+            body["state"].clone(),
+            body["questions"]
+                .as_object()
+                .expect("built questions")
+                .clone(),
+        )
+        .await?;
+    let decision = parse_response(&response.to_string())?;
     anyhow::ensure!(
         body["questions"][QUESTION_ID]["criteria"]
             .get(&decision.choice)
@@ -454,6 +474,7 @@ mod tests {
 
     fn test_cfg(base_url: String, api_key: &str) -> SkillRouterConfig {
         SkillRouterConfig {
+            provider: "typesafe".into(),
             model: DEFAULT_MODEL.to_string(),
             endpoint: format!("{base_url}/systemone"),
             base_url,
@@ -591,7 +612,33 @@ mod tests {
         let err = decide(&cfg, "User: hi", &cands())
             .await
             .expect_err("unoffered choice must be rejected");
-        assert!(err.to_string().contains("unoffered"), "{err}");
+        assert!(err.to_string().contains("offered"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn malformed_typed_answers_do_not_echo_private_values() {
+        for field in ["confidence", "probabilities", "usage"] {
+            let mut body = serde_json::json!({
+                "answers": {"skill": {
+                    "type": "choice", "choice": "pdf", "confidence": 0.9,
+                    "probabilities": {"pdf": 0.9}
+                }},
+                "usage": {"input_tokens": 1}
+            });
+            if field == "usage" {
+                body["usage"]["input_tokens"] = serde_json::json!("private-echo");
+            } else {
+                body["answers"]["skill"][field] = serde_json::json!("private-echo");
+            }
+            let (base, _rx) = spawn_mock_server(200, body.to_string());
+            let err = decide(&test_cfg(base, "key"), "private-request", &cands())
+                .await
+                .expect_err("malformed typed fields must be rejected");
+            let detail = format!("{err:#}");
+            assert!(detail.contains("Invalid typed Jev skill response"));
+            assert!(!detail.contains("private-echo"));
+            assert!(!detail.contains("private-request"));
+        }
     }
 
     #[tokio::test]
@@ -799,38 +846,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_provider_posts_systemone_without_hosted_auth() {
+    async fn hosted_provider_posts_systemone_with_auth() {
         let _lock = crate::storage::lock_test_env();
-        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "must-not-leak");
+        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "hosted-test-key");
         let body = r#"{"answers":{"skill":{"type":"choice","choice":"pdf","confidence":0.9}}}"#;
         let (base, rx) = spawn_mock_server(200, body.into());
         let mut agents = crate::config::AgentsConfig::default();
         agents.skill_suggestion_backend = "jev".into();
-        agents.jev.provider = "openjev".into();
+        agents.jev.provider = "typesafe".into();
         agents.jev.base_url = Some(base);
-        agents.jev.model = Some("local-model".into());
+        agents.jev.model = Some("hosted-model".into());
         let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
-        assert!(cfg.api_key.is_none());
-        assert_eq!(cfg.timeout, Duration::from_secs(15));
+        assert_eq!(cfg.api_key.as_deref(), Some("hosted-test-key"));
+        assert_eq!(cfg.timeout, INLINE_TIMEOUT);
         assert_eq!(
             decide(&cfg, "read pdf", &cands()).await.unwrap().choice,
             "pdf"
         );
         let request = rx.recv().unwrap();
         assert!(request.starts_with("POST /v1/systemone "));
-        assert!(!request.to_ascii_lowercase().contains("authorization:"));
-        assert!(!request.contains("must-not-leak"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer hosted-test-key")
+        );
         let body: serde_json::Value =
             serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body["model"], "local-model");
+        assert_eq!(body["model"], "hosted-model");
         assert_eq!(body["questions"]["skill"]["type"], "choice");
     }
 
-    #[test]
-    fn local_skill_overrides_and_unknown_provider_are_respected() {
+    #[tokio::test]
+    async fn openrouter_provider_retains_hosted_endpoint_model_and_key_overrides() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvVarGuard::set("SKILL_ROUTER_TEST_KEY", "openrouter-test-key");
+        let body = r#"{"answers":{"skill":{"type":"choice","choice":"pdf","confidence":0.9}}}"#;
+        let (base, rx) = spawn_mock_server(200, body.into());
         let mut agents = crate::config::AgentsConfig::default();
         agents.skill_suggestion_backend = "jev".into();
-        agents.jev.provider = "openjev".into();
+        agents.jev.provider = "openrouter".into();
+        agents.skill_suggestion_api_key_env = Some("SKILL_ROUTER_TEST_KEY".into());
+        agents.skill_suggestion_base_url = Some(format!("{base}/custom/decisions"));
+        agents.skill_suggestion_model = Some("typesafe/custom-jev".into());
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        assert_eq!(cfg.provider, "openrouter");
+        assert_eq!(
+            decide(&cfg, "read pdf", &cands()).await.unwrap().choice,
+            "pdf"
+        );
+        let request = rx.recv().unwrap();
+        assert!(request.starts_with("POST /custom/decisions "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer openrouter-test-key")
+        );
+        assert!(request.contains("typesafe/custom-jev"));
+    }
+
+    #[test]
+    fn hosted_skill_overrides_and_unknown_provider_are_respected() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "hosted-test-key");
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "typesafe".into();
         agents.jev.model = Some("global-model".into());
         agents.skill_suggestion_model = Some("skill-model".into());
         agents.skill_suggestion_base_url = Some("http://localhost:8792/v1".into());
@@ -844,10 +924,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_suggest_uses_configured_outer_deadline() {
+    async fn hosted_suggest_uses_configured_outer_deadline() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "hosted-test-key");
         let mut agents = crate::config::AgentsConfig::default();
         agents.skill_suggestion_backend = "jev".into();
-        agents.jev.provider = "openjev".into();
+        agents.jev.provider = "typesafe".into();
         agents.jev.base_url = Some(spawn_slow_server(Duration::from_secs(2)));
         agents.jev.timeout_ms = Some(30);
         let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
@@ -861,10 +943,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_suggest_is_not_cut_off_by_hosted_inline_deadline() {
+    async fn hosted_suggest_is_not_cut_off_by_default_inline_deadline() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "hosted-test-key");
         let mut agents = crate::config::AgentsConfig::default();
         agents.skill_suggestion_backend = "jev".into();
-        agents.jev.provider = "openjev".into();
+        agents.jev.provider = "typesafe".into();
         agents.jev.base_url = Some(spawn_slow_server(Duration::from_millis(1750)));
         agents.jev.timeout_ms = Some(3000);
         let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
@@ -876,23 +960,25 @@ mod tests {
         );
         assert!(
             start.elapsed() >= Duration::from_millis(1700),
-            "local deadline must not use old 1500ms cap"
+            "configured deadline must not use default 1500ms cap"
         );
         assert!(start.elapsed() < Duration::from_millis(3000));
     }
 
-    #[tokio::test]
-    #[ignore = "requires Open-Jev listening at 127.0.0.1:8791"]
-    async fn live_openjev_skill_transport() {
+    #[test]
+    fn openjev_config_is_rejected() {
         let mut agents = crate::config::AgentsConfig::default();
         agents.skill_suggestion_backend = "jev".into();
         agents.jev.provider = "openjev".into();
-        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
-        assert!(cfg.api_key.is_none());
-        let decision = decide(&cfg, "User: Extract the text from a PDF document", &cands())
-            .await
-            .expect("local System One request succeeds");
-        assert!(["pdf", "gh", "none"].contains(&decision.choice.as_str()));
+        assert!(SkillRouterConfig::from_agents(&agents).is_none());
+    }
+
+    #[tokio::test]
+    async fn decide_without_candidates_abstains_without_network() {
+        let cfg = test_cfg("http://127.0.0.1:1".into(), "key");
+        let decision = decide(&cfg, "read pdf", &[]).await.unwrap();
+        assert_eq!(decision.choice, NONE_OPTION);
+        assert_eq!(decision.input_tokens, 0);
     }
 
     // ── Live integration test (ignored by default) ──────────────────────────

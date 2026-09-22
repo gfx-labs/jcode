@@ -1,6 +1,6 @@
 //! Shared Jev typed Decisions transport, separate from chat completions.
 //!
-//! Configured hosted/local routes retain explicit endpoint and model overrides.
+//! Configured hosted routes retain explicit endpoint and model overrides.
 //! Subscription/BYOK selections bind credentials to provider endpoints. The Jcode route uses
 //! the configured trusted account gateway, and checks its live purpose-specific
 //! capability before each evaluation. Credential presence is not entitlement.
@@ -21,6 +21,8 @@ const MAX_QUESTIONS: usize = 24;
 enum JevPurpose {
     Memory,
     Browser,
+    Skill,
+    Swarm,
 }
 
 impl JevPurpose {
@@ -28,6 +30,8 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory",
             Self::Browser => "browser",
+            Self::Skill => "skill",
+            Self::Swarm => "swarm",
         }
     }
 
@@ -35,6 +39,7 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory_jev",
             Self::Browser => "browser_jev",
+            Self::Skill | Self::Swarm => unreachable!("configured-only Jev purpose"),
         }
     }
 
@@ -46,12 +51,16 @@ impl JevPurpose {
         let key = match self {
             Self::Memory => PROVIDER_ENV,
             Self::Browser => BROWSER_PROVIDER_ENV,
+            Self::Skill | Self::Swarm => {
+                bail!("This Jev purpose requires configured hosted settings")
+            }
         };
         match env(key) {
             Ok(value) => Ok(value),
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
                 Self::Browser => "auto".into(),
+                Self::Skill | Self::Swarm => unreachable!("configured-only Jev purpose"),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
         }
@@ -64,7 +73,6 @@ enum JevProvider {
     TypeSafe,
     Aimlapi,
     Jcode,
-    OpenJev,
 }
 
 impl JevProvider {
@@ -74,7 +82,6 @@ impl JevProvider {
             Self::TypeSafe => "typesafe",
             Self::Aimlapi => "aimlapi",
             Self::Jcode => "jcode",
-            Self::OpenJev => "openjev",
         }
     }
 
@@ -83,7 +90,6 @@ impl JevProvider {
             Self::OpenRouter => ("OPENROUTER_API_KEY", "openrouter.env"),
             Self::TypeSafe => ("TYPESAFE_API_KEY", "typesafe.env"),
             Self::Aimlapi => ("AIMLAPI_API_KEY", "aimlapi.env"),
-            Self::OpenJev => unreachable!("local credentials use explicit configuration"),
             Self::Jcode => (
                 crate::subscription_catalog::JCODE_API_KEY_ENV,
                 crate::subscription_catalog::JCODE_ENV_FILE,
@@ -94,7 +100,7 @@ impl JevProvider {
     fn model(self) -> &'static str {
         match self {
             Self::OpenRouter | Self::Jcode => "typesafe/jev-1.13",
-            Self::TypeSafe | Self::OpenJev => "jev-latest",
+            Self::TypeSafe => "jev-latest",
             Self::Aimlapi => "typesafe/jev",
         }
     }
@@ -103,7 +109,6 @@ impl JevProvider {
         Ok(match self {
             Self::OpenRouter => "https://openrouter.ai/api/alpha/decisions".into(),
             Self::TypeSafe => "https://api.typesafe.ai/v1/systemone".into(),
-            Self::OpenJev => "http://127.0.0.1:8791/v1/systemone".into(),
             Self::Aimlapi => "https://api.aimlapi.com/v1/decisions".into(),
             Self::Jcode => format!("{}/decisions", trusted_gateway_base(gateway_base)?),
         })
@@ -134,7 +139,7 @@ impl JevClient {
     }
 
     /// Explicit browser routing opts into subscription/BYOK selection. Otherwise
-    /// honor the shared hosted/local configuration, including its fail-closed policy.
+    /// honor the shared hosted configuration, including its fail-closed policy.
     /// Memory configuration never overrides the browser route.
     pub fn for_browser() -> Result<Self> {
         if std::env::var_os(BROWSER_PROVIDER_ENV).is_some() {
@@ -147,31 +152,37 @@ impl JevClient {
     }
 
     /// Construct an explicitly configured browser route without probing or
-    /// falling back to any other account. Local settings may omit authorization.
+    /// falling back to any other account. A valid hosted credential is required.
     pub fn for_browser_settings(settings: ResolvedJev, provider: &str) -> Result<Self> {
+        Self::configured(settings, provider, JevPurpose::Browser)
+    }
+
+    /// Construct a configured hosted route for typed skill decisions.
+    /// Subscription routing is not supported for this purpose.
+    pub fn for_skill_settings(settings: ResolvedJev, provider: &str) -> Result<Self> {
+        Self::configured(settings, provider, JevPurpose::Skill)
+    }
+
+    /// Construct a configured hosted route for typed swarm decisions.
+    /// Subscription routing is not supported for this purpose.
+    pub fn for_swarm_settings(settings: ResolvedJev, provider: &str) -> Result<Self> {
+        Self::configured(settings, provider, JevPurpose::Swarm)
+    }
+
+    fn configured(settings: ResolvedJev, provider: &str, purpose: JevPurpose) -> Result<Self> {
         let provider = match provider.trim().to_ascii_lowercase().as_str() {
             "typesafe" => JevProvider::TypeSafe,
             "openrouter" => JevProvider::OpenRouter,
-            "openjev" => JevProvider::OpenJev,
             _ => bail!("Invalid configured Jev provider"),
         };
-        let api_key = settings.api_key.unwrap_or_default();
-        ensure!(
-            provider == JevProvider::OpenJev || !api_key.is_empty(),
-            "The selected Jev provider requires an API key"
-        );
-        ensure!(
-            api_key.is_empty()
-                || reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")).is_ok(),
-            "The selected Jev provider credential is not a valid HTTP bearer value"
-        );
+        let api_key = validated_credential(settings.api_key.as_deref())?;
         let client = client_builder()
             .timeout(settings.timeout)
             .build()
             .map_err(|_| anyhow!("Could not initialize the Jev decision client"))?;
         Ok(Self {
             client,
-            purpose: JevPurpose::Browser,
+            purpose,
             provider,
             api_key,
             endpoint: settings.endpoint,
@@ -277,15 +288,15 @@ impl JevClient {
             .post(endpoint)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
-        if !self.api_key.is_empty() {
-            request = request.bearer_auth(&self.api_key);
-        }
+        request = request.bearer_auth(&self.api_key);
         if self.provider == JevProvider::OpenRouter {
             request = request.header("HTTP-Referer", "https://jcode.sh").header(
                 "X-Title",
                 match self.purpose {
                     JevPurpose::Memory => "Jcode Memory",
                     JevPurpose::Browser => "Jcode Browser",
+                    JevPurpose::Skill => "Jcode Skill",
+                    JevPurpose::Swarm => "Jcode Swarm",
                 },
             );
         }
@@ -391,6 +402,11 @@ fn request_body_for_model(
     state: Value,
     questions: &Map<String, Value>,
 ) -> Result<Vec<u8>> {
+    ensure!(
+        provider != JevProvider::Jcode
+            || matches!(purpose, JevPurpose::Memory | JevPurpose::Browser),
+        "Jcode subscription does not support this Jev purpose"
+    );
     if purpose == JevPurpose::Browser {
         ensure!(
             questions.len() == 1
@@ -523,6 +539,16 @@ fn validate_answers(value: &Value, questions: &Map<String, Value>) -> Result<()>
             answer["type"] == question["type"],
             "Jev answer type does not match its question"
         );
+        if question["type"] == "choice" {
+            ensure!(
+                answer["choice"].as_str().is_some_and(|choice| {
+                    question["criteria"]
+                        .as_object()
+                        .is_some_and(|criteria| criteria.contains_key(choice))
+                }),
+                "Jev returned a choice that was not offered"
+            );
+        }
         if question["type"] == "noul" {
             ensure!(
                 answer["noul"]
@@ -659,6 +685,238 @@ mod tests {
         }
         assert!(request_body(JevProvider::Jcode, json!("state"), &valid).is_err());
         assert!(request_body(JevProvider::Jcode, json!("state"), &questions()).is_ok());
+    }
+
+    fn configured_settings(endpoint: String) -> ResolvedJev {
+        ResolvedJev {
+            endpoint,
+            model: "custom-jev".into(),
+            api_key: Some("test-route-secret".into()),
+            timeout: Duration::from_secs(2),
+        }
+    }
+
+    fn configured_client(
+        purpose: JevPurpose,
+        settings: ResolvedJev,
+        provider: &str,
+    ) -> Result<JevClient> {
+        match purpose {
+            JevPurpose::Browser => JevClient::for_browser_settings(settings, provider),
+            JevPurpose::Skill => JevClient::for_skill_settings(settings, provider),
+            JevPurpose::Swarm => JevClient::for_swarm_settings(settings, provider),
+            JevPurpose::Memory => panic!("not a configured purpose"),
+        }
+    }
+
+    #[test]
+    fn configured_purposes_require_hosted_provider_and_valid_credentials() {
+        for purpose in [JevPurpose::Browser, JevPurpose::Skill, JevPurpose::Swarm] {
+            for provider in [
+                "openjev",
+                "local",
+                "jcode",
+                "subscription",
+                "auto",
+                "aimlapi",
+            ] {
+                assert!(
+                    configured_client(
+                        purpose,
+                        configured_settings("http://127.0.0.1:1/unused".into()),
+                        provider
+                    )
+                    .is_err()
+                );
+            }
+            for provider in ["typesafe", "openrouter"] {
+                for key in [
+                    None,
+                    Some(""),
+                    Some("  "),
+                    Some("\"\""),
+                    Some("private-secret\r\nheader"),
+                ] {
+                    let mut settings = configured_settings("http://127.0.0.1:1/unused".into());
+                    settings.api_key = key.map(str::to_owned);
+                    let error = configured_client(purpose, settings, provider)
+                        .err()
+                        .unwrap();
+                    assert!(!format!("{error:#}").contains("private-secret"));
+                }
+            }
+        }
+        assert!(resolve_with("openjev", |_, _| panic!("no credential lookup")).is_err());
+    }
+
+    #[test]
+    fn generic_choice_purposes_preserve_validation_without_browser_action_restriction() {
+        let questions = json!({"route": {"type": "choice", "instructions": "Choose route", "criteria": {"a": "First", "b": "Second"}}}).as_object().unwrap().clone();
+        for purpose in [JevPurpose::Skill, JevPurpose::Swarm] {
+            for provider in [JevProvider::TypeSafe, JevProvider::OpenRouter] {
+                assert!(
+                    request_body_for(purpose, provider, json!({"task": "test"}), &questions)
+                        .is_ok()
+                );
+                assert!(
+                    request_body_for(
+                        purpose,
+                        provider,
+                        json!("x".repeat(MAX_REQUEST_BYTES)),
+                        &questions
+                    )
+                    .is_err()
+                );
+                let mut invalid = questions.clone();
+                invalid.get_mut("route").unwrap()["criteria"] = json!({"only": "One"});
+                assert!(request_body_for(purpose, provider, json!("state"), &invalid).is_err());
+            }
+            assert!(
+                request_body_for(purpose, JevProvider::Jcode, json!("state"), &questions).is_err()
+            );
+            assert!(
+                purpose
+                    .selector_with(|_| panic!("no subscription lookup"), || panic!())
+                    .is_err()
+            );
+        }
+        assert!(
+            request_body_for(
+                JevPurpose::Browser,
+                JevProvider::TypeSafe,
+                json!("state"),
+                &questions
+            )
+            .is_err()
+        );
+        assert!(
+            validate_answers(
+                &json!({"answers": {"route": {"type": "choice", "choice": "a"}}}),
+                &questions
+            )
+            .is_ok()
+        );
+        for choice in [json!("unoffered"), Value::Null, json!(7)] {
+            assert!(
+                validate_answers(
+                    &json!({"answers": {"route": {"type": "choice", "choice": choice}}}),
+                    &questions
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_generic_routes_use_shared_transport_and_attribution() {
+        for (purpose, title) in [
+            (JevPurpose::Skill, "Jcode Skill"),
+            (JevPurpose::Swarm, "Jcode Swarm"),
+        ] {
+            for provider in ["typesafe", "openrouter"] {
+                let questions = json!({"route": {"type": "choice", "instructions": "Choose route", "criteria": {"a": "First", "b": "Second"}}}).as_object().unwrap().clone();
+                let answer = json!({"answers": {"route": {"type": "choice", "choice": "a", "confidence": 0.9}}});
+                let (base, worker) = mock_server(vec![(200, answer.to_string(), vec![])]);
+                let mut client = configured_client(
+                    purpose,
+                    configured_settings(format!("{base}/configured")),
+                    provider,
+                )
+                .unwrap();
+                client.client = client_builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap();
+                assert_eq!(
+                    client
+                        .evaluate(json!({"task": "test"}), questions)
+                        .await
+                        .unwrap(),
+                    answer
+                );
+                let requests = worker.join().unwrap();
+                assert_eq!(requests.len(), 1);
+                let request = &requests[0];
+                assert!(request.starts_with("POST /configured "));
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer test-route-secret")
+                );
+                assert_eq!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains(&format!("x-title: {}", title.to_ascii_lowercase())),
+                    provider == "openrouter"
+                );
+                let body: Value =
+                    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(body["model"], "custom-jev");
+                assert_eq!(body["state"].is_string(), provider == "openrouter");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_generic_routes_preserve_response_guards() {
+        for purpose in [JevPurpose::Skill, JevPurpose::Swarm] {
+            for (status, body, expected) in [
+                (
+                    307,
+                    "private-provider-error test-route-secret".into(),
+                    "redirect refused",
+                ),
+                (
+                    401,
+                    "private-provider-error test-route-secret".into(),
+                    "HTTP 401",
+                ),
+                (
+                    200,
+                    "x".repeat(MAX_RESPONSE_BYTES + 1),
+                    "bounded response size",
+                ),
+                (
+                    200,
+                    "private-provider-error".into(),
+                    "invalid response JSON",
+                ),
+                (
+                    200,
+                    json!({"answers": {"action": {"type": "choice", "choice": "unoffered"}}})
+                        .to_string(),
+                    "not offered",
+                ),
+            ] {
+                let (base, worker) = mock_server(vec![(
+                    status,
+                    body,
+                    vec![("Location".into(), "http://127.0.0.1:1/never-follow".into())],
+                )]);
+                let mut client = configured_client(
+                    purpose,
+                    configured_settings(format!("{base}/configured")),
+                    "typesafe",
+                )
+                .unwrap();
+                client.client = client_builder().no_proxy().build().unwrap();
+                let error = client
+                    .evaluate(json!("private-state"), browser_questions())
+                    .await
+                    .unwrap_err();
+                let detail = format!("{error:#}");
+                assert!(detail.contains(expected), "{detail}");
+                for secret in [
+                    "private-provider-error",
+                    "test-route-secret",
+                    "private-state",
+                ] {
+                    assert!(!detail.contains(secret));
+                }
+                assert_eq!(worker.join().unwrap().len(), 1);
+            }
+        }
     }
 
     #[test]
@@ -1180,7 +1438,6 @@ mod tests {
 
 pub use crate::config::JevConfig;
 pub const MAX_TIMEOUT_MS: u64 = 30_000;
-pub const LOCAL_TIMEOUT_MS: u64 = 15_000;
 
 #[derive(Clone)]
 pub struct ResolvedJev {
@@ -1202,6 +1459,21 @@ pub fn resolve_with_timeout(config: &JevConfig, hosted_default: Duration) -> Res
     })
 }
 
+fn validated_credential(value: Option<&str>) -> Result<String> {
+    let key = value
+        .map(jcode_provider_env::sanitize_secret_value)
+        .unwrap_or_default();
+    ensure!(
+        !key.is_empty(),
+        "The selected Jev provider requires an API key"
+    );
+    ensure!(
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")).is_ok(),
+        "The selected Jev provider credential is not a valid HTTP bearer value"
+    );
+    Ok(key.to_owned())
+}
+
 fn nonempty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -1218,12 +1490,6 @@ fn resolve_with_loader(
             "jev-latest",
             Some("TYPESAFE_API_KEY"),
             Some("typesafe.env"),
-        ),
-        "openjev" => (
-            "http://127.0.0.1:8791/v1/systemone",
-            "jev-latest",
-            None,
-            None,
         ),
         "openrouter" => (
             "https://openrouter.ai/api/alpha/decisions",
@@ -1270,19 +1536,9 @@ fn resolve_with_loader(
         }
     };
     let key_env = nonempty(config.api_key_env.as_deref()).or(default_key);
-    let api_key = key_env
-        .and_then(|name| key_loader(name, key_file))
-        .and_then(|key| nonempty(Some(&key)).map(str::to_string));
-    ensure!(
-        (provider == "openjev" && nonempty(config.api_key_env.as_deref()).is_none())
-            || api_key.is_some(),
-        "Jev provider {provider} requires an API key"
-    );
-    let default_timeout = if provider == "openjev" {
-        LOCAL_TIMEOUT_MS
-    } else {
-        hosted_default.as_millis().min(MAX_TIMEOUT_MS as u128) as u64
-    };
+    let loaded_key = key_env.and_then(|name| key_loader(name, key_file));
+    let api_key = Some(validated_credential(loaded_key.as_deref())?);
+    let default_timeout = hosted_default.as_millis().min(MAX_TIMEOUT_MS as u128) as u64;
     Ok(ResolvedJev {
         endpoint,
         model: nonempty(config.model.as_deref())
@@ -1301,14 +1557,14 @@ fn resolve_with_loader(
 #[cfg(test)]
 mod config_resolution_tests {
     use super::*;
-    fn local() -> JevConfig {
+    fn hosted() -> JevConfig {
         JevConfig {
-            provider: "openjev".into(),
+            provider: "typesafe".into(),
             ..Default::default()
         }
     }
     #[test]
-    fn browser_honors_local_config_until_explicit_browser_override() {
+    fn browser_rejects_removed_provider_until_explicit_browser_override() {
         let _guard = crate::storage::lock_test_env();
         struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
         impl Drop for RestoreEnv {
@@ -1339,11 +1595,7 @@ mod config_resolution_tests {
         crate::env::remove_var(BROWSER_PROVIDER_ENV);
         crate::env::set_var("TYPESAFE_API_KEY", "unused-hosted-test-key");
         crate::config::Config::invalidate_cache();
-        let client = JevClient::for_browser().unwrap();
-        assert_eq!(client.provider_name(), "openjev");
-        assert_eq!(client.endpoint, "http://127.0.0.1:8791/v1/systemone");
-        assert!(client.api_key.is_empty());
-        assert_eq!(client.model_id(), "jev-latest");
+        assert!(JevClient::for_browser().is_err());
 
         crate::env::set_var(BROWSER_PROVIDER_ENV, "typesafe");
         let client = JevClient::for_browser().unwrap();
@@ -1351,7 +1603,7 @@ mod config_resolution_tests {
         assert_eq!(client.endpoint, "https://api.typesafe.ai/v1/systemone");
         assert_eq!(client.api_key, "unused-hosted-test-key");
 
-        // Invalid explicit browser routes must not fall back to local or hosted.
+        // Invalid explicit browser routes must not fall back to another route.
         crate::env::set_var(BROWSER_PROVIDER_ENV, "typo");
         assert!(JevClient::for_browser().is_err());
         crate::env::remove_var(BROWSER_PROVIDER_ENV);
@@ -1361,15 +1613,17 @@ mod config_resolution_tests {
     }
 
     #[test]
-    fn local_never_loads_hosted_credentials() {
-        let resolved = resolve_with_loader(&local(), Duration::from_secs(1), |_, _| {
-            panic!("must not load a hosted key")
-        })
-        .unwrap();
-        assert_eq!(resolved.endpoint, "http://127.0.0.1:8791/v1/systemone");
-        assert_eq!(resolved.model, "jev-latest");
-        assert!(resolved.api_key.is_none());
-        assert_eq!(resolved.timeout, Duration::from_secs(15));
+    fn removed_provider_never_loads_credentials() {
+        let config = JevConfig {
+            provider: "openjev".into(),
+            ..Default::default()
+        };
+        assert!(
+            resolve_with_loader(&config, Duration::from_secs(1), |_, _| {
+                panic!("removed provider must not load a key")
+            })
+            .is_err()
+        );
     }
     #[test]
     fn hosted_requires_auth_and_uses_saved_key_loader() {
@@ -1405,24 +1659,24 @@ mod config_resolution_tests {
         );
     }
     #[test]
-    fn local_explicit_auth_uses_only_named_environment_variable() {
+    fn hosted_explicit_auth_uses_named_key() {
         let cfg = JevConfig {
             api_key_env: Some("LOCAL_TOKEN".into()),
-            ..local()
+            ..hosted()
         };
         let resolved = resolve_with_loader(&cfg, Duration::from_secs(1), |key, file| {
             assert_eq!(key, "LOCAL_TOKEN");
-            assert_eq!(file, None);
+            assert_eq!(file, Some("typesafe.env"));
             Some("local-key".into())
         })
         .unwrap();
         assert_eq!(resolved.api_key.as_deref(), Some("local-key"));
     }
     #[test]
-    fn explicit_local_key_must_exist_and_be_nonempty() {
+    fn explicit_hosted_key_must_exist_and_be_nonempty() {
         let cfg = JevConfig {
             api_key_env: Some("LOCAL_KEY".into()),
-            ..local()
+            ..hosted()
         };
         for missing in [None, Some("   ".to_string())] {
             assert!(
@@ -1443,9 +1697,11 @@ mod config_resolution_tests {
                     base_url: Some(base.into()),
                     model: Some(" custom ".into()),
                     timeout_ms: Some(millis),
-                    ..local()
+                    ..hosted()
                 };
-                let resolved = resolve(&cfg).unwrap();
+                let resolved =
+                    resolve_with_loader(&cfg, Duration::from_secs(5), |_, _| Some("key".into()))
+                        .unwrap();
                 assert_eq!(resolved.endpoint, "http://localhost:8791/v1/systemone");
                 assert_eq!(resolved.model, "custom");
                 assert_eq!(resolved.timeout, Duration::from_millis(expected));
@@ -1459,7 +1715,7 @@ mod config_resolution_tests {
             assert!(
                 resolve(&JevConfig {
                     base_url: Some(base.into()),
-                    ..local()
+                    ..hosted()
                 })
                 .is_err()
             );

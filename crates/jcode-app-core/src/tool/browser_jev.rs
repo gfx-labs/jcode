@@ -1,4 +1,4 @@
-//! Configurable hosted/local and subscription typed Decisions, separate from chat completions.
+//! Shared hosted and subscription typed Decisions, separate from chat completions.
 //! Jev selects an existing browser action. It never generates executable arguments.
 use super::{Decision, DecisionRequest, DecisionTransport};
 use anyhow::{Context, Result, ensure};
@@ -24,7 +24,7 @@ impl JevTransport {
     #[cfg(test)]
     fn from_settings(settings: crate::jev::ResolvedJev) -> Result<Self> {
         Ok(Self {
-            client: crate::jev::JevClient::for_browser_settings(settings, "openjev")?,
+            client: crate::jev::JevClient::for_browser_settings(settings, "typesafe")?,
         })
     }
 
@@ -330,82 +330,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_endpoint_model_and_optional_auth_are_used() {
+    async fn configured_endpoint_model_and_hosted_auth_are_used() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        for key in [None, Some("explicit-test-key".to_string())] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
-            let expected_key = key.clone();
-            let server = tokio::spawn(async move {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut bytes = Vec::new();
-                let (header, body) = loop {
-                    let mut chunk = [0u8; 4096];
-                    let n = socket.read(&mut chunk).await.unwrap();
-                    assert!(n > 0);
-                    bytes.extend_from_slice(&chunk[..n]);
-                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let header = String::from_utf8(bytes[..end].to_vec()).unwrap();
-                        let size: usize = header
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse().unwrap())
-                            })
-                            .unwrap();
-                        if bytes.len() >= end + 4 + size {
-                            break (header, bytes[end + 4..end + 4 + size].to_vec());
-                        }
+        let key = "explicit-test-key".to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let expected_key = key.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let (header, body) = loop {
+                let mut chunk = [0u8; 4096];
+                let n = socket.read(&mut chunk).await.unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let header = String::from_utf8(bytes[..end].to_vec()).unwrap();
+                    let size: usize = header
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if bytes.len() >= end + 4 + size {
+                        break (header, bytes[end + 4..end + 4 + size].to_vec());
                     }
-                };
-                assert!(header.starts_with("POST /v1/systemone "));
-                if let Some(key) = expected_key {
-                    assert!(
-                        header
-                            .to_lowercase()
-                            .contains(&format!("authorization: bearer {key}"))
-                    );
-                } else {
-                    assert!(!header.to_lowercase().contains("authorization:"));
                 }
-                let body: Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body["model"], "open-jev");
-                assert_eq!(body["questions"]["action"]["type"], "choice");
-                let body = response().to_string();
-                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-            });
-            let transport = JevTransport::from_settings(crate::jev::ResolvedJev {
-                endpoint,
-                model: "open-jev".into(),
-                api_key: key,
-                timeout: Duration::from_secs(5),
-            })
-            .unwrap();
-            assert_eq!(transport.model(), "open-jev");
-            let result =
-                tokio::time::timeout(Duration::from_secs(10), transport.decide(&request()))
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(result.choice, "a0");
-            server.await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires local Open-Jev at 127.0.0.1:8791; makes no hosted request"]
-    async fn live_openjev_browser_decision() {
-        let settings = crate::jev::resolve(&crate::config::JevConfig {
-            provider: "openjev".into(),
-            ..Default::default()
+            };
+            assert!(header.starts_with("POST /v1/systemone "));
+            assert!(
+                header
+                    .to_lowercase()
+                    .contains(&format!("authorization: bearer {expected_key}"))
+            );
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["model"], "custom-hosted-jev");
+            assert_eq!(body["questions"]["action"]["type"], "choice");
+            let body = response().to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let transport = JevTransport::from_settings(crate::jev::ResolvedJev {
+            endpoint,
+            model: "custom-hosted-jev".into(),
+            api_key: Some(key),
+            timeout: Duration::from_secs(5),
         })
         .unwrap();
-        assert!(settings.api_key.is_none());
-        let transport = JevTransport::from_settings(settings).unwrap();
-        let decision = transport.decide(&request()).await.unwrap();
-        assert!(["a0", "done", "hand_back"].contains(&decision.choice.as_str()));
-        assert!((0.0..=1.0).contains(&decision.confidence));
+        assert_eq!(transport.model(), "custom-hosted-jev");
+        let result = tokio::time::timeout(Duration::from_secs(10), transport.decide(&request()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.choice, "a0");
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn configured_hosted_browser_rejects_missing_credentials() {
+        let result = JevTransport::from_settings(crate::jev::ResolvedJev {
+            endpoint: "https://api.typesafe.ai/v1/systemone".into(),
+            model: "jev-latest".into(),
+            api_key: None,
+            timeout: Duration::from_secs(5),
+        });
+        assert!(result.is_err());
     }
 
     #[test]

@@ -578,18 +578,20 @@ pub struct AuthConfig {
     pub trusted_external_source_paths: Vec<String>,
 }
 
-/// Shared System One connection settings for all Jev consumers.
+/// Shared hosted JevClient settings for skills, swarm routing, and default browser handoff.
+/// Memory retains its independent upstream provider selector.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct JevConfig {
-    /// `typesafe` (hosted, default), `openjev` (local), or `openrouter`. Unknown values fail closed.
+    /// `typesafe` (default) or `openrouter`, both requiring keys.
+    /// Unsupported values, including local `openjev`, fail closed without hosted fallback.
     pub provider: String,
-    /// API root, `/v1` base, or full `/systemone` endpoint.
+    /// Hosted API base or full `/systemone` (TypeSafe) or `/decisions` (OpenRouter) endpoint.
     pub base_url: Option<String>,
     pub model: Option<String>,
-    /// Explicit credential variable. Local mode never reads hosted credential files.
+    /// Explicit hosted credential variable. A nonempty API key is required.
     pub api_key_env: Option<String>,
-    /// Request deadline, clamped to 1..=30000 ms. Local default is 15000 ms.
+    /// Request deadline, clamped to 1..=30000 ms. Otherwise uses the consumer default.
     pub timeout_ms: Option<u64>,
 }
 
@@ -609,7 +611,7 @@ impl Default for JevConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentsConfig {
-    /// Shared Jev provider configuration, reloaded with the config file.
+    /// Shared hosted Jev provider configuration, hot reloaded with the config file.
     pub jev: JevConfig,
     /// Optional default model override for spawned swarm/subagent sessions.
     ///
@@ -648,7 +650,8 @@ pub struct AgentsConfig {
     #[serde(default)]
     pub swarm_strip_layout: SwarmStripLayout,
     /// Jev Decisions provider for recall: auto, openrouter, typesafe, aimlapi,
-    /// or jcode. Auto uses a provider-specific BYOK credential before Jcode.
+    /// or jcode. Independent of `jev`, using the same upstream JevClient transport.
+    /// Auto prefers Jcode, then OpenRouter, TypeSafe, and AI/ML API credentials.
     #[serde(default = "default_memory_jev_provider")]
     pub memory_jev_provider: String,
     /// Minimum Jev relevance probability. Invalid values fail closed.
@@ -1799,10 +1802,42 @@ mod jev_config_tests {
     fn legacy_agents_and_partial_jev_config_are_serde_compatible() {
         let legacy: AgentsConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.jev, JevConfig::default());
-        let local: AgentsConfig = serde_json::from_str(r#"{"jev":{"provider":"openjev"}}"#).unwrap();
-        assert_eq!(local.jev.provider, "openjev");
-        assert!(local.jev.timeout_ms.is_none());
-        let roundtrip: AgentsConfig = serde_json::from_value(serde_json::to_value(&local).unwrap()).unwrap();
-        assert_eq!(roundtrip.jev, local.jev);
+        let hosted: AgentsConfig =
+            serde_json::from_str(r#"{"jev":{"provider":"openrouter"}}"#).unwrap();
+        assert_eq!(hosted.jev.provider, "openrouter");
+        assert!(hosted.jev.timeout_ms.is_none());
+        let roundtrip: AgentsConfig =
+            serde_json::from_value(serde_json::to_value(&hosted).unwrap()).unwrap();
+        assert_eq!(roundtrip.jev, hosted.jev);
+    }
+
+    #[test]
+    fn hosted_jev_overrides_preserve_independent_memory_selector() {
+        for memory_provider in ["auto", "jcode", "openrouter", "typesafe", "aimlapi"] {
+            let agents: AgentsConfig = serde_json::from_value(serde_json::json!({
+                "jev": {
+                    "provider": "openrouter",
+                    "base_url": "https://openrouter.ai/api/alpha/decisions",
+                    "model": "typesafe/jev-1.13",
+                    "api_key_env": "CUSTOM_JEV_KEY",
+                    "timeout_ms": 7000
+                },
+                "memory_jev_provider": memory_provider
+            }))
+            .unwrap();
+            assert_eq!(agents.memory_jev_provider, memory_provider);
+            assert_eq!(agents.jev.provider, "openrouter");
+            assert_eq!(
+                agents.jev.base_url.as_deref(),
+                Some("https://openrouter.ai/api/alpha/decisions")
+            );
+            assert_eq!(agents.jev.model.as_deref(), Some("typesafe/jev-1.13"));
+            assert_eq!(agents.jev.api_key_env.as_deref(), Some("CUSTOM_JEV_KEY"));
+            assert_eq!(agents.jev.timeout_ms, Some(7000));
+            let roundtrip: AgentsConfig =
+                serde_json::from_value(serde_json::to_value(&agents).unwrap()).unwrap();
+            assert_eq!(roundtrip.jev, agents.jev);
+            assert_eq!(roundtrip.memory_jev_provider, memory_provider);
+        }
     }
 }

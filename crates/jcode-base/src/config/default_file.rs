@@ -464,6 +464,7 @@ swarm_max_concurrent_agents = 32
 # swarm_strip_layout = "vertical"
 #
 # Recall uses Jev typed Decisions directly, without embeddings or a sidecar LLM.
+# All four Jev consumers use upstream JevClient; memory selects providers independently.
 # Provider values: auto, jcode, openrouter, typesafe, aimlapi.
 # auto prefers Jcode, then OpenRouter, TypeSafe, AI/ML API credentials.
 # Env override: JCODE_MEMORY_JEV_PROVIDER
@@ -488,7 +489,7 @@ swarm_max_concurrent_agents = 32
 # Optional task-aware model selection for newly spawned swarm workers.
 # Sends the assigned task (not the conversation) to the [agents.jev] provider.
 # Hosted TypeSafe requires TYPESAFE_API_KEY in the server environment or
-# ~/.config/jcode/typesafe.env (mode 0600). Local openjev is keyless by default.
+# ~/.config/jcode/typesafe.env (mode 0600). OpenRouter also requires its hosted key.
 # Explicit model overrides win.
 # Missing credentials, invalid answers, and API failures fall back to
 # agents.swarm_model, or coordinator inheritance when that is unset.
@@ -504,12 +505,12 @@ swarm_max_concurrent_agents = 32
 
 # Optional per-turn skill suggestion. Opt-in: off by default. When set to
 # "jev", each fresh user turn asks the configured Jev decision model
-# directly (POST {base_url}/systemone) which registered skill best fits the
+# through upstream JevClient which registered skill best fits the
 # request, injecting that skill's prompt when confident enough. Routing is a
 # bounded async wait performed before the provider request is sent. [agents.jev]
-# selects the provider. Only hosted providers require credentials: TypeSafe uses
+# selects the hosted provider. Both require credentials: TypeSafe uses
 # TYPESAFE_API_KEY or ~/.config/jcode/typesafe.env (mode 0600), OpenRouter uses
-# OPENROUTER_API_KEY/openrouter.env, and local openjev is keyless by default.
+# OPENROUTER_API_KEY/openrouter.env. Local provider openjev is rejected.
 # See docs/SKILL_ROUTER.md and docs/JEV_PROVIDERS.md.
 # Env override: JCODE_SKILL_SUGGESTION_BACKEND
 # skill_suggestion_backend = "off"
@@ -519,16 +520,17 @@ swarm_max_concurrent_agents = 32
 # skill_suggestion_min_confidence = 0.6
 
 # Shared Jev provider for skill suggestions, swarm routing, and browser handoff.
-# Config-file changes hot reload for new decisions. Environment changes need a new server.
-# Default hosted TypeSafe requires TYPESAFE_API_KEY/typesafe.env. Local Open-Jev
-# does not implicitly read or send hosted credentials and never falls back to hosted Jev.
+# Config-file changes hot reload for new decisions, with metadata checks about every 500 ms.
+# No restart is needed for config edits. Environment changes need a new server environment.
+# Both supported providers require hosted API keys. Local openjev is rejected,
+# without silent hosted fallback. Memory retains its independent provider selector.
 # [agents.jev]
-# provider = "typesafe" # "typesafe", "openjev", or "openrouter"
-# For local mode set provider = "openjev"; optional overrides:
-# base_url = "http://127.0.0.1:8791/v1"
+# provider = "typesafe" # "typesafe" or "openrouter"
+# Optional hosted overrides:
+# base_url = "https://api.typesafe.ai/v1"
 # model = "jev-latest"
-# timeout_ms = 15000 # local default; maximum 30000
-# api_key_env = "LOCAL_JEV_TOKEN" # only for an authenticated local proxy
+# timeout_ms = 5000 # consumer default when unset; maximum 30000
+# api_key_env = "TYPESAFE_API_KEY"
 # Env override: JCODE_JEV_PROVIDER. See docs/JEV_PROVIDERS.md.
 
 [terminal]

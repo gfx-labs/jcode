@@ -875,6 +875,17 @@ fn test_generated_default_config_has_expected_user_defaults() {
         "generated default config should document Jev recall defaults"
     );
     assert!(
+        content.contains("provider = \"typesafe\" # \"typesafe\" or \"openrouter\"")
+            && content.contains("Both supported providers require hosted API keys")
+            && content.contains("Local openjev is rejected")
+            && content.contains("memory selects providers independently"),
+        "generated default config should document hosted Jev routes and independent memory selection"
+    );
+    assert!(
+        !content.contains("127.0.0.1:8791") && !content.contains("LOCAL_JEV_TOKEN"),
+        "generated default config must not advertise the removed local Jev provider"
+    );
+    assert!(
         content.contains("memory_model = \"gpt-5.6-luna\"")
             && content.contains("memory_sidecar_enabled = true")
             && content.contains("Optional text-generating extraction is separate from recall"),
@@ -1698,12 +1709,18 @@ fn jev_provider_config_and_env_hot_reload() {
     assert_eq!(crate::config::config().agents.jev.provider, "typesafe");
     std::fs::write(
         &path,
-        "[agents.jev]\nprovider = \"openjev\"\nmodel = \"local-model\"\n",
+        "[agents.jev]\nprovider = \"openrouter\"\nmodel = \"typesafe/jev-1.13\"\nbase_url = \"https://openrouter.ai/api/alpha/decisions\"\napi_key_env = \"CUSTOM_JEV_KEY\"\ntimeout_ms = 7000\n",
     )
     .unwrap();
     let cfg = crate::config::config();
-    assert_eq!(cfg.agents.jev.provider, "openjev");
-    assert_eq!(cfg.agents.jev.model.as_deref(), Some("local-model"));
+    assert_eq!(cfg.agents.jev.provider, "openrouter");
+    assert_eq!(cfg.agents.jev.model.as_deref(), Some("typesafe/jev-1.13"));
+    assert_eq!(
+        cfg.agents.jev.base_url.as_deref(),
+        Some("https://openrouter.ai/api/alpha/decisions")
+    );
+    assert_eq!(cfg.agents.jev.api_key_env.as_deref(), Some("CUSTOM_JEV_KEY"));
+    assert_eq!(cfg.agents.jev.timeout_ms, Some(7000));
     crate::env::set_var("JCODE_JEV_PROVIDER", "invalid-provider");
     let cfg = crate::config::config();
     assert_eq!(cfg.agents.jev.provider, "invalid-provider");

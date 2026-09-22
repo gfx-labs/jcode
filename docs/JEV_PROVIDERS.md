@@ -1,28 +1,39 @@
-# Jev providers: hosted TypeSafe or local Open-Jev
+# Jev providers and shared transport
 
-Jcode's skill suggestions, task-aware swarm model routing, and fast browser
-handoff share `[agents.jev]` in `~/.jcode/config.toml`. The default is hosted
-TypeSafe. Open-Jev uses the same typed decision protocol, not chat completions.
+Skill suggestions, swarm model routing, browser handoff, and memory recall all
+use the upstream `JevClient` typed Decisions transport, not chat completions.
+They do not all expose the same provider-selection knobs.
 
-## Switch to local Open-Jev
+## Shared hosted configuration
 
-Start your Open-Jev server, then add or update this table (do not duplicate it):
+Skill suggestions, swarm routing, and browser handoff by default use
+`[agents.jev]` in `~/.jcode/config.toml`. Supported shared providers are
+`typesafe` (default) and `openrouter`. Both require an API key.
+Local provider `openjev` is rejected, with no silent hosted fallback.
+
+Add or update this table without duplicating it:
 
 ```toml
 [agents.jev]
-provider = "openjev"
-# base_url = "http://127.0.0.1:8791/v1"
+provider = "typesafe"
+# Optional hosted overrides:
+# base_url = "https://api.typesafe.ai/v1"
 # model = "jev-latest"
-# timeout_ms = 15000
+# api_key_env = "TYPESAFE_API_KEY"
+# timeout_ms = 5000
 ```
 
-No TypeSafe or OpenRouter key is needed or implicitly sent in local mode.
-`base_url` is the API base, not the complete `/systemone` path. An optional
-`api_key_env` explicitly opts into a separate key for an authenticated local
-proxy. Requests are not redirected. Selecting local mode never falls back to a
-hosted Jev endpoint if the local service is unavailable.
+TypeSafe defaults to `https://api.typesafe.ai/v1`, model `jev-latest`, and
+`TYPESAFE_API_KEY` from the daemon environment or
+`~/.config/jcode/typesafe.env`. OpenRouter uses its Decisions API, model
+`typesafe/jev-1.13`, and `OPENROUTER_API_KEY`/`openrouter.env`.
+Keep credential files private (mode `0600`) and credentials out of TOML and
+version control. Missing credentials fail the decision rather than selecting
+another account. Endpoint, model, credential-variable, and timeout overrides
+remain supported for these hosted routes. Timeouts are bounded to 1..=30000 ms.
+Remove stale overrides when switching providers.
 
-Enable the consumers you want separately, retaining your existing settings:
+Enable consumers separately, retaining your existing settings:
 
 ```toml
 [agents]
@@ -32,67 +43,32 @@ skill_suggestion_backend = "jev"
 enabled = true
 ```
 
-Browser `handoff` uses the selected provider when invoked. Its action validation,
-confidence gate, explicit tab scope and hand-back behavior remain unchanged.
+`JCODE_JEV_PROVIDER` overrides the shared provider. Browser handoff also retains
+its explicit `JCODE_BROWSER_JEV_PROVIDER` selector for `auto`, `jcode`,
+`openrouter`, `typesafe`, or `aimlapi`. That selector uses the upstream route's
+endpoint/model rather than shared overrides. See [browser handoff](BROWSER_FAST_AGENT.md).
 
-## Switch back to hosted TypeSafe
+Memory remains independent: `agents.memory_jev_provider` (default `auto`) and
+`JCODE_MEMORY_JEV_PROVIDER` select `auto`, `jcode`, `openrouter`, `typesafe`, or
+`aimlapi`. Auto prefers Jcode, then OpenRouter, TypeSafe, and AI/ML API credentials.
+Jcode subscription routes require live purpose-specific gateway entitlement.
+Using the same client does not make `[agents.jev]` control memory, nor enable
+arbitrary raw gateway choices for every consumer.
 
-```toml
-[agents.jev]
-provider = "typesafe"
-```
+## Reload, precedence, and failure behavior
 
-Remove local `base_url`, `model`, and `api_key_env` overrides when switching
-providers unless you deliberately want to retain them. Hosted defaults are
-`https://api.typesafe.ai/v1`, `jev-latest`, and `TYPESAFE_API_KEY` from the daemon
-environment or `~/.config/jcode/typesafe.env`. Keep credentials out of TOML and
-version control. A missing hosted key fails closed for the request, not into a
-local or alternate provider.
+After installing a changed binary, load it into the daemon once. Thereafter,
+config-file changes apply to new decisions through config metadata checks
+throttled to roughly 500 ms, without a daemon restart. An in-progress browser
+handoff retains its starting transport. Existing swarm workers retain their
+models. Environment changes require starting the server with the new environment.
 
-To retain the previous browser OpenRouter transport instead, select
-`provider = "openrouter"`. It uses OpenRouter's Decisions API, model
-`typesafe/jev-1.13`, and `OPENROUTER_API_KEY`/`openrouter.env`. This selection applies
-to all three Jev consumers, not just browser handoff.
+Legacy explicit skill endpoint/model/key settings remain consumer-specific
+overrides. Non-default swarm model and timeout values override shared settings;
+legacy defaults (`jev-latest` and 5000 ms) inherit shared settings. Shared provider
+selection alone does not enable skill suggestions or swarm routing.
 
-## Reload and precedence
-
-After installing the updated binary, load it into the daemon once. Thereafter,
-config-file provider changes are picked up for new decisions via Jcode's config
-cache (metadata checks are throttled to roughly 500 ms), without restarting the
-daemon. An in-progress browser handoff retains the transport it started with.
-Existing swarm workers retain their models. Environment changes still require
-starting the server with the new environment.
-
-Legacy explicit skill-suggestion endpoint/model/key settings are preserved as
-consumer-specific overrides. Non-default swarm model and timeout values override
-shared settings; legacy defaults (`jev-latest` and 5000 ms) inherit shared settings. Remove stale overrides
-when adopting a shared provider selection. Global provider selection alone does
-not enable skill suggestions or swarm routing.
-
-Local requests default to a longer 15-second budget because local candidate
-scoring can be slower for large skill catalogs. Request deadlines remain bounded.
-A failed skill decision produces no suggestion; a failed swarm decision uses the
-existing default/inheritance rules; a failed browser decision returns control.
-None of those fallbacks secretly sends a request to hosted Jev.
-
-## Local model limits and cache
-
-The local 2B server is independently trained and is not guaranteed to match
-hosted Jev quality or confidence calibration. Its configured input-token limit
-can reject large browser pages or conversation states. Keep candidate lists
-bounded. Do not lower browser safety thresholds just to force a local action.
-
-Prefix caching is a server-side Open-Jev setting, not a Jcode response cache.
-Inspect `metadata.prefix_cache` from a raw `/v1/systemone` response to verify
-actual reuse. Upstream marks CUDA prefix caching experimental because output
-probabilities can differ. Compare cached/uncached predictions on your hardware
-before enabling `--prefix-cache`; `--no-prefix-cache` is the safe upstream default.
-
-## Cross-request context reuse
-
-Open-Jev prefix caches are request-local: they reduce repeated prefix computation
-across candidates in one call, then are discarded. They do not provide a saved
-context ID for later routing calls. TypeSafe's public API also requires `state`
-and `questions` on each call and documents no persistent context handle. Reusing
-a stored routing template would require an application-side extension; that alone
-would save payload bytes, not establish GPU prefill reuse across requests.
+A failed skill decision produces no suggestion. A failed swarm decision uses
+existing default/inheritance rules. A failed browser decision returns control.
+These are application fallbacks, not silent requests to a different provider.
+Memory retains its independent selector and failure behavior through `JevClient`.
