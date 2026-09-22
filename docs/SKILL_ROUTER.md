@@ -1,4 +1,4 @@
-# Per-turn skill suggestion with TypeSafe Jev
+# Per-turn skill suggestion with Jev
 
 Opt-in per-turn routing that asks a TypeSafe System One decision model
 (Jev) which registered skill, if any, best fits the user's latest request,
@@ -9,6 +9,10 @@ routes *spawned agent models*, not skills.
 
 ## Enabling
 
+Select the shared provider in [Jev providers](JEV_PROVIDERS.md). Hosted TypeSafe
+is the default. Local Open-Jev needs no hosted API key and defaults to a 15-second
+request budget. The legacy override examples below apply to hosted TypeSafe.
+
 ```toml
 [agents]
 skill_suggestion_backend = "jev"          # default: "off"
@@ -18,7 +22,7 @@ skill_suggestion_backend = "jev"          # default: "off"
 # skill_suggestion_min_confidence = 0.6                       # default
 ```
 
-Requires a TypeSafe API key, resolved the same way as other TypeSafe-backed
+Hosted TypeSafe requires a TypeSafe API key, resolved the same way as other TypeSafe-backed
 features in jcode:
 
 1. The environment variable named by `skill_suggestion_api_key_env`
@@ -29,24 +33,17 @@ features in jcode:
    same file/loader used by [swarm model routing](SWARM_MODEL_ROUTER.md), so a
    key saved for that feature also covers skill suggestion.
 
-If no key is found, the feature does nothing (fails open) regardless of the
+In hosted mode, if no key is found, the feature does nothing (fails open) regardless of the
 `skill_suggestion_backend` setting.
 
 ## Endpoint
 
-Requests go directly to TypeSafe's System One endpoint, not through
-OpenRouter:
-
-```
-POST {skill_suggestion_base_url}/systemone
-```
-
-There is no separate `/decisions` path; `/systemone` is the only endpoint
-used.
-
-with `Authorization: Bearer {api_key}` and a `choice`-type question whose
-criteria are the registered skills' names and descriptions, plus an always
-offered `none` option so the model can abstain.
+Requests use the shared provider endpoint: `/v1/systemone` for TypeSafe/Open-Jev,
+or OpenRouter's Decisions API when explicitly selected. Legacy
+`skill_suggestion_base_url` overrides append `/systemone`. Hosted requests use
+`Authorization: Bearer {api_key}`; local requests omit auth unless an explicit
+local key variable is configured. The question is a `choice` whose criteria are
+the registered skill names and descriptions, plus an always-offered `none` option.
 
 ## What is sent, and when
 
@@ -67,7 +64,7 @@ offered `none` option so the model can abstain.
 
 Every fresh user turn performs a bounded async wait for a decision
 *before* the provider request for that turn is sent, up to an internal
-~1500ms timeout:
+~1500ms hosted timeout (local defaults to 15 seconds, configurable in `[agents.jev]`):
 
 - The router is invoked and the turn waits for an answer before the
   provider call is made. If it answers in time and clears

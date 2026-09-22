@@ -31,7 +31,9 @@ pub const INLINE_TIMEOUT: Duration = Duration::from_millis(1500);
 pub struct SkillRouterConfig {
     pub model: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: Option<String>,
+    pub endpoint: String,
+    pub timeout: Duration,
     pub min_confidence: f32,
 }
 
@@ -44,31 +46,23 @@ impl SkillRouterConfig {
         if !agents.skill_suggestion_backend.eq_ignore_ascii_case("jev") {
             return None;
         }
-        let key_env = agents
-            .skill_suggestion_api_key_env
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_API_KEY_ENV);
-        let api_key =
-            crate::provider_catalog::load_api_key_from_env_or_config(key_env, "typesafe.env")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())?;
+        let mut jev = agents.jev.clone();
+        for (target, source) in [
+            (&mut jev.model, &agents.skill_suggestion_model),
+            (&mut jev.base_url, &agents.skill_suggestion_base_url),
+            (&mut jev.api_key_env, &agents.skill_suggestion_api_key_env),
+        ] {
+            if let Some(value) = source.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                *target = Some(value.to_string());
+            }
+        }
+        let resolved = crate::jev::resolve_with_timeout(&jev, INLINE_TIMEOUT).ok()?;
         Some(Self {
-            model: agents
-                .skill_suggestion_model
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            base_url: agents
-                .skill_suggestion_base_url
-                .as_deref()
-                .map(|b| b.trim().trim_end_matches('/').to_string())
-                .filter(|b| !b.is_empty())
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key,
+            model: resolved.model,
+            base_url: resolved.endpoint.trim_end_matches("/systemone").to_string(),
+            endpoint: resolved.endpoint,
+            api_key: resolved.api_key,
+            timeout: resolved.timeout,
             min_confidence: agents
                 .skill_suggestion_min_confidence
                 .filter(|value| value.is_finite())
@@ -216,18 +210,17 @@ pub async fn decide(
     let body = build_request_json(&cfg.model, state, candidates);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(INLINE_TIMEOUT)
+        .timeout(cfg.timeout)
         .build()?;
-    let response = client
-        .post(format!("{}/systemone", cfg.base_url.trim_end_matches('/')))
-        .bearer_auth(&cfg.api_key)
-        .json(&body)
-        .send()
-        .await?;
+    let mut request = client.post(&cfg.endpoint).json(&body);
+    if let Some(key) = &cfg.api_key {
+        request = request.bearer_auth(key);
+    }
+    let response = request.send().await?;
     // Do not log remote error bodies, which may echo private request content.
     anyhow::ensure!(
         response.status().is_success(),
-        "TypeSafe request failed ({})",
+        "Jev request failed ({})",
         response.status()
     );
     let decision = parse_response(&response.text().await?)?;
@@ -300,7 +293,7 @@ pub async fn suggest(
         return None;
     }
     let started = Instant::now();
-    match tokio::time::timeout(INLINE_TIMEOUT, decide(cfg, &state, candidates)).await {
+    match tokio::time::timeout(cfg.timeout, decide(cfg, &state, candidates)).await {
         Ok(Ok(decision)) => {
             crate::logging::info(&format!(
                 "[skill-router] choice={} confidence={:.2} tokens={} in {}ms",
@@ -314,7 +307,7 @@ pub async fn suggest(
         }
         Ok(Err(_)) => {
             crate::logging::warn(
-                "[skill-router] TypeSafe request failed; continuing without suggestion",
+                "[skill-router] Jev request failed; continuing without suggestion",
             );
             None
         }
@@ -462,8 +455,10 @@ mod tests {
     fn test_cfg(base_url: String, api_key: &str) -> SkillRouterConfig {
         SkillRouterConfig {
             model: DEFAULT_MODEL.to_string(),
+            endpoint: format!("{base_url}/systemone"),
             base_url,
-            api_key: api_key.to_string(),
+            api_key: Some(api_key.to_string()),
+            timeout: INLINE_TIMEOUT,
             min_confidence: DEFAULT_MIN_CONFIDENCE,
         }
     }
@@ -775,7 +770,7 @@ mod tests {
         agents.skill_suggestion_backend = "jev".to_string();
 
         let cfg = SkillRouterConfig::from_agents(&agents).expect("config resolved from file");
-        assert_eq!(cfg.api_key, "file-backed-key");
+        assert_eq!(cfg.api_key.as_deref(), Some("file-backed-key"));
         assert_eq!(cfg.model, DEFAULT_MODEL);
         assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
         assert!((cfg.min_confidence - DEFAULT_MIN_CONFIDENCE).abs() < 1e-6);
@@ -797,10 +792,107 @@ mod tests {
         agents.skill_suggestion_min_confidence = Some(0.42);
 
         let cfg = SkillRouterConfig::from_agents(&agents).expect("config resolved");
-        assert_eq!(cfg.api_key, "env-backed-key");
+        assert_eq!(cfg.api_key.as_deref(), Some("env-backed-key"));
         assert_eq!(cfg.model, "jev-custom");
         assert_eq!(cfg.base_url, "https://example.invalid/v1");
         assert!((cfg.min_confidence - 0.42).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn local_provider_posts_systemone_without_hosted_auth() {
+        let _lock = crate::storage::lock_test_env();
+        let _key = EnvVarGuard::set("TYPESAFE_API_KEY", "must-not-leak");
+        let body = r#"{"answers":{"skill":{"type":"choice","choice":"pdf","confidence":0.9}}}"#;
+        let (base, rx) = spawn_mock_server(200, body.into());
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "openjev".into();
+        agents.jev.base_url = Some(base);
+        agents.jev.model = Some("local-model".into());
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        assert!(cfg.api_key.is_none());
+        assert_eq!(cfg.timeout, Duration::from_secs(15));
+        assert_eq!(
+            decide(&cfg, "read pdf", &cands()).await.unwrap().choice,
+            "pdf"
+        );
+        let request = rx.recv().unwrap();
+        assert!(request.starts_with("POST /v1/systemone "));
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert!(!request.contains("must-not-leak"));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["model"], "local-model");
+        assert_eq!(body["questions"]["skill"]["type"], "choice");
+    }
+
+    #[test]
+    fn local_skill_overrides_and_unknown_provider_are_respected() {
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "openjev".into();
+        agents.jev.model = Some("global-model".into());
+        agents.skill_suggestion_model = Some("skill-model".into());
+        agents.skill_suggestion_base_url = Some("http://localhost:8792/v1".into());
+        agents.jev.timeout_ms = Some(25);
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        assert_eq!(cfg.model, "skill-model");
+        assert_eq!(cfg.endpoint, "http://localhost:8792/v1/systemone");
+        assert_eq!(cfg.timeout, Duration::from_millis(25));
+        agents.jev.provider = "invalid".into();
+        assert!(SkillRouterConfig::from_agents(&agents).is_none());
+    }
+
+    #[tokio::test]
+    async fn local_suggest_uses_configured_outer_deadline() {
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "openjev".into();
+        agents.jev.base_url = Some(spawn_slow_server(Duration::from_secs(2)));
+        agents.jev.timeout_ms = Some(30);
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        let start = Instant::now();
+        assert!(
+            suggest(&cfg, &[Message::user("pdf")], &cands())
+                .await
+                .is_none()
+        );
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn local_suggest_is_not_cut_off_by_hosted_inline_deadline() {
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "openjev".into();
+        agents.jev.base_url = Some(spawn_slow_server(Duration::from_millis(1750)));
+        agents.jev.timeout_ms = Some(3000);
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        let start = Instant::now();
+        assert!(
+            suggest(&cfg, &[Message::user("pdf")], &cands())
+                .await
+                .is_none()
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(1700),
+            "local deadline must not use old 1500ms cap"
+        );
+        assert!(start.elapsed() < Duration::from_millis(3000));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Open-Jev listening at 127.0.0.1:8791"]
+    async fn live_openjev_skill_transport() {
+        let mut agents = crate::config::AgentsConfig::default();
+        agents.skill_suggestion_backend = "jev".into();
+        agents.jev.provider = "openjev".into();
+        let cfg = SkillRouterConfig::from_agents(&agents).unwrap();
+        assert!(cfg.api_key.is_none());
+        let decision = decide(&cfg, "User: Extract the text from a PDF document", &cands())
+            .await
+            .expect("local System One request succeeds");
+        assert!(["pdf", "gh", "none"].contains(&decision.choice.as_str()));
     }
 
     // ── Live integration test (ignored by default) ──────────────────────────

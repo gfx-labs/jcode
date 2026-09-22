@@ -1559,3 +1559,29 @@ fn config_reload_generation_increments_on_cache_invalidation() {
         "invalidate_config_cache must bump the reload generation ({before} -> {after})"
     );
 }
+
+#[test]
+fn jev_provider_config_and_env_hot_reload() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let prev_provider = std::env::var_os("JCODE_JEV_PROVIDER");
+    let dir = tempfile::TempDir::new().unwrap();
+    crate::env::set_var("JCODE_HOME", dir.path());
+    crate::env::remove_var("JCODE_JEV_PROVIDER");
+    Config::invalidate_cache();
+    let path = Config::path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "[agents.jev]\nprovider = \"typesafe\"\n").unwrap();
+    assert_eq!(crate::config::config().agents.jev.provider, "typesafe");
+    std::fs::write(&path, "[agents.jev]\nprovider = \"openjev\"\nmodel = \"local-model\"\n").unwrap();
+    let cfg = crate::config::config();
+    assert_eq!(cfg.agents.jev.provider, "openjev");
+    assert_eq!(cfg.agents.jev.model.as_deref(), Some("local-model"));
+    crate::env::set_var("JCODE_JEV_PROVIDER", "invalid-provider");
+    let cfg = crate::config::config();
+    assert_eq!(cfg.agents.jev.provider, "invalid-provider");
+    assert!(crate::jev::resolve(&cfg.agents.jev).is_err());
+    restore_env_var("JCODE_JEV_PROVIDER", prev_provider);
+    restore_env_var("JCODE_HOME", prev_home);
+    Config::invalidate_cache();
+}

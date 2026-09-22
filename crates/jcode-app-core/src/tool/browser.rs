@@ -21,7 +21,7 @@ impl BrowserTool {
 }
 
 fn browser_tool_description_text() -> &'static str {
-    "Control the browser. Check action='status' first; run setup only if not ready. Prefer action='handoff' for multi-step tasks: the fast Jev/OpenRouter browser agent acts in an explicit tab and returns done or uncertain hand_back. Supply a goal and tab_id. A hand_back with requested_help=script/text asks the main agent to supply exact action candidates/text_values and resume handoff. Use direct actions when needed."
+    "Control the browser. Check action='status' first; run setup only if not ready. Prefer action='handoff' for multi-step tasks: the fast configurable Jev browser agent acts in an explicit tab and returns done or uncertain hand_back. Supply a goal and tab_id. A hand_back with requested_help=script/text asks the main agent to supply exact action candidates/text_values and resume handoff. Use direct actions when needed."
 }
 
 #[derive(Debug, Default, Deserialize)]

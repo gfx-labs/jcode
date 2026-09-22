@@ -728,6 +728,9 @@ impl Config {
         }
 
         // Skill suggestion (decision-model router)
+        if let Ok(v) = std::env::var("JCODE_JEV_PROVIDER") {
+            self.agents.jev.provider = v.trim().to_string();
+        }
         if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_BACKEND") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {

@@ -1,4 +1,4 @@
-//! OpenRouter's typed Decisions API, intentionally separate from chat completions.
+//! Configurable Jev typed decisions, intentionally separate from chat completions.
 //! Jev selects an existing browser action. It never generates executable arguments.
 use super::{Decision, DecisionRequest, DecisionTransport};
 use anyhow::{Context, Result, bail, ensure};
@@ -7,37 +7,36 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::time::Duration;
 
-const ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
-const MODEL: &str = "typesafe/jev-1.13";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_REQUEST_BYTES: usize = 80 * 1024;
 
 pub(super) struct JevTransport {
     client: reqwest::Client,
-    api_key: String,
+    settings: crate::jev::ResolvedJev,
 }
 
 impl JevTransport {
     pub(super) fn new() -> Result<Self> {
-        // Do not use the shared OpenAI-compatible slot: it may hold a different
-        // provider's credential. This endpoint must only receive an OpenRouter key.
-        let api_key = crate::provider_catalog::load_api_key_from_env_or_config(
-            "OPENROUTER_API_KEY",
-            "openrouter.env",
+        let settings = crate::jev::resolve_with_timeout(
+            &crate::config::config().agents.jev,
+            Duration::from_secs(25),
         )
-        .filter(|key| !key.trim().is_empty())
-        .context("Fast browser handoff needs OpenRouter. Connect it with `jcode login openrouter`; direct browser actions remain available.")?;
+            .context("Fast browser handoff needs a configured Jev provider; direct browser actions remain available")?;
+        Self::from_settings(settings)
+    }
+
+    fn from_settings(settings: crate::jev::ResolvedJev) -> Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(25))
+            .timeout(settings.timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("Could not initialize the Jev decision client")?;
-        Ok(Self { client, api_key })
+        Ok(Self { client, settings })
     }
 }
 
-fn request_body(request: &DecisionRequest) -> Result<Value> {
+fn request_body(request: &DecisionRequest, model: &str) -> Result<Value> {
     ensure!(
         !request.goal.trim().is_empty(),
         "Browser handoff goal is empty"
@@ -105,7 +104,7 @@ fn request_body(request: &DecisionRequest) -> Result<Value> {
         ),
     );
     let body = json!({
-        "model": MODEL,
+        "model": model,
         "state": serde_json::to_string(&state)?,
         "questions": {
             "action": {"type": "choice", "instructions": instructions, "criteria": criteria}
@@ -190,18 +189,16 @@ fn parse_decision(value: &Value, request: &DecisionRequest) -> Result<Decision> 
 #[async_trait]
 impl DecisionTransport for JevTransport {
     fn model(&self) -> &str {
-        MODEL
+        &self.settings.model
     }
 
     async fn decide(&self, request: &DecisionRequest) -> Result<Decision> {
-        let body = request_body(request)?;
-        let mut response = self
-            .client
-            .post(ENDPOINT)
-            .bearer_auth(&self.api_key)
-            .header("HTTP-Referer", "https://jcode.sh")
-            .header("X-Title", "Jcode Fast Browser")
-            .json(&body)
+        let body = request_body(request, &self.settings.model)?;
+        let mut builder = self.client.post(&self.settings.endpoint).json(&body);
+        if let Some(key) = &self.settings.api_key {
+            builder = builder.bearer_auth(key);
+        }
+        let mut response = builder
             .send()
             .await
             // Do not echo provider response bodies or requests. They may contain
@@ -214,10 +211,10 @@ impl DecisionTransport for JevTransport {
         let status = response.status();
         if !status.is_success() {
             let hint = match status.as_u16() {
-                401 | 403 => "check OpenRouter credentials and Jev access",
-                402 => "OpenRouter credits or the key's usage limit are exhausted",
+                401 | 403 => "check the selected Jev provider credentials and access",
+                402 => "provider credits or the key's usage limit are exhausted",
                 429 | 529 => "Jev is rate limited or overloaded; try again later",
-                _ => "the OpenRouter Decisions API is unavailable or rejected the request",
+                _ => "the selected Jev endpoint is unavailable or rejected the request",
             };
             bail!("Jev returned HTTP {}: {}", status.as_u16(), hint);
         }
@@ -286,9 +283,8 @@ mod tests {
 
     #[test]
     fn uses_decisions_protocol_not_chat_completions() {
-        let body = request_body(&request()).unwrap();
-        assert_eq!(ENDPOINT, "https://openrouter.ai/api/alpha/decisions");
-        assert_eq!(body["model"], "typesafe/jev-1.13");
+        let body = request_body(&request(), "jev-latest").unwrap();
+        assert_eq!(body["model"], "jev-latest");
         assert_eq!(body["questions"]["action"]["type"], "choice");
         assert!(body["state"].is_string());
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
@@ -305,6 +301,85 @@ mod tests {
                 .unwrap()
                 .contains("untrusted")
         );
+    }
+
+    #[tokio::test]
+    async fn configured_endpoint_model_and_optional_auth_are_used() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for key in [None, Some("explicit-test-key".to_string())] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+            let expected_key = key.clone();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let (header, body) = loop {
+                    let mut chunk = [0u8; 4096];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let header = String::from_utf8(bytes[..end].to_vec()).unwrap();
+                        let size: usize = header
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if bytes.len() >= end + 4 + size {
+                            break (header, bytes[end + 4..end + 4 + size].to_vec());
+                        }
+                    }
+                };
+                assert!(header.starts_with("POST /v1/systemone "));
+                if let Some(key) = expected_key {
+                    assert!(
+                        header
+                            .to_lowercase()
+                            .contains(&format!("authorization: bearer {key}"))
+                    );
+                } else {
+                    assert!(!header.to_lowercase().contains("authorization:"));
+                }
+                let body: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["model"], "open-jev");
+                assert_eq!(body["questions"]["action"]["type"], "choice");
+                let body = response().to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            });
+            let transport = JevTransport::from_settings(crate::jev::ResolvedJev {
+                endpoint,
+                model: "open-jev".into(),
+                api_key: key,
+                timeout: Duration::from_secs(5),
+            })
+            .unwrap();
+            assert_eq!(transport.model(), "open-jev");
+            let result =
+                tokio::time::timeout(Duration::from_secs(10), transport.decide(&request()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(result.choice, "a0");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires local Open-Jev at 127.0.0.1:8791; makes no hosted request"]
+    async fn live_openjev_browser_decision() {
+        let settings = crate::jev::resolve(&crate::config::JevConfig {
+            provider: "openjev".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(settings.api_key.is_none());
+        let transport = JevTransport::from_settings(settings).unwrap();
+        let decision = transport.decide(&request()).await.unwrap();
+        assert!(["a0", "done", "hand_back"].contains(&decision.choice.as_str()));
+        assert!((0.0..=1.0).contains(&decision.confidence));
     }
 
     #[test]
@@ -342,20 +417,20 @@ mod tests {
     fn request_bounds_and_mandatory_handback_are_enforced() {
         let mut req = request();
         req.options.pop();
-        assert!(request_body(&req).is_err());
+        assert!(request_body(&req, "jev-latest").is_err());
         let mut req = request();
         req.options.push(DecisionOption {
             id: "a0".into(),
             label: "duplicate".into(),
         });
-        assert!(request_body(&req).is_err());
+        assert!(request_body(&req, "jev-latest").is_err());
         let mut req = request();
         req.observation = json!({"text":"x".repeat(MAX_REQUEST_BYTES)});
-        assert!(request_body(&req).is_err());
+        assert!(request_body(&req, "jev-latest").is_err());
     }
 
     #[tokio::test]
-    #[ignore = "requires OpenRouter credentials and makes one small paid Jev request"]
+    #[ignore = "requires configured Jev provider and performs a live request"]
     async fn live_jev_decision_smoke() {
         let transport = JevTransport::new().unwrap();
         let decision = transport.decide(&request()).await.unwrap();

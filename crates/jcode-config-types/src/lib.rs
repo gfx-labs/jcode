@@ -538,10 +538,39 @@ pub struct AuthConfig {
     pub trusted_external_source_paths: Vec<String>,
 }
 
+/// Shared System One connection settings for all Jev consumers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct JevConfig {
+    /// `typesafe` (hosted, default), `openjev` (local), or `openrouter`. Unknown values fail closed.
+    pub provider: String,
+    /// API root, `/v1` base, or full `/systemone` endpoint.
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    /// Explicit credential variable. Local mode never reads hosted credential files.
+    pub api_key_env: Option<String>,
+    /// Request deadline, clamped to 1..=30000 ms. Local default is 15000 ms.
+    pub timeout_ms: Option<u64>,
+}
+
+impl Default for JevConfig {
+    fn default() -> Self {
+        Self {
+            provider: "typesafe".into(),
+            base_url: None,
+            model: None,
+            api_key_env: None,
+            timeout_ms: None,
+        }
+    }
+}
+
 /// Agent-specific model defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentsConfig {
+    /// Shared Jev provider configuration, reloaded with the config file.
+    pub jev: JevConfig,
     /// Optional default model override for spawned swarm/subagent sessions.
     ///
     /// Leave unset (or use `"inherit"` / `"coordinator"`) to have spawned swarm
@@ -704,6 +733,7 @@ fn default_memory_rerank_min_agree() -> usize {
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
+            jev: JevConfig::default(),
             swarm_model: None,
             swarm_router: SwarmRouterConfig::default(),
             swarm_effort: None,
@@ -1681,5 +1711,20 @@ mod reasoning_display_defaults_tests {
         display.set_reasoning_display(ReasoningDisplayMode::Off);
         assert!(display.has_explicit_reasoning_display());
         assert!(!display.show_thinking);
+    }
+}
+
+#[cfg(test)]
+mod jev_config_tests {
+    use super::*;
+    #[test]
+    fn legacy_agents_and_partial_jev_config_are_serde_compatible() {
+        let legacy: AgentsConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.jev, JevConfig::default());
+        let local: AgentsConfig = serde_json::from_str(r#"{"jev":{"provider":"openjev"}}"#).unwrap();
+        assert_eq!(local.jev.provider, "openjev");
+        assert!(local.jev.timeout_ms.is_none());
+        let roundtrip: AgentsConfig = serde_json::from_value(serde_json::to_value(&local).unwrap()).unwrap();
+        assert_eq!(roundtrip.jev, local.jev);
     }
 }

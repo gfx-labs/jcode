@@ -497,7 +497,7 @@ swarm_max_concurrent_agents = 32
 # memory_embedding_dim = 1536
 
 # Optional task-aware model selection for newly spawned swarm workers.
-# Sends the assigned task (not the conversation) to TypeSafe. Requires
+# Sends the assigned task (not the conversation) to the selected Jev provider. Hosted TypeSafe requires
 # TYPESAFE_API_KEY in the server environment or ~/.config/jcode/typesafe.env
 # (mode 0600). Explicit model overrides win.
 # Missing credentials, invalid answers, and API failures fall back to
@@ -513,7 +513,7 @@ swarm_max_concurrent_agents = 32
 # "openai-oauth:gpt-6-astra" = "Preferred for architecture and hard debugging."
 
 # Optional per-turn skill suggestion. Opt-in: off by default. When set to
-# "jev", each fresh user turn asks a TypeSafe System One decision model
+# "jev", each fresh user turn asks the configured Jev decision model
 # directly (POST {base_url}/systemone) which registered skill best fits the
 # request, injecting that skill's prompt when confident enough. Routing is a
 # bounded async wait performed before the provider request is sent. Requires
@@ -525,6 +525,19 @@ swarm_max_concurrent_agents = 32
 # skill_suggestion_base_url = "https://api.typesafe.ai/v1"
 # skill_suggestion_api_key_env = "TYPESAFE_API_KEY"
 # skill_suggestion_min_confidence = 0.6
+
+# Shared Jev provider for skill suggestions, swarm routing, and browser handoff.
+# Config-file changes hot reload for new decisions. Environment changes need a new server.
+# Default hosted TypeSafe requires TYPESAFE_API_KEY/typesafe.env. Local Open-Jev
+# does not implicitly read or send hosted credentials and never falls back to hosted Jev.
+# [agents.jev]
+# provider = "typesafe" # "typesafe", "openjev", or "openrouter"
+# For local mode set provider = "openjev"; optional overrides:
+# base_url = "http://127.0.0.1:8791/v1"
+# model = "jev-latest"
+# timeout_ms = 15000 # local default; maximum 30000
+# api_key_env = "LOCAL_JEV_TOKEN" # only for an authenticated local proxy
+# Env override: JCODE_JEV_PROVIDER. See docs/JEV_PROVIDERS.md.
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.

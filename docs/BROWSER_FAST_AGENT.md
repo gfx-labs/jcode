@@ -2,8 +2,8 @@
 
 The shared app-core browser tool supports `action: "handoff"`. The normal agent
 supplies the goal, an explicit tab, optional exact actions, and any exact typing
-values. A bounded controller uses OpenRouter's typed Decisions API with
-`typesafe/jev-1.13` to choose an offered action ID, `done`, `hand_back`,
+values. A bounded controller uses the [configured Jev provider](JEV_PROVIDERS.md)
+(hosted TypeSafe, local Open-Jev, or OpenRouter) to choose an offered action ID, `done`, `hand_back`,
 `script_needed`, or `text_needed`. Jev is the fast general-purpose classifier.
 The main LLM supplies generated code or text only when asked, then hands the
 next stretch back to Jev. Jev never generates executable browser arguments.
@@ -15,13 +15,12 @@ runtime, so Desktop and the TUI use the same controller.
 ## Setup
 
 Check `browser` with `action: "status"` first and run setup only if not ready.
-Connect OpenRouter using `jcode login openrouter`. The controller reads
-`OPENROUTER_API_KEY` or the owner-only `~/.config/jcode/openrouter.env` file,
-never a different OpenAI-compatible provider's credential.
-
-Jev uses `POST https://openrouter.ai/api/alpha/decisions`, not chat completions.
-Its requests use OpenRouter credits and honor the key's usage cap. Jcode does
-not buy credits or switch your main coding model.
+Select a provider with `[agents.jev]` as described in [Jev providers](JEV_PROVIDERS.md).
+The default is TypeSafe (`TYPESAFE_API_KEY` or `typesafe.env`). For local inference,
+set `provider = "openjev"`; no hosted credentials are needed or implicitly sent.
+For the previous OpenRouter transport, set `provider = "openrouter"` and connect
+with `jcode login openrouter`. All modes use typed decisions, not chat completions.
+Jcode does not buy credits or switch your main coding model.
 
 ## Interface and control boundary
 
@@ -78,7 +77,7 @@ page title." Do not repeat a request for a missing script once it is supplied.
 Candidate results and screenshots return to the parent. Jev is text-only and
 does not receive screenshot pixels or arbitrary action-result payloads. Known
 credential patterns are redacted, but this is not a complete secret detector.
-Do not delegate confidential page content you do not want sent to OpenRouter
+Do not delegate confidential page content you do not want sent to the selected Jev provider
 and TypeSafe. A screenshot returned to the parent cannot be text-redacted.
 
 An uncertain in-flight action must not be blindly retried: cancellation
@@ -102,7 +101,7 @@ isolated runtime directory and home. Never reuse a user session ID.
 The caller must prepare a disposable local fixture tab and an existing dedicated
 `BROWSER_SESSION`. Without that environment variable, the bridge can create an
 agent browser session/window automatically. The commands below do not create
-browser tabs. They assume `OPENROUTER_API_KEY` is already available in the
+browser tabs. For hosted mode they assume the selected provider key is available in the
 process environment, without putting its value in shell history or logs.
 
 ```bash
@@ -113,7 +112,14 @@ export JCODE_HOME="$(mktemp -d "$JCODE_SCRATCH_DIR/browser-fast-home.XXXXXX")"
 export JCODE_RUNTIME_DIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/jbf.XXXXXX")"
 SOCK="$JCODE_RUNTIME_DIR/jcode-browser-fast.sock"
 cp -a "$REAL_JCODE_HOME/browser" "$JCODE_HOME/browser"
-: "${OPENROUTER_API_KEY:?Provide OpenRouter credentials through the process environment}"
+# Choose the provider for the isolated daemon, default hosted TypeSafe.
+export JCODE_JEV_PROVIDER="${JCODE_JEV_PROVIDER:-typesafe}"
+case "$JCODE_JEV_PROVIDER" in
+  typesafe) : "${TYPESAFE_API_KEY:?Provide TypeSafe credentials through the process environment}" ;;
+  openrouter) : "${OPENROUTER_API_KEY:?Provide OpenRouter credentials through the process environment}" ;;
+  openjev) ;; # keyless loopback server must already be running
+  *) echo "Unsupported Jev provider" >&2; exit 1 ;;
+esac
 : "${BROWSER_SESSION:?Use the existing dedicated fixture browser session}"
 : "${JCODE_BROWSER_HANDOFF_TEST_TAB_ID:?Use a disposable local fixture tab}"
 
