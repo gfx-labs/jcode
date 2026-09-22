@@ -162,11 +162,24 @@ async fn handle(
     } else {
         "application/json"
     };
+    let persistent = sse && (method == "tools/list" || method == "tools/call");
+    let framing = if persistent {
+        "Transfer-Encoding: chunked".to_owned()
+    } else {
+        format!("Content-Length: {}", payload.len())
+    };
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-        payload.len()
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{extra}{framing}\r\nConnection: close\r\n\r\n"
     );
     let _ = stream.write_all(response.as_bytes()).await;
+    if persistent {
+        // One valid chunk, intentionally no terminating zero chunk or EOF.
+        let _ = stream
+            .write_all(format!("{:x}\r\n{payload}\r\n", payload.len()).as_bytes())
+            .await;
+    } else {
+        let _ = stream.write_all(payload.as_bytes()).await;
+    }
     if method == "notifications/initialized" {
         initialized_complete.store(true, Ordering::SeqCst);
     }
