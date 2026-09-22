@@ -3,24 +3,47 @@
 The shared app-core browser tool supports `action: "handoff"`. The normal agent
 supplies the goal, an explicit tab, optional exact actions, and any exact typing
 values. A bounded controller uses the [configured Jev provider](JEV_PROVIDERS.md)
-(hosted TypeSafe, local Open-Jev, or OpenRouter) to choose an offered action ID, `done`, `hand_back`,
+(hosted TypeSafe, local Open-Jev, or OpenRouter), or an explicitly selected
+subscription/BYOK route, to choose an offered action ID, `done`, `hand_back`,
 `script_needed`, or `text_needed`. Jev is the fast general-purpose classifier.
 The main LLM supplies generated code or text only when asked, then hands the
 next stretch back to Jev. Jev never generates executable browser arguments.
 
-This is the preferred multi-step browser path in the tool description. Direct
-browser actions remain available. The implementation lives in the shared
+This is the default browser-task path in both the tool description and action
+schema. Direct actions remain available for setup, tab discovery/creation, and
+tasks handoff cannot complete. The implementation lives in the shared
 runtime, so Desktop and the TUI use the same controller.
 
 ## Setup
 
 Check `browser` with `action: "status"` first and run setup only if not ready.
-Select a provider with `[agents.jev]` as described in [Jev providers](JEV_PROVIDERS.md).
-The default is TypeSafe (`TYPESAFE_API_KEY` or `typesafe.env`). For local inference,
-set `provider = "openjev"`; no hosted credentials are needed or implicitly sent.
-For the previous OpenRouter transport, set `provider = "openrouter"` and connect
-with `jcode login openrouter`. All modes use typed decisions, not chat completions.
-Jcode does not buy credits or switch your main coding model.
+By default, the browser honors `[agents.jev]`, including the `JCODE_JEV_PROVIDER` override,
+as described in [Jev providers](JEV_PROVIDERS.md). The default provider is TypeSafe
+(`TYPESAFE_API_KEY` or `typesafe.env`). Set `provider = "openjev"` for local
+inference without hosted credentials. Endpoint, model, explicit credential variable,
+and timeout overrides remain supported. Invalid configuration fails closed.
+
+For subscription access, sign in with `jcode account login` and explicitly set
+`JCODE_BROWSER_JEV_PROVIDER=jcode` (or `auto` for subscription-first selection).
+The subscription route verifies the live `/v1/me`
+`browser_jev` capability, then sends bounded choice requests to `/v1/decisions`.
+This requires the gateway browser rollout and its upstream service configuration.
+A saved login alone is not proof of entitlement or deployed support.
+
+`JCODE_BROWSER_JEV_PROVIDER` can explicitly select `jcode`, `openrouter`,
+`typesafe`, or `aimlapi`, or select `auto`: Jcode, then OpenRouter, TypeSafe,
+and AI/ML API, choosing the first configured credential. When set, this explicit
+browser-only selector takes precedence over `[agents.jev]` and uses the selected
+route's fixed endpoint/model, not shared endpoint overrides. When unset, shared
+configuration remains authoritative, so a local deployment never silently opts
+into hosted auto selection. This setting is separate from memory's Jev provider.
+An entitlement, billing, or network error never silently switches to a personal paid key. Direct browser actions remain available.
+
+For OpenRouter BYOK, connect using `jcode login openrouter`. Credentials remain
+bound to the selected provider, never the shared OpenAI-compatible credential.
+The OpenRouter route uses `POST https://openrouter.ai/api/alpha/decisions`, not
+chat completions, and uses that key's credits and cap. Jcode does not buy credits
+or switch your main coding model.
 
 ## Interface and control boundary
 
@@ -40,7 +63,9 @@ Jcode does not buy credits or switch your main coding model.
 
 - `tab_id` and a nonempty `goal` are required. Frame 0 is the default.
   `window_id`, when supplied, is checked against the selected tab.
-- `max_steps` defaults to 12 and must be 1 through 30. The controller has a
+- `context` is optional trusted task background and completion criteria (up to
+  12,000 characters). Page evidence never overrides it.
+- `max_steps` defaults to 40 and must be 1 through 100. The controller has a
   180-second wall-clock budget. `timeout_ms` controls individual operations,
   defaults to 20,000, and is clamped to 1 through 60,000 milliseconds and the
   remaining total budget.
@@ -64,7 +89,10 @@ Every decision receives a fresh bounded DOM observation. Before execution or
 accepting `done`, the controller observes again and hands back if the observed
 DOM changed. Observations include node identities and scroll position. The
 result contains `status`, `reason`, `requested_help`, `action_trace`,
-`final_observation`, and `model`. A help choice returns `status: "hand_back"`
+`final_observation`, and `model`. When the transport is configured,
+`decision_provider` records its selected route (`jcode` for subscription).
+This route field alone is not proof of a successful upstream request.
+A help choice returns `status: "hand_back"`
 with `requested_help: "script"` or `"text"`. The parent reads the goal and page
 observation, supplies a trusted exact `eval`/other action in `candidates` or the
 needed `text_values`, then invokes handoff again. Other handbacks use
@@ -77,8 +105,9 @@ page title." Do not repeat a request for a missing script once it is supplied.
 Candidate results and screenshots return to the parent. Jev is text-only and
 does not receive screenshot pixels or arbitrary action-result payloads. Known
 credential patterns are redacted, but this is not a complete secret detector.
-Do not delegate confidential page content you do not want sent to the selected Jev provider
-and TypeSafe. A screenshot returned to the parent cannot be text-redacted.
+Do not delegate confidential page content you do not want sent to the selected
+provider and its upstream Jev service. Subscription requests also pass through
+the Jcode gateway. A screenshot returned to the parent cannot be text-redacted.
 
 An uncertain in-flight action must not be blindly retried: cancellation
 or a timeout cannot undo an action already delivered to Firefox.
@@ -112,7 +141,9 @@ export JCODE_HOME="$(mktemp -d "$JCODE_SCRATCH_DIR/browser-fast-home.XXXXXX")"
 export JCODE_RUNTIME_DIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/jbf.XXXXXX")"
 SOCK="$JCODE_RUNTIME_DIR/jcode-browser-fast.sock"
 cp -a "$REAL_JCODE_HOME/browser" "$JCODE_HOME/browser"
-# Choose the provider for the isolated daemon, default hosted TypeSafe.
+# Choose the shared provider for the isolated daemon, default hosted TypeSafe.
+# Unset the browser-only override so this check measures the selected shared route.
+unset JCODE_BROWSER_JEV_PROVIDER
 export JCODE_JEV_PROVIDER="${JCODE_JEV_PROVIDER:-typesafe}"
 case "$JCODE_JEV_PROVIDER" in
   typesafe) : "${TYPESAFE_API_KEY:?Provide TypeSafe credentials through the process environment}" ;;
@@ -155,6 +186,19 @@ this shell and can expire when its owner exits. Do not run shared-server stop,
 reload, or promotion commands to clean up an acceptance daemon.
 
 ## Opt-in live tests
+
+To verify subscription access without accidentally measuring BYOK:
+
+```bash
+JCODE_BROWSER_JEV_PROVIDER=jcode cargo test -p jcode-app-core \
+  live_subscription_jev_decision_smoke -- --ignored --nocapture
+```
+
+This test refuses any non-Jcode route and requires a real typed decision. For
+fresh-session default selection and paired latency measurement, see
+`scripts/benchmark_browser_handoff.md`. Use the newly built binary and validate
+both completion and the recorded provider before attributing timings to the
+subscription route. BYOK results do not establish subscription availability.
 
 Run `python3 scripts/browser_handoff_fixture.py` to serve the disposable pages
 on an ephemeral loopback port. It never opens a browser or reads credentials.

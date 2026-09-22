@@ -58,6 +58,8 @@ fn smoothness_benchmark_simulated_streaming_turn_stays_within_budget() {
     // the render-state lock must be taken inside it. Taking it first deadlocked
     // the suite against every env-then-render test (ABBA).
     with_reasoning_current_home(|| {
+    // The home helper takes the env lock. Keep env -> render ordering while
+    // holding the render guard for the entire benchmark, not only app setup.
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.session.short_name = Some("test".to_string());

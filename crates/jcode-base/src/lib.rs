@@ -53,6 +53,7 @@ pub mod mcp;
 pub mod memory;
 pub mod memory_agent;
 pub mod memory_graph;
+pub mod memory_jev;
 pub mod memory_judge_metrics;
 pub mod memory_log;
 pub mod memory_rerank;
@@ -98,6 +99,8 @@ pub mod todo;
 pub mod transport;
 pub mod usage;
 pub mod util;
+pub mod voice;
+pub mod voice_intent;
 #[cfg(not(feature = "embeddings"))]
 pub use embedding_stub as embedding;
 pub use jcode_core::{terminal_eprint, terminal_eprintln, terminal_print, terminal_println};

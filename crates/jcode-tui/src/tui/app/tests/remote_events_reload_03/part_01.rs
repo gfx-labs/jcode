@@ -652,12 +652,14 @@ fn test_handle_server_event_history_restores_side_panel_snapshot() {
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
     let side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("plan".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "plan".to_string(),
             title: "Plan".to_string(),
             file_path: "/tmp/plan.md".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "# Plan\n```mermaid\nflowchart LR\nA-->B\n```".to_string(),
             updated_at_ms: 1,
@@ -778,12 +780,14 @@ fn test_handle_server_event_side_panel_state_updates_snapshot() {
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
 
     app.side_panel = crate::side_panel::SidePanelSnapshot {
+        focus_revision: 0,
         focused_page_id: Some("old".to_string()),
         pages: vec![crate::side_panel::SidePanelPage {
             id: "old".to_string(),
             title: "Old".to_string(),
             file_path: "/tmp/old.md".to_string(),
             format: crate::side_panel::SidePanelPageFormat::Markdown,
+            pdf_data: None,
             source: crate::side_panel::SidePanelPageSource::Managed,
             content: "old".to_string(),
             updated_at_ms: 1,
@@ -794,12 +798,14 @@ fn test_handle_server_event_side_panel_state_updates_snapshot() {
     app.handle_server_event(
         crate::protocol::ServerEvent::SidePanelState {
             snapshot: crate::side_panel::SidePanelSnapshot {
+                focus_revision: 0,
                 focused_page_id: Some("new".to_string()),
                 pages: vec![crate::side_panel::SidePanelPage {
                     id: "new".to_string(),
                     title: "New".to_string(),
                     file_path: "/tmp/new.md".to_string(),
                     format: crate::side_panel::SidePanelPageFormat::Markdown,
+                    pdf_data: None,
                     source: crate::side_panel::SidePanelPageSource::Managed,
                     content: "# New".to_string(),
                     updated_at_ms: 2,
