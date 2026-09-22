@@ -190,13 +190,13 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
     // A one-second token is expired by the 60-second refresh margin. Connecting
     // through the public transport must refresh before initialize and send only
     // the renewed bearer to the MCP endpoint.
-    let mut client = tokio::time::timeout(
+    let client = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         McpClient::connect("fixture".into(), &config),
     )
     .await
     .unwrap();
-    let client = client.expect("refresh should authenticate initialize and list tools");
+    let mut client = client.expect("refresh should authenticate initialize and list tools");
     assert!(client.tools().is_empty());
     assert!(
         bearer_observed.load(std::sync::atomic::Ordering::SeqCst),
