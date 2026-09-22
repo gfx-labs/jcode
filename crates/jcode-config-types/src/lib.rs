@@ -681,24 +681,14 @@ pub struct AgentsConfig {
 
     /// Per-turn skill suggestion backend: `"off"` (default) or `"jev"`.
     /// With `"jev"`, each fresh user turn asks a TypeSafe System One decision
-    /// model (via an OpenRouter-style `/decisions` endpoint) which registered
-    /// skill best fits the request, and injects that skill's prompt when the
-    /// answer is confident enough. Env: `JCODE_SKILL_SUGGESTION_BACKEND`.
+    /// model which registered skill best fits the request, and injects that
+    /// skill's prompt when the answer is confident enough.
+    /// Env: `JCODE_SKILL_SUGGESTION_BACKEND`.
+    ///
+    /// Provider routing, credentials and endpoint come from the shared Jev
+    /// client, selected by `JCODE_SKILL_JEV_PROVIDER` (default `auto`).
     #[serde(default = "default_skill_suggestion_backend")]
     pub skill_suggestion_backend: String,
-    /// Decision model slug. Unset = `typesafe/jev-1.13` (OpenRouter's decisions
-    /// endpoint does not resolve the `jev-latest` alias).
-    /// Env: `JCODE_SKILL_SUGGESTION_MODEL`.
-    #[serde(default)]
-    pub skill_suggestion_model: Option<String>,
-    /// Base URL of the decisions API (no trailing slash). Unset =
-    /// `https://openrouter.ai/api/alpha`. Env: `JCODE_SKILL_SUGGESTION_BASE_URL`.
-    #[serde(default)]
-    pub skill_suggestion_base_url: Option<String>,
-    /// Environment variable holding the bearer key. Unset = `OPENROUTER_API_KEY`.
-    /// Env: `JCODE_SKILL_SUGGESTION_API_KEY_ENV`.
-    #[serde(default)]
-    pub skill_suggestion_api_key_env: Option<String>,
     /// Minimum decision confidence (0.0-1.0) before a suggested skill is
     /// injected. Unset = 0.6. Env: `JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE`.
     #[serde(default)]
@@ -765,9 +755,6 @@ impl Default for AgentsConfig {
             memory_embedding_dim: None,
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
             skill_suggestion_backend: default_skill_suggestion_backend(),
-            skill_suggestion_model: None,
-            skill_suggestion_base_url: None,
-            skill_suggestion_api_key_env: None,
             skill_suggestion_min_confidence: None,
         }
     }

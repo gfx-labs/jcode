@@ -11,6 +11,7 @@ use std::time::Duration;
 
 const PROVIDER_ENV: &str = "JCODE_MEMORY_JEV_PROVIDER";
 const BROWSER_PROVIDER_ENV: &str = "JCODE_BROWSER_JEV_PROVIDER";
+const SKILL_PROVIDER_ENV: &str = "JCODE_SKILL_JEV_PROVIDER";
 const MAX_REQUEST_BYTES: usize = 80 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_ME_BYTES: usize = 16 * 1024;
@@ -20,6 +21,7 @@ const MAX_QUESTIONS: usize = 24;
 enum JevPurpose {
     Memory,
     Browser,
+    Skill,
 }
 
 impl JevPurpose {
@@ -27,6 +29,7 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory",
             Self::Browser => "browser",
+            Self::Skill => "skill",
         }
     }
 
@@ -34,6 +37,7 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory_jev",
             Self::Browser => "browser_jev",
+            Self::Skill => "skill_jev",
         }
     }
 
@@ -45,12 +49,13 @@ impl JevPurpose {
         let key = match self {
             Self::Memory => PROVIDER_ENV,
             Self::Browser => BROWSER_PROVIDER_ENV,
+            Self::Skill => SKILL_PROVIDER_ENV,
         };
         match env(key) {
             Ok(value) => Ok(value),
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
-                Self::Browser => "auto".into(),
+                Self::Browser | Self::Skill => "auto".into(),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
         }
@@ -131,6 +136,17 @@ impl JevClient {
     /// subscription-first auto selection. Evaluation never changes accounts.
     pub fn for_browser() -> Result<Self> {
         Self::for_purpose(JevPurpose::Browser)
+    }
+
+    /// Skill routing is independent of memory configuration and defaults to
+    /// subscription-first auto selection, like browser routing.
+    pub fn for_skill() -> Result<Self> {
+        Self::for_purpose(JevPurpose::Skill)
+    }
+
+    /// A configured credential route exists for skill routing.
+    pub fn skill_available() -> bool {
+        Self::resolve(JevPurpose::Skill).is_ok()
     }
 
     fn for_purpose(purpose: JevPurpose) -> Result<Self> {
@@ -228,6 +244,7 @@ impl JevClient {
                 match self.purpose {
                     JevPurpose::Memory => "Jcode Memory",
                     JevPurpose::Browser => "Jcode Browser",
+                    JevPurpose::Skill => "Jcode Skill Router",
                 },
             );
         }
@@ -483,6 +500,68 @@ mod tests {
     fn browser_questions() -> Map<String, Value> {
         json!({"action": {"type": "choice", "instructions": "Choose the next browser action", "criteria": {"click": "Click the button", "stop": "Return control"}}})
             .as_object().unwrap().clone()
+    }
+
+    /// The skill router builds its own question shape. Run that real builder
+    /// through the real request validator so the two cannot drift apart.
+    #[test]
+    fn skill_router_questions_pass_request_validation_for_every_provider() {
+        let candidates = [
+            crate::skill_router::SkillCandidate {
+                name: "pdf".into(),
+                description: "Read or create PDFs".into(),
+            },
+            crate::skill_router::SkillCandidate {
+                name: "gh".into(),
+                description: "GitHub CLI".into(),
+            },
+        ];
+        let questions = crate::skill_router::build_questions(&candidates);
+        for provider in [
+            JevProvider::OpenRouter,
+            JevProvider::TypeSafe,
+            JevProvider::Aimlapi,
+            JevProvider::Jcode,
+        ] {
+            let body = request_body_for(
+                JevPurpose::Skill,
+                provider,
+                json!("User: convert this to a PDF"),
+                &questions,
+            )
+            .unwrap_or_else(|err| {
+                panic!("skill questions rejected for {}: {err}", provider.name())
+            });
+            let sent: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(sent["questions"]["skill"]["type"], "choice");
+            // `none` must survive serialization so the model can always abstain.
+            assert!(sent["questions"]["skill"]["criteria"]["none"].is_string());
+        }
+    }
+
+    /// A skill answer must satisfy the shared answer validator.
+    #[test]
+    fn skill_router_choice_answer_passes_answer_validation() {
+        let candidates = [
+            crate::skill_router::SkillCandidate {
+                name: "pdf".into(),
+                description: "Read or create PDFs".into(),
+            },
+            crate::skill_router::SkillCandidate {
+                name: "gh".into(),
+                description: "GitHub CLI".into(),
+            },
+        ];
+        let questions = crate::skill_router::build_questions(&candidates);
+        let answer = json!({"answers": {"skill": {"type": "choice", "choice": "pdf",
+            "confidence": 0.93, "probabilities": {"pdf": 0.93, "gh": 0.04, "none": 0.03}}},
+            "usage": {"input_tokens": 120}});
+        validate_answers(&answer, &questions).expect("skill answer must validate");
+
+        // And the router must decode that exact validated payload.
+        let decision = crate::skill_router::parse_response(&answer.to_string()).unwrap();
+        assert_eq!(decision.choice, "pdf");
+        assert_eq!(decision.accepted_skill(0.6), Some("pdf"));
     }
 
     #[test]

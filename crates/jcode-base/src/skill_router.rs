@@ -1,5 +1,5 @@
 //! Per-turn skill suggestion backed by a TypeSafe "System One" decision model
-//! (Jev), reached through an OpenRouter-style `POST {base_url}/decisions`.
+//! (Jev), reached through the shared [`crate::jev::JevClient`] transport.
 //!
 //! Unlike the embedding path (memory + skills as synthetic memories), this asks
 //! a calibrated classifier one `choice` question over every registered skill
@@ -8,21 +8,23 @@
 //! Design mirrors the memory pipeline so it never blocks the provider call:
 //! a fresh user turn spawns the decision request in the background, and the
 //! *next* fresh user turn consumes whatever the previous request produced.
-//! Everything here is opt-in (`agents.skill_suggestion_backend = "jev"`) and
-//! isolated in this module to stay out of the way of upstream changes.
+//! Everything here is opt-in (`agents.skill_suggestion_backend = "jev"`).
+//!
+//! Provider selection, credential resolution, subscription entitlement checks,
+//! request/response size bounds and typed-answer validation all live in the
+//! shared Jev client; this module only owns the skill-routing question shape
+//! and the per-session pending-suggestion store.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
 
 use crate::message::{ContentBlock, Message, Role};
 
-pub const DEFAULT_MODEL: &str = "typesafe/jev-1.13";
-pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/alpha";
-pub const DEFAULT_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
 pub const DEFAULT_MIN_CONFIDENCE: f32 = 0.6;
 /// Option key meaning "no skill fits"; always offered so the model can abstain.
 pub const NONE_OPTION: &str = "none";
@@ -39,12 +41,12 @@ const MAX_OPTIONS: usize = 254;
 pub const INLINE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Resolved router settings. `None` from [`Self::from_config`] means the
-/// feature is off or unusable (no key); callers should then do nothing.
+/// feature is off or unusable (no credential route); callers do nothing then.
+///
+/// Provider, endpoint and credential are owned by the shared Jev client, so
+/// only the acceptance threshold is configured here.
 #[derive(Debug, Clone)]
 pub struct SkillRouterConfig {
-    pub model: String,
-    pub base_url: String,
-    pub api_key: String,
     pub min_confidence: f32,
 }
 
@@ -54,29 +56,12 @@ impl SkillRouterConfig {
         if !agents.skill_suggestion_backend.eq_ignore_ascii_case("jev") {
             return None;
         }
-        let key_env = agents
-            .skill_suggestion_api_key_env
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_API_KEY_ENV);
-        let api_key = std::env::var(key_env)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())?;
+        // Credential presence only. Subscription entitlement is checked live by
+        // the shared client at evaluation time.
+        if !crate::jev::JevClient::skill_available() {
+            return None;
+        }
         Some(Self {
-            model: agents
-                .skill_suggestion_model
-                .clone()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            base_url: agents
-                .skill_suggestion_base_url
-                .as_deref()
-                .map(|b| b.trim_end_matches('/').to_string())
-                .filter(|b| !b.is_empty())
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            api_key,
             min_confidence: agents
                 .skill_suggestion_min_confidence
                 .unwrap_or(DEFAULT_MIN_CONFIDENCE)
@@ -112,21 +97,6 @@ impl SkillDecision {
 
 // ── Wire types ───────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-struct DecisionsRequest<'a> {
-    model: &'a str,
-    state: &'a str,
-    questions: HashMap<&'static str, ChoiceQuestion<'a>>,
-}
-
-#[derive(Serialize)]
-struct ChoiceQuestion<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    instructions: &'a str,
-    criteria: HashMap<&'a str, &'a str>,
-}
-
 #[derive(Deserialize)]
 struct DecisionsResponse {
     answers: HashMap<String, ChoiceAnswer>,
@@ -154,41 +124,40 @@ const INSTRUCTIONS: &str = "The state is the tail of a conversation between a us
 agent. Which one of these skills, if activated now, would most help the agent handle the user's \
 latest request? Choose `none` when no listed skill is clearly relevant.";
 
-/// Build the request body. Pure, so the exact wire shape is unit-testable.
-pub fn build_request_json(
-    model: &str,
-    state: &str,
-    candidates: &[SkillCandidate],
-) -> serde_json::Value {
-    let mut criteria: HashMap<&str, &str> = HashMap::with_capacity(candidates.len() + 1);
+/// Build the single `choice` question this router asks. Pure, so the exact
+/// wire shape stays unit-testable. Jev requires 2 to 255 described options,
+/// and `none` always occupies one slot so the model can abstain.
+pub fn build_questions(candidates: &[SkillCandidate]) -> Map<String, Value> {
+    let mut criteria = Map::new();
     for c in candidates.iter().take(MAX_OPTIONS) {
-        criteria.insert(c.name.as_str(), c.description.as_str());
+        criteria.insert(c.name.clone(), json!(c.description));
     }
     criteria.insert(
-        NONE_OPTION,
-        "No listed skill is clearly useful for this request",
+        NONE_OPTION.to_string(),
+        json!("No listed skill is clearly useful for this request"),
     );
-    let mut questions = HashMap::new();
+    let mut questions = Map::new();
     questions.insert(
-        QUESTION_ID,
-        ChoiceQuestion {
-            kind: "choice",
-            instructions: INSTRUCTIONS,
-            criteria,
-        },
+        QUESTION_ID.to_string(),
+        json!({
+            "type": "choice",
+            "instructions": INSTRUCTIONS,
+            "criteria": criteria,
+        }),
     );
-    serde_json::to_value(DecisionsRequest {
-        model,
-        state,
-        questions,
-    })
-    .expect("decisions request serializes")
+    questions
 }
 
 /// Parse a decisions response body into a [`SkillDecision`].
 pub fn parse_response(body: &str) -> Result<SkillDecision> {
+    let value: Value = serde_json::from_str(body).context("parse decisions response")?;
+    parse_decision(value)
+}
+
+/// Convert an already-validated Jev response value into a [`SkillDecision`].
+fn parse_decision(value: Value) -> Result<SkillDecision> {
     let parsed: DecisionsResponse =
-        serde_json::from_str(body).context("parse decisions response")?;
+        serde_json::from_value(value).context("parse decisions response")?;
     let answer = parsed
         .answers
         .get(QUESTION_ID)
@@ -207,42 +176,24 @@ pub fn parse_response(body: &str) -> Result<SkillDecision> {
     })
 }
 
-/// Blocking HTTP call. Runs on a scoped thread so it is safe from inside a
-/// tokio worker (same trick as the OpenAI embedding backend).
+/// Ask Jev for one decision, via the shared client.
+///
+/// Callers run this on a dedicated thread (see [`spawn_suggestion`] and
+/// [`suggest_inline`]), so a current-thread runtime here never blocks a tokio
+/// worker.
 pub fn decide(
-    cfg: &SkillRouterConfig,
+    _cfg: &SkillRouterConfig,
     state: &str,
     candidates: &[SkillCandidate],
 ) -> Result<SkillDecision> {
-    let url = format!("{}/decisions", cfg.base_url);
-    let body = build_request_json(&cfg.model, state, candidates);
-    let api_key = cfg.api_key.clone();
-    let text = std::thread::scope(|scope| {
-        scope
-            .spawn(move || -> Result<String> {
-                let client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(20))
-                    .build()?;
-                let resp = client
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {api_key}"))
-                    .header("Content-Type", "application/json")
-                    .json(&body)
-                    .send()?;
-                let status = resp.status();
-                let text = resp.text()?;
-                if !status.is_success() {
-                    anyhow::bail!(
-                        "decisions request failed ({status}): {}",
-                        text.chars().take(400).collect::<String>()
-                    );
-                }
-                Ok(text)
-            })
-            .join()
-            .map_err(|_| anyhow::anyhow!("decisions worker thread panicked"))?
-    })?;
-    parse_response(&text)
+    let questions = build_questions(candidates);
+    let client = crate::jev::JevClient::for_skill()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("start skill router runtime")?;
+    let value = runtime.block_on(client.evaluate(json!(state), questions))?;
+    parse_decision(value)
 }
 
 // ── State building ───────────────────────────────────────────────────────────
@@ -454,17 +405,33 @@ mod tests {
     }
 
     #[test]
-    fn request_matches_typesafe_wire_shape_and_always_offers_none() {
-        let v = build_request_json("typesafe/jev-latest", "User: hi", &cands());
-        assert_eq!(v["model"], "typesafe/jev-latest");
-        assert_eq!(v["state"], "User: hi");
-        let q = &v["questions"]["skill"];
+    fn question_matches_jev_choice_shape_and_always_offers_none() {
+        let questions = build_questions(&cands());
+        let q = &questions["skill"];
         assert_eq!(q["type"], "choice");
         assert!(q["instructions"].as_str().unwrap().contains("none"));
         let criteria = q["criteria"].as_object().unwrap();
         assert_eq!(criteria.len(), 3);
         assert_eq!(criteria["gh"], "GitHub CLI");
         assert!(criteria.contains_key("none"));
+    }
+
+    /// The shared client rejects malformed questions, so the shape this module
+    /// builds must satisfy the same contract the transport enforces.
+    #[test]
+    fn question_satisfies_shared_client_choice_contract() {
+        let questions = build_questions(&cands());
+        assert_eq!(questions.len(), 1);
+        let q = &questions["skill"];
+        assert!(
+            q["instructions"].as_str().is_some_and(|s| !s.trim().is_empty()),
+            "choice questions require text instructions"
+        );
+        let criteria = q["criteria"].as_object().unwrap();
+        assert!(
+            (2..=255).contains(&criteria.len()) && criteria.values().all(Value::is_string),
+            "choice questions require 2 to 255 described options"
+        );
     }
 
     #[test]
@@ -475,13 +442,10 @@ mod tests {
                 description: String::new(),
             })
             .collect();
-        let v = build_request_json("m", "s", &many);
-        let n = v["questions"]["skill"]["criteria"]
-            .as_object()
-            .unwrap()
-            .len();
+        let questions = build_questions(&many);
+        let n = questions["skill"]["criteria"].as_object().unwrap().len();
         assert_eq!(n, MAX_OPTIONS + 1);
-        assert!(n <= 255);
+        assert!(n <= 255, "Jev caps choice options at 255");
     }
 
     #[test]

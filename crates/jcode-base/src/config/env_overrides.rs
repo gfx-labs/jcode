@@ -761,20 +761,6 @@ impl Config {
                 self.agents.skill_suggestion_backend = trimmed.to_string();
             }
         }
-        if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_MODEL") {
-            let trimmed = v.trim();
-            self.agents.skill_suggestion_model = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_BASE_URL") {
-            let trimmed = v.trim();
-            self.agents.skill_suggestion_base_url =
-                (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
-        if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_API_KEY_ENV") {
-            let trimmed = v.trim();
-            self.agents.skill_suggestion_api_key_env =
-                (!trimmed.is_empty()).then(|| trimmed.to_string());
-        }
         if let Ok(v) = std::env::var("JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE") {
             if let Ok(parsed) = v.trim().parse::<f32>() {
                 self.agents.skill_suggestion_min_confidence = Some(parsed);
