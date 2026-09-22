@@ -420,6 +420,23 @@ impl Agent {
             self.registry.register_selfdev_tools().await;
         }
 
+        // Account sign-in/out and verified entitlement changes must reach the
+        // model even when the tool list is frozen (including deferred MCP).
+        // Only update this definition when its guidance actually changes.
+        if self
+            .locked_tools
+            .as_ref()
+            .is_some_and(|tools| tools.iter().any(|tool| tool.name == "compile_remote"))
+            && let Some(fresh) = self.registry.remote_compile_definition().await
+            && let Some(locked) = self.locked_tools.as_mut()
+            && let Some(previous) = locked.iter_mut().find(|tool| tool.name == "compile_remote")
+            && (previous.description != fresh.description
+                || previous.input_schema != fresh.input_schema)
+        {
+            *previous = fresh;
+            self.cache_tracker.reset();
+        }
+
         // Return locked tools if available (prevents cache invalidation from
         // tools arriving asynchronously after the first API request).
         //
@@ -498,7 +515,9 @@ impl Agent {
         let mut tools = self.registry.definitions(self.allowed_tools.as_ref()).await;
         if !self.disabled_tools.is_empty() {
             tools.retain(|tool| {
-                !crate::tool::tool_name_is_disabled(&self.disabled_tools, &tool.name)
+                !self
+                    .registry
+                    .tool_is_disabled(&self.disabled_tools, &tool.name)
             });
         }
         Self::apply_selfdev_tool_surface(
@@ -580,9 +599,9 @@ impl Agent {
         registry_names.iter().any(|name| {
             name.starts_with("mcp__")
                 && allowed
-                    .map(|set| crate::tool::tool_name_is_allowed(set, name))
+                    .map(|set| self.registry.tool_is_allowed(set, name))
                     .unwrap_or(true)
-                && !crate::tool::tool_name_is_disabled(&self.disabled_tools, name)
+                && !self.registry.tool_is_disabled(&self.disabled_tools, name)
                 && !locked.iter().any(|t| &t.name == name)
         })
     }
@@ -695,11 +714,11 @@ impl Agent {
             ));
         }
         if let Some(allowed) = self.allowed_tools.as_ref()
-            && !crate::tool::tool_name_is_allowed(allowed, name)
+            && !self.registry.tool_is_allowed(allowed, name)
         {
             return Err(anyhow::anyhow!("Tool '{}' is not allowed", name));
         }
-        if crate::tool::tool_name_is_disabled(&self.disabled_tools, name) {
+        if self.registry.tool_is_disabled(&self.disabled_tools, name) {
             return Err(anyhow::anyhow!("Tool '{}' is disabled", name));
         }
         Ok(())

@@ -655,8 +655,8 @@ pub fn activate_macos_notification_origin(origin: &MacosNotificationOrigin) {
 /// Send a local desktop notification without blocking.
 ///
 /// Uses Notification Center via `osascript` on macOS and `notify-send` on
-/// Linux. The child process is spawned detached and never waited on; failures
-/// are ignored (a missing notifier is not an error).
+/// Linux. The child process is reaped on a background thread; failures are
+/// ignored (a missing notifier is not an error).
 pub fn send_desktop_notification(title: &str, body: &str) {
     send_desktop_notification_rich(title, None, body, None);
 }
@@ -698,32 +698,30 @@ pub fn send_desktop_notification_rich(
         if let Some(sound) = sound.filter(|s| !s.trim().is_empty()) {
             script.push_str(&format!(" sound name \"{}\"", applescript_escape(sound)));
         }
-        let spawned = std::process::Command::new("osascript")
+        if let Ok(child) = std::process::Command::new("osascript")
             .arg("-e")
             .arg(script)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Ok(child) = spawned {
-            jcode_base::platform::reap_detached(child);
+            .spawn()
+        {
+            reap_notification_child(child);
         }
     }
     #[cfg(target_os = "linux")]
     {
         let _ = (subtitle, sound);
-        let spawned = std::process::Command::new("notify-send")
+        if let Ok(child) = std::process::Command::new("notify-send")
             .arg("--app-name=jcode")
             .arg(title)
             .arg(body)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Ok(child) = spawned {
-            // `Drop for Child` does not reap; without this the notification
-            // leaves a zombie for the lifetime of the process.
-            jcode_base::platform::reap_detached(child);
+            .spawn()
+        {
+            reap_notification_child(child);
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -1160,70 +1158,9 @@ mod tests {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod zombie_tests {
-    /// Count `<defunct>` children of this process via /proc.
-    fn zombie_children() -> usize {
-        let me = std::process::id();
-        std::fs::read_dir("/proc")
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|e| {
-                        let name = e.file_name();
-                        let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
-                            return false;
-                        };
-                        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-                            return false;
-                        };
-                        // `pid (comm) state ppid ...`; comm may contain spaces, so
-                        // split after the closing paren.
-                        let Some(rest) = stat.rsplit(')').next() else {
-                            return false;
-                        };
-                        let mut fields = rest.split_whitespace();
-                        let state = fields.next().unwrap_or("");
-                        let ppid = fields.next().and_then(|p| p.parse::<u32>().ok());
-                        state == "Z" && ppid == Some(me)
-                    })
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
-    /// The reaper thread must collect the notifier child; otherwise every
-    /// turn-complete ping leaves one zombie for the life of the TUI/daemon.
-    #[test]
-    fn desktop_notification_child_is_reaped() {
-        if std::process::Command::new("notify-send")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
-            eprintln!("notify-send not installed; skipping");
-            return;
-        }
-        let before = zombie_children();
-        for i in 0..5 {
-            super::send_desktop_notification_rich(
-                "jcode zombie test",
-                None,
-                &format!("reap check {i}"),
-                None,
-            );
-        }
-        // Give notify-send time to exit and the reaper threads time to wait().
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let mut after = zombie_children();
-        while after > before && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            after = zombie_children();
-        }
-        assert_eq!(
-            after, before,
-            "notify-send children must be reaped (before={before}, after={after})"
-        );
-    }
+mod notification_process_tests {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/support/notification_reaping.rs"
+    ));
 }
