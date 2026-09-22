@@ -14,7 +14,8 @@ pub mod schema_cache;
 mod tool;
 
 pub use client::{
-    DEFAULT_MCP_REQUEST_TIMEOUT, HTTP_PROTOCOL_VERSION, McpClient, McpHandle, kill_and_reap_all_owned, request_timeout_for,
+    DEFAULT_MCP_REQUEST_TIMEOUT, HTTP_PROTOCOL_VERSION, McpClient, McpHandle,
+    kill_and_reap_all_owned, request_timeout_for,
 };
 pub use manager::McpManager;
 pub use oauth::{McpAuthStatus, McpOAuthConfig, auth_status, is_auth_required_error};
