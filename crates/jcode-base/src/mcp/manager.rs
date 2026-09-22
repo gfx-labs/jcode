@@ -125,35 +125,51 @@ impl McpManager {
         // Disabled servers stay in config (so they can be connected on demand
         // by name) but are never auto-spawned (issue #436).
         // Split the rest into shared vs owned.
+        // A server goes through the daemon-global pool only when the pool
+        // holds the exact same definition. Project-specific definitions or
+        // overrides stay owned by this session so they never leak into, or
+        // reuse processes from, other projects.
+        let pool_config = match &self.pool {
+            Some(pool) => Some(pool.config().await),
+            None => None,
+        };
         let (shared_servers, owned_servers): (Vec<_>, Vec<_>) = self
             .config
             .servers
             .iter()
             .filter(|(_, config)| config.is_enabled())
-            .partition(|(_, config)| config.shared && self.pool.is_some());
+            .partition(|(name, config)| {
+                config.shared
+                    && pool_config.as_ref().is_some_and(|pc| {
+                        pc.servers.get(*name).is_some_and(|pooled| {
+                            pooled.is_enabled()
+                                && super::fingerprint_config(pooled)
+                                    == super::fingerprint_config(config)
+                        })
+                    })
+            });
 
         // Connect shared servers via pool
         if let Some(pool) = &self.pool {
             if !shared_servers.is_empty() {
-                let (successes, failures) = pool.connect_all().await;
-                total_successes += successes;
-                total_failures.extend(failures);
-
-                // Acquire handles for shared servers only
-                let all_handles = pool.acquire_handles(&self.session_id).await;
-                let shared_names: std::collections::HashSet<&String> =
-                    shared_servers.iter().map(|(name, _)| *name).collect();
-                let mut pool_handles = self.pool_handles.write().await;
-                for (name, handle) in all_handles {
-                    if shared_names.contains(&name) {
-                        pool_handles.insert(name, handle);
+                // Connect only the servers this session selected, never the
+                // whole pool (which could launch servers disabled here).
+                let results = futures::future::join_all(shared_servers.iter().map(
+                    |(name, config)| async move {
+                        (name.to_string(), pool.connect_server(name, config).await)
+                    },
+                ))
+                .await;
+                let mut names = Vec::new();
+                for (name, result) in results {
+                    match result {
+                        Ok(()) => names.push(name),
+                        Err(e) => total_failures.push((name, format!("{e:#}"))),
                     }
                 }
-
-                // If pool already had servers connected, count those as successes
-                if total_successes == 0 && !pool_handles.is_empty() {
-                    total_successes = pool_handles.len();
-                }
+                let acquired = pool.acquire_selected(&self.session_id, &names).await;
+                total_successes += acquired.len();
+                self.pool_handles.write().await.extend(acquired);
             }
         }
 
@@ -217,14 +233,16 @@ impl McpManager {
             ));
         }
         if config.shared {
-            if let Some(pool) = &self.pool {
+            if let Some(pool) = &self.pool
+                && pool.config().await.servers.get(name).is_some_and(|pooled| {
+                    super::fingerprint_config(pooled) == super::fingerprint_config(config)
+                })
+            {
                 pool.connect_server(name, config).await?;
-                if let Some(handle) = pool.get_handle(name).await {
-                    self.pool_handles
-                        .write()
-                        .await
-                        .insert(name.to_string(), handle);
-                }
+                let acquired = pool
+                    .acquire_selected(&self.session_id, &[name.to_string()])
+                    .await;
+                self.pool_handles.write().await.extend(acquired);
                 return Ok(());
             }
         }
@@ -363,6 +381,14 @@ impl McpManager {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolCallResult> {
+        if self
+            .config
+            .servers
+            .get(server)
+            .is_some_and(|config| !config.is_enabled())
+        {
+            anyhow::bail!("MCP server '{server}' is disabled");
+        }
         // Fast path: already connected via pool handle.
         {
             let handles = self.pool_handles.read().await;
@@ -384,6 +410,9 @@ impl McpManager {
 
         // Not connected yet. If the server is configured, connect-on-first-call.
         if let Some(config) = self.config.servers.get(server).cloned() {
+            if !config.is_enabled() {
+                anyhow::bail!("MCP server '{server}' is disabled");
+            }
             crate::logging::info(&format!(
                 "MCP: connecting to '{server}' on first tool call (connect-on-first-call)"
             ));
@@ -438,6 +467,9 @@ impl McpManager {
         let Some(config) = self.config.servers.get(server).cloned() else {
             anyhow::bail!("MCP server '{server}' is not configured");
         };
+        if !config.is_enabled() {
+            anyhow::bail!("MCP server '{server}' is disabled");
+        }
         match tokio::time::timeout(timeout, self.connect(server, &config)).await {
             Ok(result) => result,
             Err(_) => anyhow::bail!(
@@ -455,10 +487,9 @@ impl McpManager {
         // Reload config
         self.config = McpConfig::load_for_dir(self.project_dir.as_deref());
 
-        // If we have a pool, reload it too (reconnects shared servers)
-        if let Some(pool) = &self.pool {
-            pool.reload().await;
-        }
+        // The shared pool is daemon-global; reloading it here would kill
+        // other sessions' connections. Servers whose definition differs from
+        // the pool's are connected as session-owned by connect_all.
 
         // Reconnect everything
         self.connect_all().await
@@ -623,6 +654,7 @@ mod tests {
                 enabled: Some(false),
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             },
         );
         let manager = McpManager::with_config(config);
@@ -658,6 +690,7 @@ mod tests {
                 enabled: None,
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             },
         );
         let manager = McpManager::with_config(config);
@@ -766,6 +799,7 @@ done
                 enabled: None,
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             },
         );
         let manager = McpManager::with_config(config.clone());

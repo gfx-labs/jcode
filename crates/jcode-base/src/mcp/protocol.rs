@@ -188,8 +188,8 @@ pub struct ResourceContent {
 /// MCP server configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
-    /// Command for stdio servers. Empty for HTTP/SSE servers, which jcode does
-    /// not yet support (such entries are skipped at load time).
+    /// Command for stdio servers. Empty for HTTP/SSE servers, which connected
+    /// natively over HTTP.
     #[serde(default)]
     pub command: String,
     #[serde(default)]
@@ -201,15 +201,14 @@ pub struct McpServerConfig {
     /// Stateful servers (Playwright browser) should not be shared.
     #[serde(default = "default_shared")]
     pub shared: bool,
-    /// Transport type from Claude Code configs ("stdio", "http", "sse"). Used
-    /// only to recognize and skip non-stdio servers; defaults to stdio.
+    /// Transport type ("stdio", "http"/"streamable-http", or legacy "sse",
+    /// which is unsupported). Defaults to stdio, or http when only `url` is set.
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
-    /// URL for HTTP/SSE servers (Claude Code compat). Unused by jcode today.
+    /// Endpoint URL for streamable-HTTP servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Headers for HTTP/SSE servers (Claude Code compat). Unused by jcode today,
-    /// but retained so environment expansion is ready when those transports are.
+    /// Extra HTTP headers for remote servers (env-expanded at load).
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub headers: std::collections::HashMap<String, String>,
     /// Whether this server is enabled (default: true). Disabled servers stay
@@ -227,20 +226,111 @@ pub struct McpServerConfig {
     /// extraction) can raise it here (issues #802, #1174).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// OAuth settings for remote servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<super::oauth::McpOAuthConfig>,
+}
+
+/// Where a jcode-managed MCP config entry lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpConfigScope {
+    /// `~/.jcode/mcp.json`
+    Global,
+    /// `<project root>/.jcode/mcp.json` (project root = nearest git root)
+    Project,
+}
+
+impl McpConfigScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Project => "project",
+        }
+    }
+}
+
+impl std::str::FromStr for McpConfigScope {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "global" | "user" => Ok(Self::Global),
+            "project" | "local" => Ok(Self::Project),
+            other => anyhow::bail!("unknown MCP config scope '{other}' (use global or project)"),
+        }
+    }
+}
+
+/// One entry of the effective MCP configuration, including disabled servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpConfiguredServer {
+    pub name: String,
+    /// Project when any project-local config defines or overrides the entry.
+    pub scope: McpConfigScope,
+    pub enabled: bool,
+    /// "stdio", "http" or "sse".
+    pub transport: String,
+    /// Command (stdio) or URL (remote), unexpanded.
+    pub target: String,
+    pub shared: bool,
 }
 
 impl McpServerConfig {
-    /// jcode currently only supports stdio (command-based) MCP servers. A config
-    /// entry is stdio when it has a command and is not explicitly an http/sse
-    /// transport.
+    /// A config entry is stdio when it has a command and is not explicitly a
+    /// remote (http/sse) transport.
     pub fn is_stdio(&self) -> bool {
-        if let Some(t) = &self.transport {
-            let t = t.to_ascii_lowercase();
-            if t == "http" || t == "sse" || t == "streamable-http" {
-                return false;
-            }
+        if self.is_remote_transport() {
+            return false;
         }
         !self.command.trim().is_empty()
+    }
+
+    fn is_remote_transport(&self) -> bool {
+        self.transport.as_deref().is_some_and(|t| {
+            matches!(
+                t.to_ascii_lowercase().as_str(),
+                "http" | "sse" | "streamable-http" | "streamable_http" | "remote"
+            )
+        })
+    }
+
+    /// Legacy HTTP+SSE transport, which jcode does not implement.
+    pub fn is_legacy_sse(&self) -> bool {
+        self.transport
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("sse"))
+    }
+
+    /// Native streamable-HTTP server: has a URL, is not a stdio command entry
+    /// and is not the unsupported legacy SSE transport.
+    pub fn is_http(&self) -> bool {
+        if self.is_legacy_sse() {
+            return false;
+        }
+        let has_url = self.url.as_deref().is_some_and(|u| !u.trim().is_empty());
+        has_url && (self.is_remote_transport() || self.command.trim().is_empty())
+    }
+
+    /// Whether jcode can connect to this entry (stdio or native HTTP).
+    pub fn is_runnable(&self) -> bool {
+        self.is_stdio() || self.is_http()
+    }
+
+    /// Transport label for display.
+    pub fn transport_label(&self) -> &'static str {
+        if self.is_legacy_sse() {
+            "sse"
+        } else if self.is_http() {
+            "http"
+        } else {
+            "stdio"
+        }
+    }
+
+    /// An entry with neither command nor URL, used by project configs to only
+    /// toggle `enabled`/`disabled` for a server defined elsewhere.
+    pub fn is_enablement_override(&self) -> bool {
+        self.command.trim().is_empty() && self.url.as_deref().is_none_or(|u| u.trim().is_empty())
     }
 
     /// Whether this server should be spawned/connected automatically.
@@ -523,6 +613,7 @@ impl McpConfig {
                             enabled: None,
                             disabled: None,
                             timeout_secs: None,
+                            oauth: None,
                         },
                     );
                 }
@@ -573,13 +664,32 @@ impl McpConfig {
         config
     }
 
+    /// Only the `projects.<dir>.mcpServers` entries of `~/.claude.json`.
+    fn load_claude_project_entries(path: &std::path::Path, dir: &std::path::Path) -> Self {
+        let mut config = Self::default();
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return config;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return config;
+        };
+        if let Some(map) = value
+            .get("projects")
+            .and_then(|p| p.get(dir.to_string_lossy().as_ref()))
+            .and_then(|p| p.get("mcpServers"))
+            && let Ok(servers) = serde_json::from_value(map.clone())
+        {
+            config.servers = servers;
+        }
+        config
+    }
+
     /// Load project-local MCP config files from `project_root`, in override
-    /// order: `.jcode/mcp.json`, then `.mcp.json` (Claude Code project config),
-    /// then `.claude/mcp.json` (legacy compatibility). Later files override
-    /// same-named servers from earlier ones.
+    /// order: `.claude/mcp.json` (legacy), then `.mcp.json` (Claude Code
+    /// project config), then `.jcode/mcp.json` (jcode-managed, wins).
     fn load_project_locals(project_root: &std::path::Path) -> Self {
         let mut merged = Self::default();
-        for relative in [".jcode/mcp.json", ".mcp.json", ".claude/mcp.json"] {
+        for relative in [".claude/mcp.json", ".mcp.json", ".jcode/mcp.json"] {
             let path = project_root.join(relative);
             if path.exists()
                 && let Ok(config) = Self::load_from_file(&path)
@@ -613,85 +723,329 @@ impl McpConfig {
         // Codex CLI is a one-time migration. Claude Code remains a live source.
         Self::import_from_codex_once();
 
-        let mut merged = Self::default();
-        let claude_mcp_enabled = std::env::var_os("JCODE_DISABLE_CLAUDE_MCP").is_none();
-
-        // Load jcode's own global config (~/.jcode/mcp.json)
-        if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-            let jcode_mcp = jcode_dir.join("mcp.json");
-            if jcode_mcp.exists() {
-                if let Ok(config) = Self::load_from_file(&jcode_mcp) {
-                    merged.servers.extend(config.servers);
-                }
-            }
-        }
-
-        // Claude Code user/global config (~/.claude.json): top-level mcpServers
-        // plus per-project entries for the project directory.
-        if claude_mcp_enabled
-            && let Ok(claude_json) = crate::storage::user_home_path(".claude.json")
-        {
-            if claude_json.exists() {
-                let cwd = project_dir.map(std::path::Path::to_path_buf);
-                let config = Self::load_claude_json(&claude_json, cwd.as_deref());
-                if !config.servers.is_empty() {
-                    crate::logging::info(&Self::live_claude_log_message(
-                        config.servers.len(),
-                        "~/.claude.json",
-                    ));
-                }
-                Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
-            }
-        }
-
-        // Older Claude Code global config is also a live source. Reading it on
-        // every load preserves compatibility without copying any inline env
-        // values into ~/.jcode/mcp.json.
-        if claude_mcp_enabled
-            && let Ok(claude_mcp) = crate::storage::user_home_path(".claude/mcp.json")
-        {
-            if claude_mcp.exists()
-                && let Ok(config) = Self::load_from_file(&claude_mcp)
-            {
-                if !config.servers.is_empty() {
-                    crate::logging::info(&Self::live_claude_log_message(
-                        config.servers.len(),
-                        "~/.claude/mcp.json (legacy)",
-                    ));
-                }
-                Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
-            }
-        }
-
-        // Project-local config files, resolved against the project directory.
-        if let Some(project_root) = project_dir {
-            Self::merge_servers_preferring_runnable(
-                &mut merged.servers,
-                Self::load_project_locals(project_root).servers,
-            );
-        }
+        let (mut merged, _) = Self::load_unexpanded(project_dir);
 
         // Claude Code expands environment references after source precedence is
-        // resolved. Keep this before transport filtering so future HTTP/SSE
-        // support receives already-expanded URLs and headers as well.
+        // resolved, so URLs and headers of remote servers are expanded too.
         merged.expand_environment_variables();
+        merged
+    }
 
-        // jcode only supports stdio servers today. Drop HTTP/SSE entries (common
-        // in Claude Code configs) so they don't fail to spawn, but log them so
-        // the omission is visible.
+    /// Merge all sources without env expansion. Returns the merged config and
+    /// the set of names defined or overridden by project-local files.
+    #[expect(
+        clippy::collapsible_if,
+        reason = "Import logic keeps source-specific MCP config merge order explicit"
+    )]
+    fn load_unexpanded(
+        project_dir: Option<&std::path::Path>,
+    ) -> (Self, std::collections::HashSet<String>) {
+        // Precedence (later wins): imported global sources, then jcode's
+        // global config, then imported project sources, then the project's
+        // .jcode/mcp.json. Explicit jcode management wins within each tier and
+        // project still wins over global. Enablement-only entries in jcode
+        // files inherit the definition they override.
+        let mut merged = Self::default();
+        let claude_mcp_enabled = std::env::var_os("JCODE_DISABLE_CLAUDE_MCP").is_none();
+        let claude_json = claude_mcp_enabled
+            .then(|| crate::storage::user_home_path(".claude.json").ok())
+            .flatten()
+            .filter(|p| p.exists());
+
+        // Imported global: ~/.claude.json top-level, then legacy ~/.claude/mcp.json.
+        if let Some(path) = &claude_json {
+            let config = Self::load_claude_json(path, None);
+            if !config.servers.is_empty() {
+                crate::logging::info(&Self::live_claude_log_message(
+                    config.servers.len(),
+                    "~/.claude.json",
+                ));
+            }
+            Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
+        }
+        if claude_mcp_enabled
+            && let Ok(claude_mcp) = crate::storage::user_home_path(".claude/mcp.json")
+            && claude_mcp.exists()
+            && let Ok(config) = Self::load_from_file(&claude_mcp)
+        {
+            if !config.servers.is_empty() {
+                crate::logging::info(&Self::live_claude_log_message(
+                    config.servers.len(),
+                    "~/.claude/mcp.json (legacy)",
+                ));
+            }
+            Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
+        }
+
+        // jcode global (~/.jcode/mcp.json).
+        if let Ok(path) = Self::config_path(McpConfigScope::Global, None)
+            && path.exists()
+            && let Ok(config) = Self::load_from_file(&path)
+        {
+            Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
+        }
+
+        let mut project_names = std::collections::HashSet::new();
+        if let Some(dir) = project_dir {
+            // Imported project: ~/.claude.json per-project entries.
+            if let Some(path) = &claude_json {
+                let config = Self::load_claude_project_entries(path, dir);
+                project_names.extend(config.servers.keys().cloned());
+                Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
+            }
+            // Project-local files at the git root, then the exact dir.
+            let root = Self::project_root(dir);
+            let mut dirs = vec![root.clone()];
+            if root != dir {
+                dirs.push(dir.to_path_buf());
+            }
+            for d in dirs {
+                let locals = Self::load_project_locals(&d).servers;
+                project_names.extend(locals.keys().cloned());
+                Self::merge_servers_preferring_runnable(&mut merged.servers, locals);
+            }
+        }
+
+        // Drop entries jcode cannot connect to (e.g. an enablement-only
+        // override whose base definition does not exist).
         merged.servers.retain(|name, cfg| {
-            let keep = cfg.is_stdio();
+            let keep = cfg.is_runnable();
             if !keep {
                 crate::logging::info(&format!(
-                    "MCP: Skipping non-stdio server '{}' ({}); HTTP/SSE transports are not yet supported",
+                    "MCP: Skipping server '{}': {}",
                     name,
-                    cfg.transport.as_deref().unwrap_or("http")
+                    if cfg.is_legacy_sse() {
+                        "legacy SSE transport is not supported (use streamable HTTP)"
+                    } else {
+                        "no command or url configured"
+                    }
                 ));
             }
             keep
         });
 
-        merged
+        (merged, project_names)
+    }
+
+    /// Nearest ancestor of `dir` containing `.git`, else `dir` itself.
+    pub fn project_root(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.ancestors()
+            .find(|a| a.join(".git").exists())
+            .unwrap_or(dir)
+            .to_path_buf()
+    }
+
+    /// Path of the jcode-managed config file for `scope`.
+    pub fn config_path(
+        scope: McpConfigScope,
+        project_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        match scope {
+            McpConfigScope::Global => Ok(crate::storage::jcode_dir()?.join("mcp.json")),
+            McpConfigScope::Project => {
+                let dir = match project_dir {
+                    Some(d) => d.to_path_buf(),
+                    None => std::env::current_dir()?,
+                };
+                Ok(Self::project_root(&dir).join(".jcode").join("mcp.json"))
+            }
+        }
+    }
+
+    /// Effective configured servers (including disabled ones), sorted by name.
+    pub fn list_configured(project_dir: Option<&std::path::Path>) -> Vec<McpConfiguredServer> {
+        let (merged, project_names) = Self::load_unexpanded(project_dir);
+        let mut out: Vec<_> = merged
+            .servers
+            .iter()
+            .map(|(name, cfg)| McpConfiguredServer {
+                name: name.clone(),
+                scope: if project_names.contains(name) {
+                    McpConfigScope::Project
+                } else {
+                    McpConfigScope::Global
+                },
+                enabled: cfg.is_enabled(),
+                transport: cfg.transport_label().to_string(),
+                target: if cfg.is_http() || cfg.is_legacy_sse() {
+                    cfg.url.clone().unwrap_or_default()
+                } else {
+                    cfg.command.clone()
+                },
+                shared: cfg.shared,
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    fn read_raw(path: &std::path::Path) -> anyhow::Result<serde_json::Value> {
+        if !path.exists() {
+            return Ok(serde_json::json!({}));
+        }
+        let content = std::fs::read_to_string(path)?;
+        if content.trim().is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        let value: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("invalid JSON in {}: {e}", path.display()))?;
+        anyhow::ensure!(value.is_object(), "{} is not a JSON object", path.display());
+        Ok(value)
+    }
+
+    fn write_raw(path: &std::path::Path, value: &serde_json::Value) -> anyhow::Result<()> {
+        use std::io::Write;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid MCP config path {}", path.display()))?;
+        std::fs::create_dir_all(parent)?;
+        // Resolve symlinks so we replace the real file, not the link.
+        let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let target_dir = target.parent().unwrap_or(parent);
+        let mut tmp = tempfile::NamedTempFile::new_in(target_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Preserve existing permissions; new files are owner-only since
+            // they may contain secrets in headers/env.
+            let mode = std::fs::metadata(&target)
+                .map(|m| m.permissions().mode() & 0o7777)
+                .unwrap_or(0o600);
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode))?;
+        }
+        tmp.write_all((serde_json::to_string_pretty(value)? + "\n").as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(&target).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    /// Serialize read-modify-write of a managed config: in-process mutex plus
+    /// an advisory flock on a sidecar lock file (cross-process, unix).
+    fn with_config_lock<T>(
+        path: &std::path::Path,
+        f: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("json.lock"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // SAFETY: valid open fd for the lifetime of lock_file.
+            unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
+        }
+        let result = f();
+        drop(lock_file); // closing the fd releases the flock
+        result
+    }
+
+    /// The server map object in a raw config, preferring an existing
+    /// `mcpServers` or `servers` key and creating `servers` otherwise.
+    fn raw_servers_mut(
+        value: &mut serde_json::Value,
+    ) -> anyhow::Result<&mut serde_json::Map<String, serde_json::Value>> {
+        let obj = value
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("MCP config is not a JSON object"))?;
+        let key = if obj.contains_key("mcpServers") {
+            "mcpServers"
+        } else {
+            "servers"
+        };
+        obj.entry(key)
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("MCP config '{key}' is not a JSON object"))
+    }
+
+    /// Enable or disable `name` in the given scope, editing only the
+    /// `enabled`/`disabled` keys so unknown keys and `${VAR}` expressions are
+    /// preserved. Project scope may create an enablement-only override for a
+    /// server defined globally. Returns the file written.
+    pub fn set_server_enabled(
+        name: &str,
+        enabled: bool,
+        scope: McpConfigScope,
+        project_dir: Option<&std::path::Path>,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let path = Self::config_path(scope, project_dir)?;
+        let known = Self::list_configured(project_dir)
+            .iter()
+            .any(|s| s.name == name);
+        Self::with_config_lock(&path, || {
+            let mut raw = Self::read_raw(&path)?;
+            let servers = Self::raw_servers_mut(&mut raw)?;
+            match servers.get_mut(name) {
+                Some(entry) => {
+                    let obj = entry.as_object_mut().ok_or_else(|| {
+                        anyhow::anyhow!("MCP server '{name}' entry is not an object")
+                    })?;
+                    obj.remove("disabled");
+                    obj.insert("enabled".into(), serde_json::Value::Bool(enabled));
+                }
+                None => {
+                    anyhow::ensure!(known, "MCP server '{name}' is not configured");
+                    // Enablement-only override for a server defined elsewhere
+                    // (imported Claude config or the global jcode config).
+                    servers.insert(name.to_string(), serde_json::json!({ "enabled": enabled }));
+                }
+            }
+            Self::write_raw(&path, &raw)
+        })?;
+        Ok(path)
+    }
+
+    /// Add a remote streamable-HTTP MCP server in the given scope. Refuses an
+    /// existing name in that file unless `replace` is true.
+    pub fn add_remote_server(
+        name: &str,
+        url: &str,
+        headers: std::collections::HashMap<String, String>,
+        scope: McpConfigScope,
+        project_dir: Option<&std::path::Path>,
+        replace: bool,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let name = name.trim();
+        anyhow::ensure!(
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'),
+            "invalid MCP server name '{name}'"
+        );
+        let url = url.trim();
+        if !url.contains("${") {
+            super::oauth::validate_endpoint(url)?;
+        } else {
+            anyhow::ensure!(
+                url.starts_with("https://") || url.starts_with("http://") || url.starts_with("${"),
+                "MCP server URL must start with http:// or https://"
+            );
+        }
+        let path = Self::config_path(scope, project_dir)?;
+        Self::with_config_lock(&path, || {
+            let mut raw = Self::read_raw(&path)?;
+            let servers = Self::raw_servers_mut(&mut raw)?;
+            anyhow::ensure!(
+                replace || !servers.contains_key(name),
+                "MCP server '{name}' already exists in {}; pass replace to overwrite it",
+                path.display()
+            );
+            let mut entry = serde_json::json!({ "type": "http", "url": url });
+            if !headers.is_empty() {
+                entry["headers"] = serde_json::to_value(headers)?;
+            }
+            servers.insert(name.to_string(), entry);
+            Self::write_raw(&path, &raw)
+        })?;
+        Ok(path)
     }
 
     /// Merge `incoming` over `existing`, except that an entry jcode cannot run
@@ -705,9 +1059,21 @@ impl McpConfig {
         incoming: std::collections::HashMap<String, McpServerConfig>,
     ) {
         for (name, cfg) in incoming {
+            if cfg.is_enablement_override() {
+                if let Some(current) = existing.get_mut(&name) {
+                    if cfg.enabled.is_some() || cfg.disabled.is_some() {
+                        current.enabled = Some(cfg.is_enabled());
+                        current.disabled = None;
+                    }
+                    continue;
+                }
+            }
+            // A runnable definition is never displaced by one jcode cannot
+            // connect to (e.g. legacy SSE), issue #653. Native HTTP entries
+            // follow normal source precedence.
             if let Some(current) = existing.get(&name)
-                && current.is_stdio()
-                && !cfg.is_stdio()
+                && current.is_runnable()
+                && !cfg.is_runnable()
             {
                 crate::logging::info(&format!(
                     "MCP: Keeping existing stdio server '{}'; ignoring {} definition from a lower-precedence config",

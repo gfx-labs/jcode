@@ -131,6 +131,7 @@ fn test_mcp_config_timeout_secs_defaults_to_none_and_accepts_override() {
     // Zero is treated as "unset" rather than an instant timeout.
     let zero = McpServerConfig {
         timeout_secs: Some(0),
+        oauth: None,
         ..slow.clone()
     };
     assert_eq!(
@@ -165,7 +166,7 @@ fn test_mcp_config_accepts_claude_mcp_servers_key() {
 }
 
 #[test]
-fn test_mcp_http_server_is_not_stdio() {
+fn test_mcp_http_server_is_not_stdio_but_is_runnable_http() {
     let json = r#"{
             "mcpServers": {
                 "remote": {
@@ -177,6 +178,8 @@ fn test_mcp_http_server_is_not_stdio() {
     let config: McpConfig = serde_json::from_str(json).unwrap();
     let server = config.servers.get("remote").unwrap();
     assert!(!server.is_stdio());
+    assert!(server.is_http());
+    assert!(server.is_runnable());
     assert_eq!(server.url.as_deref(), Some("https://example.com/mcp"));
 }
 
@@ -383,8 +386,7 @@ fn test_load_project_locals_resolves_against_given_dir_not_cwd() {
 
 #[test]
 fn test_load_project_locals_merge_order() {
-    // `.jcode/mcp.json` loads first, then `.mcp.json` overrides same-named
-    // servers, then `.claude/mcp.json`.
+    // Imported project files load first; jcode-managed `.jcode/mcp.json` wins.
     let temp = tempfile::tempdir().expect("tempdir");
     let project = temp.path();
     std::fs::create_dir_all(project.join(".jcode")).unwrap();
@@ -409,8 +411,8 @@ fn test_load_project_locals_merge_order() {
     assert_eq!(config.servers.len(), 3);
     assert_eq!(
         config.servers.get("shared-name").unwrap().command,
-        "claude-bin",
-        ".mcp.json must override .jcode/mcp.json for same-named servers"
+        "jcode-bin",
+        ".jcode/mcp.json must override imported .mcp.json for same-named servers"
     );
     assert!(config.servers.contains_key("jcode-only"));
     assert!(config.servers.contains_key("legacy-only"));
@@ -524,7 +526,7 @@ fn test_initialize_result() {
 }
 
 #[test]
-fn http_entry_does_not_displace_a_working_stdio_server_of_the_same_name() {
+fn native_http_entry_follows_project_precedence_but_legacy_sse_does_not_displace_stdio() {
     // A `type: http` entry from a lower-precedence config used to overwrite the
     // stdio definition and then get dropped by the non-stdio filter, silently
     // losing a working server (issue #653).
@@ -532,21 +534,30 @@ fn http_entry_does_not_displace_a_working_stdio_server_of_the_same_name() {
     let project = temp.path();
     std::fs::create_dir_all(project.join(".jcode")).unwrap();
     std::fs::write(
-        project.join(".jcode/mcp.json"),
+        project.join(".mcp.json"),
         r#"{"servers":{"github":{"type":"stdio","command":"npx","args":["-y","mcp-remote"]}}}"#,
     )
     .unwrap();
     std::fs::write(
-        project.join(".mcp.json"),
+        project.join(".jcode/mcp.json"),
         r#"{"mcpServers":{"github":{"type":"http","url":"https://api.githubcopilot.com/mcp/"}}}"#,
     )
     .unwrap();
 
     let config = McpConfig::load_project_locals(project);
+    let github = config.servers.get("github").expect("github server");
+    assert!(github.is_http(), "native HTTP later in precedence wins");
+
+    std::fs::write(
+        project.join(".jcode/mcp.json"),
+        r#"{"mcpServers":{"github":{"type":"sse","url":"https://example.com/sse"}}}"#,
+    )
+    .unwrap();
+    let config = McpConfig::load_project_locals(project);
     let github = config
         .servers
         .get("github")
-        .expect("stdio github server must survive the http entry");
+        .expect("stdio survives legacy sse");
     assert_eq!(github.command, "npx");
     assert!(github.is_stdio());
 }
@@ -559,12 +570,12 @@ fn stdio_entry_still_overrides_an_existing_http_entry() {
     let project = temp.path();
     std::fs::create_dir_all(project.join(".jcode")).unwrap();
     std::fs::write(
-        project.join(".jcode/mcp.json"),
+        project.join(".mcp.json"),
         r#"{"servers":{"github":{"type":"http","url":"https://example.invalid/mcp/"}}}"#,
     )
     .unwrap();
     std::fs::write(
-        project.join(".mcp.json"),
+        project.join(".jcode/mcp.json"),
         r#"{"mcpServers":{"github":{"type":"stdio","command":"npx"}}}"#,
     )
     .unwrap();
@@ -580,12 +591,12 @@ fn stdio_entry_of_same_transport_still_overrides_by_precedence() {
     let project = temp.path();
     std::fs::create_dir_all(project.join(".jcode")).unwrap();
     std::fs::write(
-        project.join(".jcode/mcp.json"),
+        project.join(".mcp.json"),
         r#"{"servers":{"github":{"command":"old-bin"}}}"#,
     )
     .unwrap();
     std::fs::write(
-        project.join(".mcp.json"),
+        project.join(".jcode/mcp.json"),
         r#"{"mcpServers":{"github":{"command":"new-bin"}}}"#,
     )
     .unwrap();
@@ -595,7 +606,7 @@ fn stdio_entry_of_same_transport_still_overrides_by_precedence() {
 }
 
 #[test]
-fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
+fn claude_json_legacy_sse_entry_does_not_displace_jcode_stdio_server() {
     // The exact configuration from issue #653: `github` is stdio in
     // ~/.jcode/mcp.json and http in ~/.claude.json. The http entry used to win
     // the merge and then be dropped by the non-stdio filter, so a working
@@ -619,7 +630,7 @@ fn claude_json_http_entry_does_not_displace_jcode_stdio_server() {
     std::fs::create_dir_all(&external).expect("create external dir");
     std::fs::write(
         external.join(".claude.json"),
-        r#"{"mcpServers":{"github":{"type":"http","url":"https://api.githubcopilot.com/mcp/"}}}"#,
+        r#"{"mcpServers":{"github":{"type":"sse","url":"https://api.githubcopilot.com/sse/"}}}"#,
     )
     .expect("write claude config");
 
@@ -862,4 +873,308 @@ fn mcp_source_logs_explain_provenance_without_config_values() {
     assert!(imported.contains("Claude Code MCP configuration remains live and was not copied"));
     assert!(!imported.contains("TOKEN"));
     assert!(!imported.contains("inline-secret"));
+}
+
+struct ManagedEnv {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    home: tempfile::TempDir,
+    previous_home: Option<std::ffi::OsString>,
+    previous_claude: Option<std::ffi::OsString>,
+}
+
+impl ManagedEnv {
+    fn new() -> Self {
+        let guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("JCODE_HOME");
+        let previous_claude = std::env::var_os("JCODE_DISABLE_CLAUDE_MCP");
+        crate::env::set_var("JCODE_HOME", home.path());
+        crate::env::set_var("JCODE_DISABLE_CLAUDE_MCP", "1");
+        Self {
+            _guard: guard,
+            home,
+            previous_home,
+            previous_claude,
+        }
+    }
+    fn global(&self) -> std::path::PathBuf {
+        McpConfig::config_path(McpConfigScope::Global, None).unwrap()
+    }
+}
+
+impl Drop for ManagedEnv {
+    fn drop(&mut self) {
+        match self.previous_home.take() {
+            Some(v) => crate::env::set_var("JCODE_HOME", v),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        match self.previous_claude.take() {
+            Some(v) => crate::env::set_var("JCODE_DISABLE_CLAUDE_MCP", v),
+            None => crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP"),
+        }
+        let _ = &self.home;
+    }
+}
+
+fn write(path: &std::path::Path, body: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+}
+
+#[test]
+fn managed_global_toggle_preserves_unknown_keys_and_env_expressions() {
+    let env = ManagedEnv::new();
+    write(
+        &env.global(),
+        r#"{"mcpServers":{"a":{"command":"${BIN}/a","custom":{"x":1}}},"topLevel":true}"#,
+    );
+    let path = McpConfig::set_server_enabled("a", false, McpConfigScope::Global, None).unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(raw["topLevel"], true);
+    assert_eq!(raw["mcpServers"]["a"]["command"], "${BIN}/a");
+    assert_eq!(raw["mcpServers"]["a"]["custom"]["x"], 1);
+    assert_eq!(raw["mcpServers"]["a"]["enabled"], false);
+    let listed = McpConfig::list_configured(None);
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].enabled);
+    assert_eq!(listed[0].scope, McpConfigScope::Global);
+    assert!(!McpConfig::load_for_dir(None).servers["a"].is_enabled());
+}
+
+#[test]
+fn managed_global_flag_wins_over_imported_claude_definition() {
+    let env = ManagedEnv::new();
+    crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP");
+    let fake_home = env.home.path().join("external");
+    write(
+        &fake_home.join(".claude.json"),
+        r#"{"mcpServers":{"figma":{"type":"http","url":"https://mcp.figma.com/mcp"}}}"#,
+    );
+    {
+        let listed = McpConfig::list_configured(None);
+        let figma = listed.iter().find(|s| s.name == "figma").expect("imported");
+        assert!(figma.enabled);
+        assert_eq!(figma.transport, "http");
+        McpConfig::set_server_enabled("figma", false, McpConfigScope::Global, None).unwrap();
+        let cfg = McpConfig::load_for_dir(None);
+        assert!(!cfg.servers["figma"].is_enabled());
+        assert_eq!(
+            cfg.servers["figma"].url.as_deref(),
+            Some("https://mcp.figma.com/mcp")
+        );
+    }
+}
+
+#[test]
+fn project_enablement_override_is_isolated_to_its_git_root() {
+    let env = ManagedEnv::new();
+    write(&env.global(), r#"{"servers":{"g":{"command":"g"}}}"#);
+    let repos = tempfile::tempdir().unwrap();
+    let repo = repos.path().join("repo");
+    let sibling = repos.path().join("sibling");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(
+        sibling.join(".git"),
+        "gitdir: /elsewhere/worktrees/sibling\n",
+    )
+    .unwrap();
+    let nested = repo.join("src/deep");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    let path =
+        McpConfig::set_server_enabled("g", false, McpConfigScope::Project, Some(&nested)).unwrap();
+    assert_eq!(path, repo.join(".jcode/mcp.json"));
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(raw["servers"]["g"], serde_json::json!({"enabled": false}));
+
+    // Project (from nested cwd) sees it disabled, with project scope.
+    let cfg = McpConfig::load_for_dir(Some(&nested));
+    assert!(!cfg.servers["g"].is_enabled());
+    assert_eq!(cfg.servers["g"].command, "g");
+    let listed = McpConfig::list_configured(Some(&nested));
+    assert_eq!(listed[0].scope, McpConfigScope::Project);
+    // Sibling repo (worktree-style .git file) and global are unaffected.
+    assert_eq!(McpConfig::project_root(&sibling), sibling);
+    assert!(McpConfig::load_for_dir(Some(&sibling)).servers["g"].is_enabled());
+    assert!(McpConfig::load_for_dir(None).servers["g"].is_enabled());
+    let global: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.global()).unwrap()).unwrap();
+    assert!(global["servers"]["g"].get("enabled").is_none());
+
+    // Project can re-enable a globally disabled server.
+    McpConfig::set_server_enabled("g", false, McpConfigScope::Global, None).unwrap();
+    McpConfig::set_server_enabled("g", true, McpConfigScope::Project, Some(&repo)).unwrap();
+    assert!(McpConfig::load_for_dir(Some(&repo)).servers["g"].is_enabled());
+    assert!(!McpConfig::load_for_dir(Some(&sibling)).servers["g"].is_enabled());
+}
+
+#[test]
+fn enablement_only_entry_without_base_is_dropped_and_unknown_name_errors() {
+    let env = ManagedEnv::new();
+    let project = tempfile::tempdir().unwrap();
+    write(
+        &project.path().join(".jcode/mcp.json"),
+        r#"{"servers":{"ghost":{"enabled":true}}}"#,
+    );
+    assert!(
+        McpConfig::load_for_dir(Some(project.path()))
+            .servers
+            .is_empty()
+    );
+    assert!(McpConfig::set_server_enabled("nope", true, McpConfigScope::Global, None).is_err());
+    let _ = env;
+}
+
+#[test]
+fn add_remote_server_writes_http_entry_in_scope() {
+    let env = ManagedEnv::new();
+    write(
+        &env.global(),
+        r#"{"mcpServers":{"x":{"command":"x","keep":1}}}"#,
+    );
+    let mut headers = std::collections::HashMap::new();
+    headers.insert("Authorization".to_string(), "Bearer ${TOKEN}".to_string());
+    McpConfig::add_remote_server(
+        "figma",
+        "https://mcp.figma.com/mcp",
+        headers,
+        McpConfigScope::Global,
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(
+        McpConfig::add_remote_server(
+            "figma",
+            "https://mcp.figma.com/mcp",
+            Default::default(),
+            McpConfigScope::Global,
+            None,
+            false,
+        )
+        .is_err(),
+        "existing name must not be silently replaced"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::metadata(env.global())
+            .unwrap()
+            .permissions()
+            .mode();
+    }
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(env.global()).unwrap()).unwrap();
+    assert_eq!(raw["mcpServers"]["x"]["keep"], 1);
+    assert_eq!(raw["mcpServers"]["figma"]["type"], "http");
+    assert_eq!(
+        raw["mcpServers"]["figma"]["headers"]["Authorization"],
+        "Bearer ${TOKEN}"
+    );
+    let cfg = McpConfig::load_for_dir(None);
+    assert!(cfg.servers["figma"].is_http());
+    assert!(
+        McpConfig::add_remote_server(
+            "bad name",
+            "https://x",
+            Default::default(),
+            McpConfigScope::Global,
+            None,
+            false
+        )
+        .is_err()
+    );
+    assert!(
+        McpConfig::add_remote_server(
+            "ok",
+            "file:///x",
+            Default::default(),
+            McpConfigScope::Global,
+            None,
+            false
+        )
+        .is_err()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_writes_preserve_permissions_and_symlinks() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = ManagedEnv::new();
+    let real_dir = tempfile::tempdir().unwrap();
+    let real = real_dir.path().join("real.json");
+    write(&real, r#"{"servers":{"a":{"command":"a"}}}"#);
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+    std::os::unix::fs::symlink(&real, env.global()).unwrap();
+    McpConfig::set_server_enabled("a", false, McpConfigScope::Global, None).unwrap();
+    assert!(
+        std::fs::symlink_metadata(env.global())
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert!(
+        std::fs::read_to_string(&real)
+            .unwrap()
+            .contains("\"enabled\": false")
+    );
+
+    let project = tempfile::tempdir().unwrap();
+    let path = McpConfig::add_remote_server(
+        "r",
+        "https://example.com/mcp",
+        Default::default(),
+        McpConfigScope::Project,
+        Some(project.path()),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn jcode_global_native_definition_wins_over_imported_claude_definition() {
+    let env = ManagedEnv::new();
+    crate::env::remove_var("JCODE_DISABLE_CLAUDE_MCP");
+    write(
+        &env.home.path().join("external/.claude.json"),
+        r#"{"mcpServers":{"figma":{"command":"python3","args":["proxy.py"]}}}"#,
+    );
+    McpConfig::add_remote_server(
+        "figma",
+        "https://mcp.figma.com/mcp",
+        Default::default(),
+        McpConfigScope::Global,
+        None,
+        false,
+    )
+    .unwrap();
+    let cfg = McpConfig::load_for_dir(None);
+    assert!(
+        cfg.servers["figma"].is_http(),
+        "explicit jcode definition wins"
+    );
+    // A project enablement-only override inherits the native base definition.
+    let project = tempfile::tempdir().unwrap();
+    McpConfig::set_server_enabled(
+        "figma",
+        false,
+        McpConfigScope::Project,
+        Some(project.path()),
+    )
+    .unwrap();
+    let cfg = McpConfig::load_for_dir(Some(project.path()));
+    assert!(cfg.servers["figma"].is_http());
+    assert!(!cfg.servers["figma"].is_enabled());
 }

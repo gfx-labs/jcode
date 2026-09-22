@@ -88,6 +88,11 @@ pub fn fingerprint_config(config: &McpServerConfig) -> String {
         0u8.hash(&mut hasher);
     }
     config.shared.hash(&mut hasher);
+    config.timeout_secs.hash(&mut hasher);
+    // OAuth client identity/scopes change which credentials a process uses.
+    serde_json::to_string(&config.oauth)
+        .unwrap_or_default()
+        .hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 

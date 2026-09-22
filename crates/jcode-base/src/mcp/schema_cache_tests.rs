@@ -17,6 +17,7 @@ fn cfg(command: &str, args: &[&str]) -> McpServerConfig {
         enabled: None,
         disabled: None,
         timeout_secs: None,
+        oauth: None,
     }
 }
 
@@ -174,5 +175,30 @@ fn load_save_roundtrip_via_temp_home() {
 
     unsafe {
         std::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn fingerprint_changes_with_oauth_identity_and_timeout() {
+    let base = cfg("x", &[]);
+    let base_fp = fingerprint_config(&base);
+    let mut t = base.clone();
+    t.timeout_secs = Some(99);
+    assert_ne!(fingerprint_config(&t), base_fp);
+    let variants: Vec<crate::mcp::McpOAuthConfig> = vec![
+        serde_json::from_value(serde_json::json!({"client_id": "a"})).unwrap(),
+        serde_json::from_value(serde_json::json!({"client_id": "b"})).unwrap(),
+        serde_json::from_value(serde_json::json!({"client_name": "n"})).unwrap(),
+        serde_json::from_value(serde_json::json!({"scopes": ["s"]})).unwrap(),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(base_fp);
+    for o in variants {
+        let mut c = base.clone();
+        c.oauth = Some(o);
+        assert!(
+            seen.insert(fingerprint_config(&c)),
+            "oauth variant must differ"
+        );
     }
 }

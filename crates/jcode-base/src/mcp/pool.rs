@@ -66,10 +66,13 @@ impl SharedMcpPool {
     }
 
     /// Create pool loading config from default locations
+    ///
+    /// The pool is daemon-global, so it only ever holds global definitions
+    /// (never the daemon's own cwd/repo project config). Project-specific
+    /// definitions and overrides are session-owned by `McpManager`.
     pub fn from_default_config() -> Self {
-        let config_dir = std::env::current_dir().ok();
-        let config = McpConfig::load_for_dir(config_dir.as_deref());
-        Self::new_for_dir(config, config_dir)
+        let config = McpConfig::load_for_dir(None);
+        Self::new_for_dir(config, None)
     }
 
     /// Connect to all configured servers.
@@ -197,6 +200,33 @@ impl SharedMcpPool {
             ));
         }
 
+        result
+    }
+
+    /// Get handles for only the named servers, incrementing reference counts
+    /// for exactly those that are connected.
+    pub async fn acquire_selected(
+        &self,
+        session_id: &str,
+        names: &[String],
+    ) -> HashMap<String, McpHandle> {
+        let handles = self.handles.read().await;
+        let result: HashMap<String, McpHandle> = names
+            .iter()
+            .filter_map(|n| handles.get(n).map(|h| (n.clone(), h.clone())))
+            .collect();
+        drop(handles);
+        let mut refs = self.ref_counts.lock().await;
+        for name in result.keys() {
+            *refs.entry(name.clone()).or_insert(0) += 1;
+        }
+        if !result.is_empty() {
+            crate::logging::info(&format!(
+                "MCP pool: session '{}' acquired {} selected server handle(s)",
+                session_id,
+                result.len()
+            ));
+        }
         result
     }
 
@@ -429,7 +459,7 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn issue_790_reload_reuses_default_config_directory() {
+    async fn default_pool_is_global_only_and_ignores_daemon_cwd_project() {
         let _guard = crate::storage::lock_test_env();
         let original_cwd = std::env::current_dir().expect("current cwd");
         let previous_home = std::env::var_os("JCODE_HOME");
@@ -469,9 +499,9 @@ mod tests {
             crate::env::remove_var("JCODE_HOME");
         }
 
-        assert!(initially_loaded_first);
-        assert!(!reloaded.servers.contains_key("first"));
-        assert!(reloaded.servers.contains_key("first-reloaded"));
+        // The daemon-global pool must never inherit a repo's project config.
+        assert!(!initially_loaded_first);
+        assert!(!reloaded.servers.contains_key("first-reloaded"));
         assert!(!reloaded.servers.contains_key("second"));
     }
 
@@ -513,6 +543,7 @@ mod tests {
                 enabled: None,
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             },
         );
         let pool = SharedMcpPool::new(config);
