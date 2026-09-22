@@ -55,11 +55,7 @@ pub(crate) struct HttpTransport {
 pub(crate) fn sanitize_headers(headers: &HashMap<String, String>) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = headers
         .iter()
-        .filter(|(k, _)| {
-            !RESERVED_HEADERS
-                .iter()
-                .any(|r| k.eq_ignore_ascii_case(r))
-        })
+        .filter(|(k, _)| !RESERVED_HEADERS.iter().any(|r| k.eq_ignore_ascii_case(r)))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     out.sort();
@@ -97,12 +93,17 @@ impl HttpTransport {
     }
 
     pub(crate) fn session_id(&self) -> Option<String> {
-        self.session_id.read().unwrap_or_else(|p| p.into_inner()).clone()
+        self.session_id
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub(crate) fn set_protocol_version(&self, version: &str) {
-        *self.protocol_version.write().unwrap_or_else(|p| p.into_inner()) =
-            Some(version.to_string());
+        *self
+            .protocol_version
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = Some(version.to_string());
     }
 
     async fn authorize(&self, mut req: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
@@ -171,7 +172,12 @@ impl HttpTransport {
         }
         if !status.is_success() {
             let text = read_limited(resp, 4096).await.unwrap_or_default();
-            bail!("MCP server '{}' returned HTTP {}: {}", self.name, status, text);
+            bail!(
+                "MCP server '{}' returned HTTP {}: {}",
+                self.name,
+                status,
+                text
+            );
         }
         Ok(resp)
     }
@@ -188,7 +194,12 @@ impl HttpTransport {
             parse_json_messages(&text)
                 .into_iter()
                 .find(|r| r.id == Some(id))
-                .with_context(|| format!("MCP server '{}' returned no response for id {id}", self.name))
+                .with_context(|| {
+                    format!(
+                        "MCP server '{}' returned no response for id {id}",
+                        self.name
+                    )
+                })
         }
     }
 

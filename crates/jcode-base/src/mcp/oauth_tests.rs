@@ -252,6 +252,7 @@ async fn full_flow_against_mock_figma_like_server() {
     let reg_body: serde_json::Value = serde_json::from_str(&reg.body).unwrap();
     assert_eq!(reg_body["token_endpoint_auth_method"], "client_secret_post");
     let tok = reqs.iter().find(|r| r.path == "/token").unwrap();
+    assert_eq!(tok.method, "POST");
     assert!(tok.body.contains("code=thecode"));
     assert!(tok.body.contains("client_secret=csec"));
     assert!(tok.body.contains("code_verifier="));
@@ -375,7 +376,10 @@ async fn live_figma_discovery_and_dcr() {
     assert!(!registration.client_id.is_empty());
     let supported = &flow.as_meta.token_endpoint_auth_methods_supported;
     assert!(
-        supported.is_empty() || supported.iter().any(|m| m == registration.auth_method.as_str()),
+        supported.is_empty()
+            || supported
+                .iter()
+                .any(|m| m == registration.auth_method.as_str()),
         "registered method {} not in advertised {:?}",
         registration.auth_method.as_str(),
         supported

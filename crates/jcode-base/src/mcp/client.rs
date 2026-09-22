@@ -484,7 +484,9 @@ impl McpClient {
 
         // Send initialized notification
         // Awaited so the server sees it before any later request.
-        self.handle.notify("notifications/initialized", None).await?;
+        self.handle
+            .notify("notifications/initialized", None)
+            .await?;
 
         Ok(())
     }

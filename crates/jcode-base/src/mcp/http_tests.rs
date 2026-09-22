@@ -9,8 +9,14 @@ fn cfg(url: &str) -> McpServerConfig {
 #[test]
 fn sse_decoder_handles_split_chunks_and_multiline() {
     let mut d = SseDecoder::default();
-    assert!(d.feed(b"event: message\r\ndata: {\"jsonrpc\":\"2.0\",").unwrap().is_empty());
-    let ev = d.feed(b"\r\ndata: \"id\":1,\"result\":{}}\r\n\r\n").unwrap();
+    assert!(
+        d.feed(b"event: message\r\ndata: {\"jsonrpc\":\"2.0\",")
+            .unwrap()
+            .is_empty()
+    );
+    let ev = d
+        .feed(b"\r\ndata: \"id\":1,\"result\":{}}\r\n\r\n")
+        .unwrap();
     assert_eq!(ev.len(), 1);
     let parsed = parse_json_messages(&ev[0]);
     assert_eq!(parsed[0].id, Some(1));
@@ -77,12 +83,14 @@ async fn initialize_session_and_protocol_headers_roundtrip() {
         }
     }))
     .await;
-    let client = crate::mcp::McpClient::connect("mock".into(), &cfg(&format!("{}/mcp", server.base)))
-        .await
-        .unwrap();
+    let client =
+        crate::mcp::McpClient::connect("mock".into(), &cfg(&format!("{}/mcp", server.base)))
+            .await
+            .unwrap();
     assert_eq!(client.tools().len(), 1);
     let reqs = server.requests.lock().unwrap().clone();
     assert_eq!(reqs.len(), 3);
+    assert!(reqs.iter().all(|r| r.method == "POST"));
     assert!(reqs[0].headers.get("mcp-session-id").is_none());
     assert!(reqs[0].headers["accept"].contains("text/event-stream"));
     // Ordered: initialized notification completes before tools/list.
