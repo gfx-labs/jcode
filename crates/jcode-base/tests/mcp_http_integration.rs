@@ -3,6 +3,7 @@
 
 use jcode_base::mcp::{ContentBlock, McpClient, McpConfig, McpManager, McpServerConfig};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -18,6 +19,7 @@ struct Seen {
 struct Fixture {
     url: String,
     seen: Arc<Mutex<Vec<Seen>>>,
+    initialized_complete: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -33,16 +35,26 @@ impl Fixture {
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
         let records = seen.clone();
+        let initialized_complete = Arc::new(AtomicBool::new(false));
+        let completed = initialized_complete.clone();
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     break;
                 };
                 let records = records.clone();
-                tokio::spawn(async move { handle(stream, records, sse, unauthorized).await });
+                let completed = completed.clone();
+                tokio::spawn(
+                    async move { handle(stream, records, completed, sse, unauthorized).await },
+                );
             }
         });
-        Self { url, seen, task }
+        Self {
+            url,
+            seen,
+            initialized_complete,
+            task,
+        }
     }
 
     fn requests(&self) -> Vec<Seen> {
@@ -58,7 +70,13 @@ impl Fixture {
     }
 }
 
-async fn handle(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, sse: bool, unauthorized: bool) {
+async fn handle(
+    mut stream: TcpStream,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    initialized_complete: Arc<AtomicBool>,
+    sse: bool,
+    unauthorized: bool,
+) {
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 4096];
@@ -103,6 +121,12 @@ async fn handle(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, sse: bool, u
         body,
     };
     let method = record.body["method"].as_str().unwrap_or("").to_owned();
+    if method == "tools/list" {
+        assert!(
+            initialized_complete.load(Ordering::SeqCst),
+            "tools/list raced ahead of initialized response"
+        );
+    }
     let id = record.body["id"].clone();
     seen.lock().unwrap().push(record);
     let (status, extra, payload) = if unauthorized {
@@ -143,6 +167,13 @@ async fn handle(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>, sse: bool, u
         payload.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
+    if method == "notifications/initialized" {
+        initialized_complete.store(true, Ordering::SeqCst);
+    }
+    // SSE streams can remain open long after the matching JSON-RPC event.
+    if sse && (method == "tools/list" || method == "tools/call") {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
 }
 
 fn record_tool_echo(seen: &Arc<Mutex<Vec<Seen>>>) -> String {
@@ -210,14 +241,18 @@ async fn http_client_sse_and_json_roundtrip() {
         .unwrap()
         .unwrap();
         assert_eq!(client.tools()[0].name, "echo");
-        let result = client
-            .call_tool("echo", json!({"value":"roundtrip"}))
-            .await
-            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            client.call_tool("echo", json!({"value":"roundtrip"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert!(
             matches!(&result.content[0], ContentBlock::Text { text } if text == r#"{"value":"roundtrip"}"#)
         );
         assert_wire(&fixture.requests());
+        assert!(fixture.initialized_complete.load(Ordering::SeqCst));
         client.shutdown().await;
     }
 }
