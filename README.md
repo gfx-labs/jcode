@@ -585,6 +585,8 @@ Primary config files:
 - `~/.jcode/mcp.json` for global MCP servers
 - `.jcode/mcp.json` for project-local MCP servers
 
+Project settings take precedence over global settings. Within each scope, Jcode's own configuration takes precedence over imported Claude Code definitions, so an explicitly configured native server is not silently replaced by an imported proxy.
+
 Claude Code compatibility:
 
 - `~/.claude.json` (Claude Code's user config): top-level `mcpServers`, plus per-project servers under `projects.<abs_path>.mcpServers` for the current directory
