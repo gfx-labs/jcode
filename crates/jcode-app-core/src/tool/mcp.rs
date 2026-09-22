@@ -990,6 +990,9 @@ impl McpManagementTool {
         let registry = self.registry.as_ref().and_then(|r| r.upgrade());
         let session_id = ctx.session_id.clone();
         let server = name.clone();
+        let key = pending_auth_key(&config);
+        let task_key = key.clone();
+        let (gen_tx, gen_rx) = tokio::sync::oneshot::channel::<u64>();
         let handle = tokio::spawn(async move {
             let result = crate::mcp::oauth::authenticate(&server, &config, |url| {
                 if let Some(tx) = url_tx.lock().ok().and_then(|mut g| g.take()) {
@@ -1011,7 +1014,9 @@ impl McpManagementTool {
                 },
                 Err(e) => format!("MCP authentication for '{server}' failed: {e}"),
             };
-            forget_pending_auth(&server);
+            if let Ok(generation) = gen_rx.await {
+                forget_pending_auth(&task_key, generation);
+            }
             crate::bus::Bus::global().publish(crate::bus::BusEvent::UiActivity(
                 crate::bus::UiActivity::auth(Some(session_id), message.clone(), Some(message)),
             ));
@@ -1019,7 +1024,7 @@ impl McpManagementTool {
         });
         // A new auth (or logout) supersedes any in-flight flow for this server
         // so a late callback cannot store stale credentials.
-        replace_pending_auth(&name, handle.abort_handle());
+        let _ = gen_tx.send(replace_pending_auth(&key, handle.abort_handle()));
 
         tokio::select! {
             url = url_rx => match url {
@@ -1037,7 +1042,7 @@ impl McpManagementTool {
                 },
             },
             _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
-                cancel_pending_auth(&name);
+                cancel_pending_auth(&key);
                 anyhow::bail!("timed out preparing the authorization URL for '{name}'")
             }
         }
@@ -1050,7 +1055,7 @@ impl McpManagementTool {
         let config = self
             .configured_server(&name, ctx)
             .ok_or_else(|| anyhow::anyhow!("MCP server '{name}' is not configured"))?;
-        let cancelled = cancel_pending_auth(&name);
+        let cancelled = cancel_pending_auth(&pending_auth_key(&config));
         let removed = crate::mcp::oauth::logout(&config)?;
         let connected = self.manager.read().await.connected_servers().await;
         if connected.contains(&name) {
@@ -1078,7 +1083,7 @@ impl McpManagementTool {
     }
 }
 
-type PendingAuthMap = HashMap<String, tokio::task::AbortHandle>;
+type PendingAuthMap = HashMap<String, (u64, tokio::task::AbortHandle)>;
 
 fn pending_auth() -> &'static std::sync::Mutex<PendingAuthMap> {
     static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingAuthMap>> =
@@ -1086,30 +1091,54 @@ fn pending_auth() -> &'static std::sync::Mutex<PendingAuthMap> {
     PENDING.get_or_init(Default::default)
 }
 
-fn replace_pending_auth(name: &str, handle: tokio::task::AbortHandle) {
+/// Pending flows are keyed by the credential identity (endpoint URL plus
+/// OAuth client settings), not the server name, so identically named servers
+/// in different repos or sessions never cancel each other.
+fn pending_auth_key(config: &McpServerConfig) -> String {
+    let oauth = config
+        .oauth
+        .as_ref()
+        .and_then(|o| serde_json::to_string(o).ok())
+        .unwrap_or_default();
+    format!(
+        "{}\u{1f}{}",
+        config.url.as_deref().unwrap_or_default().trim(),
+        oauth
+    )
+}
+
+/// Register `handle`, aborting any flow it supersedes. Returns its generation.
+fn replace_pending_auth(key: &str, handle: tokio::task::AbortHandle) -> u64 {
+    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut map) = pending_auth().lock()
-        && let Some(old) = map.insert(name.to_string(), handle)
+        && let Some((_, old)) = map.insert(key.to_string(), (generation, handle))
     {
         old.abort();
     }
+    generation
 }
 
 /// Abort an in-flight OAuth flow. Returns whether one was pending.
-fn cancel_pending_auth(name: &str) -> bool {
+fn cancel_pending_auth(key: &str) -> bool {
     pending_auth()
         .lock()
         .ok()
-        .and_then(|mut map| map.remove(name))
-        .map(|h| {
+        .and_then(|mut map| map.remove(key))
+        .map(|(_, h)| {
             h.abort();
             true
         })
         .unwrap_or(false)
 }
 
-fn forget_pending_auth(name: &str) {
-    if let Ok(mut map) = pending_auth().lock() {
-        map.remove(name);
+/// Drop the entry only if it still belongs to `generation`, so a finishing
+/// older flow cannot remove its replacement.
+fn forget_pending_auth(key: &str, generation: u64) {
+    if let Ok(mut map) = pending_auth().lock()
+        && map.get(key).is_some_and(|(g, _)| *g == generation)
+    {
+        map.remove(key);
     }
 }
 
@@ -1341,6 +1370,46 @@ mod tests {
             "disabled state must be visible: {}",
             result.output
         );
+    }
+
+    fn remote(url: &str) -> McpServerConfig {
+        serde_json::from_value(json!({"type": "http", "url": url})).unwrap()
+    }
+
+    #[test]
+    fn pending_auth_key_is_per_endpoint_not_name() {
+        let a = pending_auth_key(&remote("https://a.example/mcp"));
+        let b = pending_auth_key(&remote("https://b.example/mcp"));
+        assert_ne!(a, b);
+        assert_eq!(a, pending_auth_key(&remote("https://a.example/mcp")));
+    }
+
+    #[tokio::test]
+    async fn pending_auth_lifecycle_isolated_and_generation_safe() {
+        let key_a = pending_auth_key(&remote("https://lifecycle-a.example/mcp"));
+        let key_b = pending_auth_key(&remote("https://lifecycle-b.example/mcp"));
+        let sleeper = || tokio::spawn(tokio::time::sleep(std::time::Duration::from_secs(60)));
+
+        let a1 = sleeper();
+        let g1 = replace_pending_auth(&key_a, a1.abort_handle());
+        let b1 = sleeper();
+        replace_pending_auth(&key_b, b1.abort_handle());
+
+        // Re-auth of A aborts only the older A flow.
+        let a2 = sleeper();
+        let g2 = replace_pending_auth(&key_a, a2.abort_handle());
+        assert!(a1.await.unwrap_err().is_cancelled());
+        assert!(!b1.is_finished());
+
+        // Stale completion must not drop the replacement.
+        forget_pending_auth(&key_a, g1);
+        assert!(cancel_pending_auth(&key_a));
+        assert!(a2.await.unwrap_err().is_cancelled());
+        forget_pending_auth(&key_a, g2);
+        assert!(!cancel_pending_auth(&key_a));
+
+        assert!(cancel_pending_auth(&key_b));
+        assert!(b1.await.unwrap_err().is_cancelled());
     }
 
     #[tokio::test]
