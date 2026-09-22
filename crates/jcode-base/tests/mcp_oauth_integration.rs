@@ -1,10 +1,12 @@
 //! End-to-end OAuth authorization code, dynamic registration, PKCE and refresh
 //! against a loopback authorization server. No browser or external network.
+use base64::Engine;
 use jcode_base::mcp::{
-    McpServerConfig,
+    McpClient, McpServerConfig,
     oauth::{self, McpAuthStatus},
 };
 use serde_json::{Value, json};
+use sha2::Digest;
 use std::sync::{Arc, Mutex};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -22,6 +24,10 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let events = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let records = events.clone();
+    let bearer_observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_bearer = bearer_observed.clone();
+    let challenge = Arc::new(Mutex::new(None::<String>));
+    let server_challenge = challenge.clone();
     let base = origin.clone();
     let server = tokio::spawn(async move {
         loop {
@@ -30,6 +36,8 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
             };
             let base = base.clone();
             let records = records.clone();
+            let challenge = server_challenge.clone();
+            let bearer = server_bearer.clone();
             tokio::spawn(async move {
                 let mut request = Vec::new();
                 let end = loop {
@@ -76,9 +84,20 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
                 let body = String::from_utf8_lossy(&request[end..end + len]).to_string();
                 records.lock().unwrap().push((path.clone(), body.clone()));
                 let (status, extra, response) = match path.as_str() {
+                    "/mcp" if headers.to_ascii_lowercase().contains("authorization: bearer renewed-token") => {
+                        bearer.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let message = serde_json::from_str::<Value>(&body).unwrap();
+                        let id = message["id"].clone();
+                        match message["method"].as_str().unwrap_or("") {
+                            "initialize" => ("200 OK", String::new(), json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}).to_string()),
+                            "notifications/initialized" => ("202 Accepted", String::new(), String::new()),
+                            "tools/list" => ("200 OK", String::new(), json!({"jsonrpc":"2.0","id":id,"result":{"tools":[]}}).to_string()),
+                            _ => ("404 Not Found", String::new(), String::new()),
+                        }
+                    },
                     "/mcp" => ("401 Unauthorized", format!("WWW-Authenticate: Bearer resource_metadata=\"{base}/.well-known/oauth-protected-resource\"\r\n"), String::new()),
                     "/.well-known/oauth-protected-resource" => ("200 OK", String::new(), json!({"resource":format!("{base}/mcp"),"authorization_servers":[base],"scopes_supported":["read"]}).to_string()),
-                    "/.well-known/oauth-authorization-server" => ("200 OK", String::new(), json!({"issuer":base,"authorization_endpoint":format!("{base}/authorize"),"token_endpoint":format!("{base}/token"),"registration_endpoint":format!("{base}/register"),"code_challenge_methods_supported":["S256"]}).to_string()),
+                    "/.well-known/oauth-authorization-server" => ("200 OK", String::new(), json!({"issuer":base,"authorization_endpoint":format!("{base}/authorize"),"token_endpoint":format!("{base}/token"),"registration_endpoint":format!("{base}/register"),"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["client_secret_post","client_secret_basic"]}).to_string()),
                     "/register" => ("201 Created", String::new(), json!({"client_id":"registered-client","client_secret":"registered-secret"}).to_string()),
                     "/token" => {
                         let params: std::collections::HashMap<_,_> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
@@ -86,7 +105,9 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
                         assert_eq!(params.get("client_secret").map(String::as_str), Some("registered-secret"));
                         if params.get("grant_type").map(String::as_str) == Some("authorization_code") {
                             assert_eq!(params.get("code").map(String::as_str), Some("test-code"));
-                            assert!(params.contains_key("code_verifier"));
+                            let challenge = challenge.lock().unwrap().clone().expect("authorization challenge");
+                            let actual = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(params["code_verifier"].as_bytes()));
+                            assert_eq!(actual, challenge, "PKCE verifier does not match authorization challenge");
                             ("200 OK", String::new(), json!({"access_token":"first-token","refresh_token":"renew-token","expires_in":1}).to_string())
                         } else {
                             assert_eq!(params.get("grant_type").map(String::as_str), Some("refresh_token"));
@@ -108,6 +129,7 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
         serde_json::from_value(json!({"type":"http","url":format!("{origin}/mcp")})).unwrap();
     let auth_url = Arc::new(Mutex::new(None::<String>));
     let captured = auth_url.clone();
+    let callback_challenge = challenge.clone();
     tokio::time::timeout(
         std::time::Duration::from_secs(8),
         oauth::authenticate("fixture", &config, move |url| {
@@ -122,6 +144,7 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
                 query.get("client_id").map(String::as_str),
                 Some("registered-client")
             );
+            *callback_challenge.lock().unwrap() = Some(query["code_challenge"].clone());
             let callback = format!(
                 "{}?code=test-code&state={}",
                 query["redirect_uri"], query["state"]
@@ -149,7 +172,55 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
         .clone();
     let registration: Value = serde_json::from_str(&registration).unwrap();
     assert_eq!(registration["client_name"], "jcode");
-    assert_eq!(registration["token_endpoint_auth_method"], "none");
+    assert_eq!(
+        registration["token_endpoint_auth_method"],
+        "client_secret_post"
+    );
+    let store = home.path().join("mcp-oauth.json");
+    assert!(store.exists(), "OAuth credentials not persisted");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&store).unwrap().permissions().mode() & 0o077,
+            0,
+            "OAuth credentials must be owner-only"
+        );
+    }
+    // A one-second token is expired by the 60-second refresh margin. Connecting
+    // through the public transport must refresh before initialize and send only
+    // the renewed bearer to the MCP endpoint.
+    let mut client = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        McpClient::connect("fixture".into(), &config),
+    )
+    .await
+    .unwrap();
+    let client = client.expect("refresh should authenticate initialize and list tools");
+    assert!(client.tools().is_empty());
+    assert!(
+        bearer_observed.load(std::sync::atomic::Ordering::SeqCst),
+        "renewed bearer absent from MCP request"
+    );
+    client.shutdown().await;
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(p, b)| p == "/token" && b.contains("grant_type=refresh_token"))
+    );
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(p, b)| p == "/mcp" && b.contains("initialize"))
+    );
+    assert!(matches!(
+        oauth::auth_status(&config),
+        McpAuthStatus::Authenticated
+    ));
     assert!(oauth::logout(&config).unwrap());
     assert_eq!(oauth::auth_status(&config), McpAuthStatus::NotAuthenticated);
     // A callback with a mismatched state must not exchange a code or persist tokens.
