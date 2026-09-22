@@ -126,10 +126,10 @@ impl McpHandle {
         }
 
         let msg = serde_json::to_string(&request)? + "\n";
-        self.writer_tx
-            .send(msg)
-            .await
-            .context("Failed to send request")?;
+        if self.writer_tx.send(msg).await.is_err() {
+            self.pending.lock().await.remove(&id);
+            return Err(self.closed_error());
+        }
 
         let response = match tokio::time::timeout(self.request_timeout, rx).await {
             Ok(r) => r.map_err(|_| self.closed_error())?,
