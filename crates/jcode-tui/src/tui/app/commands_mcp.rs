@@ -178,11 +178,22 @@ pub(super) fn mcp_suggestions_for(prefix: &str, servers: &[String]) -> Vec<(Stri
 
 fn mcp_tool_call(input: Value) -> crate::message::ToolCall {
     crate::message::ToolCall {
-        id: crate::id::new_id("call"),
+        id: crate::id::new_id("mcp_command"),
         name: "mcp".to_string(),
         input,
         intent: None,
         thought_signature: None,
+    }
+}
+
+impl App {
+    /// Manual slash commands have no assistant response to explain a collapsed
+    /// tool result. Surface their full output without expanding model tool calls.
+    pub(super) fn show_manual_mcp_result(&mut self, id: &str, output: &str) {
+        if id.starts_with("mcp_command_") {
+            self.status_notice = None;
+            self.push_display_message(DisplayMessage::system(output.to_string()));
+        }
     }
 }
 
@@ -233,6 +244,44 @@ mod tests {
 
     fn ok(s: &str) -> Value {
         parse_mcp_command(s).expect("is /mcp").expect("parses")
+    }
+
+    #[test]
+    fn manual_mcp_results_are_visible_without_expanding_tools() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        for output in [
+            "No MCP servers connected",
+            "figma (connected)",
+            "Error: Unknown MCP server",
+        ] {
+            let mut app = crate::tui::app::tests::create_test_app();
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            app.set_status_notice("Running /mcp");
+            let call = mcp_tool_call(json!({"action": "list"}));
+            app.handle_server_event(
+                crate::protocol::ServerEvent::ToolDone {
+                    id: call.id,
+                    name: call.name,
+                    output: output.to_string(),
+                    error: output.starts_with("Error:").then(|| output.to_string()),
+                },
+                &mut remote,
+            );
+            assert!(app.status_notice.is_none());
+            let message = app.display_messages().last().unwrap();
+            assert_eq!(message.role, "system");
+            assert_eq!(message.content, output);
+            assert!(message.tool_data.is_none());
+        }
+    }
+
+    #[test]
+    fn model_mcp_results_do_not_add_command_output() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let before = app.display_messages().len();
+        app.show_manual_mcp_result("call_model", "tool output");
+        assert_eq!(app.display_messages().len(), before);
     }
 
     #[test]

@@ -298,7 +298,11 @@ async fn run_manual_tool(
     tx: mpsc::UnboundedSender<ServerEvent>,
 ) {
     {
-        let tool_call_id = crate::id::new_id("call");
+        let tool_call_id = crate::id::new_id(if tool_name == "mcp" {
+            "mcp_command"
+        } else {
+            "call"
+        });
 
         let message_id = {
             let mut agent_guard = agent.lock().await;

@@ -383,6 +383,8 @@ fn handle_manual_tool_completed(app: &mut App, result: ManualToolCompleted) {
     );
     let _ = app.session.save();
 
+    app.show_manual_mcp_result(&result.tool_call.id, &result.output);
+
     if result.tool_call.name == "subagent" {
         app.subagent_status = None;
         app.set_status_notice(if result.is_error {
