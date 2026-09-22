@@ -263,9 +263,30 @@ mod tests {
         let (request_tx, request_rx) = oneshot::channel();
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = vec![0; 8192];
-            let bytes = stream.read(&mut request).await.unwrap_or(0);
-            request.truncate(bytes);
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 8192];
+                let bytes = stream.read(&mut chunk).await.unwrap_or(0);
+                if bytes == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..bytes]);
+                if let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= header_end + 4 + length {
+                        break;
+                    }
+                }
+            }
             let _ = request_tx.send(String::from_utf8_lossy(&request).into_owned());
             tokio::time::sleep(delay).await;
             let response = format!(
