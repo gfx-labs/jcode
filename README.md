@@ -600,7 +600,41 @@ That imported file is then jcode-owned; later Codex changes are not synced
 automatically. Imported environment values are copied too and may contain
 secrets.
 
-Both the canonical `mcpServers` key and jcode's historical `servers` key are accepted. jcode currently supports stdio (command-based) servers only; HTTP/SSE entries (`"type": "http"`/`"sse"`) are recognized and skipped with a log line.
+Both the canonical `mcpServers` key and jcode's historical `servers` key are accepted. Jcode supports stdio (command-based) servers and native Streamable HTTP servers (`"type": "http"` or `"streamable-http"`). Streamable HTTP responses may be JSON or SSE. Legacy standalone SSE transport (`"type": "sse"`) is not supported.
+
+#### Manage MCP servers inside Jcode
+
+Use `/mcp` in the TUI to inspect configured servers, connection state, and authentication. Management commands run directly, without asking the model to edit configuration.
+
+```text
+/mcp list
+/mcp add figma https://mcp.figma.com/mcp --global
+/mcp auth figma
+/mcp disable figma --project
+/mcp enable figma --project
+/mcp reload
+/mcp logout figma
+```
+
+Scope defaults to global. Use `--project` for repository-local settings and `--global` for settings shared across repositories. These flags are persisted, not session-only toggles. Project flags override global flags, so you can define a server globally and disable it in individual repositories without duplicating its command, URL, or credentials. Project configuration is stored in `.jcode/mcp.json` at the nearest Git root (including Git worktrees), or in the current directory when outside a repository. A minimal project override looks like:
+
+```json
+{
+  "mcpServers": {
+    "figma": { "enabled": false }
+  }
+}
+```
+
+Only the chosen configuration file is edited. Environment expressions and unrelated fields are preserved rather than writing an expanded, merged configuration back to disk. Disabling a server removes its tools from the current session, including deferred discovery. It does not terminate connections owned by other sessions.
+
+#### Figma remote MCP
+
+Figma runs directly over HTTPS in Jcode. There is no `mcp-remote` proxy, Node process, or separate client needed to obtain credentials. `/mcp auth figma` starts the browser OAuth flow with PKCE and a local callback. Complete Figma's consent page in your browser, then return to Jcode.
+
+Figma currently restricts OAuth registration by client name. For the exact `mcp.figma.com` host, Jcode uses the compatible OAuth registration name `Codex`. This is a registration compatibility setting, not a claim that Jcode is an official Figma client. Other servers use Jcode's normal identity. You can explicitly override the registration name with `oauth.client_name` in the server configuration. Figma may change its acceptance rules independently of Jcode.
+
+OAuth credentials are kept separately in the user-level `mcp-oauth.json`, not in repository configuration. Do not commit that credentials file. `/mcp logout figma` removes local credentials.
 
 Example MCP config:
 
