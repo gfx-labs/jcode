@@ -171,16 +171,20 @@ for line in sys.stdin:
 fn mcp_collision_manual_lifecycle_real_stdio() {
     const MARKER: &str = "JCODE_MCP_MANAGEMENT_TEST_CHILD";
     if std::env::var_os(MARKER).is_none() {
-        if !std::process::Command::new("python3")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-        {
-            eprintln!("SKIP: python3 unavailable for real MCP stdio test");
+        // Resolve before env_clear: python3 may be a mise/asdf shim that
+        // refuses to run when the isolated child no longer has the user's HOME.
+        let python = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|path| path.trim().to_owned())
+            .filter(|path| std::path::Path::new(path).is_absolute());
+        let Some(python) = python else {
+            eprintln!("SKIP: python3 interpreter unavailable for real MCP stdio test");
             return;
-        }
+        };
         let home = tempfile::tempdir().unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child.env_clear();
@@ -200,6 +204,7 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
         }
         let status = child
             .env(MARKER, "1")
+            .env("JCODE_MCP_TEST_PYTHON", python)
             .env("JCODE_HOME", home.path().join("jcode"))
             .env("JCODE_RUNTIME_DIR", home.path().join("runtime"))
             .current_dir(home.path())
@@ -218,9 +223,7 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
     }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            eprintln!("lifecycle: registry begin");
             let registry = Registry::new(Arc::new(MockProvider)).await;
-            eprintln!("lifecycle: registry ready, manager begin");
             let manager = Arc::new(RwLock::new(crate::mcp::McpManager::with_config(
                 crate::mcp::McpConfig::default(),
             )));
@@ -229,39 +232,30 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
             let catalog = collision_catalog();
             let aliases = crate::mcp::dispatch_names(&catalog);
             let legacy = crate::mcp::dispatch_name(&catalog[0].0, &catalog[0].1.name);
-            eprintln!("lifecycle: setup ready, connect begin");
             for (index, (server, tool)) in catalog.iter().enumerate() {
-                eprintln!("lifecycle: connecting {server}");
                 let output = management.execute(serde_json::json!({
-                    "action":"connect", "server":server, "command":"python3",
+                    "action":"connect", "server":server, "command":std::env::var("JCODE_MCP_TEST_PYTHON").unwrap(),
                     "args":["-I", "-S", "-u", "-c", SERVER, server, serde_json::to_string(&vec![&tool.name]).unwrap()]
                 }), ctx.clone()).await.unwrap();
-                eprintln!("lifecycle: connected {server}");
                 assert!(output.output.contains("Connected to MCP server"), "{}", output.output);
                 if index == 1 { assert!(output.output.contains(&aliases[1]), "{}", output.output); }
             }
             assert!(!registry.tool_names().await.contains(&legacy));
-            eprintln!("lifecycle: listing");
             let listed = management.execute(serde_json::json!({"action":"list"}), ctx.clone()).await.unwrap();
-            eprintln!("lifecycle: listed, executing proxies");
             for (index, alias) in aliases.iter().enumerate() {
                 assert!(listed.output.contains(alias));
-                eprintln!("lifecycle: executing {alias}");
                 let output = registry.execute(alias, serde_json::json!({"token":"marker"}), ctx.clone()).await.unwrap();
                 let value: Value = serde_json::from_str(&output.output).unwrap();
                 assert_eq!(value["server"], catalog[index].0);
                 assert_eq!(value["tool"], catalog[index].1.name);
             }
-            eprintln!("lifecycle: proxies done, policy begin");
             set_session_tool_policy(&ctx.session_id, None, HashSet::from([aliases[0].clone()]));
             let deferred = mcp::McpCallTool::new(Arc::clone(&manager)).with_registry(registry.clone());
             let denied = deferred.execute(serde_json::json!({"server":"server-a","tool":"query-docs","arguments":{}}), ctx.clone()).await.unwrap_err();
             assert!(denied.to_string().contains("not allowed"));
-            eprintln!("lifecycle: deferred peer call");
             let peer = deferred.execute(serde_json::json!({"server":"server_a","tool":"query_docs","arguments":{}}), ctx.clone()).await.unwrap();
             assert_eq!(serde_json::from_str::<Value>(&peer.output).unwrap()["server"], "server_a");
             set_session_tool_policy(&ctx.session_id, None, HashSet::from([aliases[1].clone()]));
-            eprintln!("lifecycle: disconnect server-a");
             management.execute(serde_json::json!({"action":"disconnect","server":"server-a"}), ctx.clone()).await.unwrap();
             let names = registry.tool_names().await;
             assert!(names.contains(&legacy));
@@ -272,10 +266,8 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
             let denied = deferred.execute(serde_json::json!({"server":"server_a","tool":"query_docs","arguments":{}}), ctx.clone()).await.unwrap_err();
             assert!(denied.to_string().contains("not allowed"));
             clear_session_tool_policy(&ctx.session_id);
-            eprintln!("lifecycle: post-disconnect peer call");
             let peer = registry.execute(&legacy, serde_json::json!({}), ctx.clone()).await.unwrap();
             assert_eq!(serde_json::from_str::<Value>(&peer.output).unwrap()["server"], "server_a");
-            eprintln!("lifecycle: disconnect server_a");
             management.execute(serde_json::json!({"action":"disconnect","server":"server_a"}), ctx).await.unwrap();
             assert!(!registry.tool_names().await.iter().any(|name| name.starts_with("mcp__")));
         }).await.expect("management lifecycle exceeded 30 seconds");
