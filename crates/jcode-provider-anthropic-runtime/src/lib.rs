@@ -17,6 +17,7 @@
 
 use jcode_base::auth;
 use jcode_base::auth::oauth;
+use jcode_provider_core::anthropic::CLAUDE_CODE_COMPAT_VERSION;
 use jcode_provider_core::{EventStream, NativeToolResultSender, Provider};
 fn oauth_beta_headers(model: &str) -> &'static str {
     jcode_provider_core::anthropic_oauth_beta_headers(model)
@@ -413,7 +414,7 @@ async fn ensure_oauth_preflight(
             rate_limit_tier: "default_claude_ai".to_string(),
             first_token_time: 1_740_976_801_491,
             email: email_address,
-            app_version: "2.1.257".to_string(),
+            app_version: CLAUDE_CODE_COMPAT_VERSION.to_string(),
         },
         forced_variations: Default::default(),
         forced_features: Vec::new(),

@@ -5,9 +5,7 @@ use jcode_provider_core::anthropic_map_tool_name_for_oauth as map_tool_name_for_
 use serde::Serialize;
 use serde_json::{Value, json};
 
-/// Claude Code billing attribution text observed in the official CLI's system
-/// prompt blocks.
-pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.257; cc_entrypoint=sdk-cli; cch=33f85;";
+pub use jcode_provider_core::anthropic::OAUTH_BILLING_HEADER;
 
 const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
@@ -876,6 +874,27 @@ pub struct ApiTool {
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControlParam>,
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+    use jcode_provider_core::anthropic::CLAUDE_CODE_COMPAT_VERSION;
+
+    #[test]
+    fn oauth_compatibility_metadata_is_serialized_only_for_oauth() {
+        let oauth = serde_json::to_value(build_system_param("instructions", true, false)).unwrap();
+        assert_eq!(
+            oauth[0]["text"],
+            format!(
+                "x-anthropic-billing-header: cc_version={CLAUDE_CODE_COMPAT_VERSION}; cc_entrypoint=sdk-cli; cch=33f85;"
+            )
+        );
+        let api_key =
+            serde_json::to_value(build_system_param("instructions", false, false)).unwrap();
+        assert_eq!(api_key.as_array().unwrap().len(), 1);
+        assert_eq!(api_key[0]["text"], "instructions");
+    }
 }
 
 #[cfg(test)]

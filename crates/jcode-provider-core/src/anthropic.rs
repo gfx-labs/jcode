@@ -1,3 +1,21 @@
+// Keep all version-bearing OAuth compatibility metadata derived from one literal.
+// Anthropic requires at least 2.1.280 for claude-opus-5-5 (September 2026).
+// This is a protocol compatibility version, not the installed Jcode version.
+macro_rules! claude_code_compatibility_metadata {
+    ($version:literal) => {
+        pub const CLAUDE_CODE_COMPAT_VERSION: &str = $version;
+        pub const CLAUDE_CLI_USER_AGENT: &str =
+            concat!("claude-cli/", $version, " (external, sdk-cli)");
+        pub const OAUTH_BILLING_HEADER: &str = concat!(
+            "cc_version=",
+            $version,
+            "; cc_entrypoint=sdk-cli; cch=33f85;"
+        );
+    };
+}
+
+claude_code_compatibility_metadata!("2.1.280");
+
 /// Claude Code OAuth beta headers used by the Anthropic transport.
 pub const ANTHROPIC_OAUTH_BETA_HEADERS: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,advanced-tool-use-2025-11-20,effort-2025-11-24";
 
@@ -418,6 +436,24 @@ pub fn anthropic_stainless_os() -> &'static str {
 mod tests {
     use super::*;
     use crate::ALL_CLAUDE_MODELS;
+
+    #[test]
+    fn oauth_compatibility_metadata_is_consistent_and_supports_opus_5_5() {
+        let version: Vec<u32> = CLAUDE_CODE_COMPAT_VERSION
+            .split('.')
+            .map(|part| part.parse().expect("numeric compatibility version"))
+            .collect();
+        assert_eq!(version.len(), 3);
+        assert!(version.as_slice() >= [2, 1, 280].as_slice());
+        assert_eq!(
+            CLAUDE_CLI_USER_AGENT,
+            format!("claude-cli/{CLAUDE_CODE_COMPAT_VERSION} (external, sdk-cli)")
+        );
+        assert_eq!(
+            OAUTH_BILLING_HEADER,
+            format!("cc_version={CLAUDE_CODE_COMPAT_VERSION}; cc_entrypoint=sdk-cli; cch=33f85;")
+        );
+    }
 
     #[test]
     fn model_suffix_helpers_require_explicit_1m_suffix() {

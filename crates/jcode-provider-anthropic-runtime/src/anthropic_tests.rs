@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn oauth_compatibility_metadata_matches_shared_version() {
+    let request = Client::new()
+        .get("https://api.anthropic.com/v1/messages")
+        .header("User-Agent", CLAUDE_CLI_USER_AGENT)
+        .build()
+        .unwrap();
+    assert_eq!(
+        request.headers()["user-agent"].to_str().unwrap(),
+        format!("claude-cli/{CLAUDE_CODE_COMPAT_VERSION} (external, sdk-cli)")
+    );
+    let attributes = OAuthEvalAttributes {
+        id: String::new(),
+        session_id: String::new(),
+        device_id: String::new(),
+        platform: String::new(),
+        organization_uuid: String::new(),
+        account_uuid: String::new(),
+        user_type: String::new(),
+        subscription_type: String::new(),
+        rate_limit_tier: String::new(),
+        first_token_time: 0,
+        email: String::new(),
+        app_version: CLAUDE_CODE_COMPAT_VERSION.to_string(),
+    };
+    let value = serde_json::to_value(attributes).unwrap();
+    assert_eq!(value["appVersion"], CLAUDE_CODE_COMPAT_VERSION);
+    assert!(value.get("app_version").is_none());
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<std::ffi::OsString>,
