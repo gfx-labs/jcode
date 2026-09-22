@@ -8,7 +8,7 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 4;
+export const API_VERSION_MINOR = 6;
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -172,6 +172,28 @@ export type ApiRequest =
   | { req: "cancel_soft_interrupts"; session_id: string }
   | { req: "ping" };
 
+/** Markdown/PDF panel state, shared with the native runtime. */
+export type SidePanelPageFormat = "markdown" | "pdf";
+export type SidePanelPageSource = "managed" | "linked_file" | "ephemeral";
+export interface SidePanelPage {
+  id: string;
+  title: string;
+  file_path: string;
+  format: SidePanelPageFormat;
+  source: SidePanelPageSource;
+  content: string;
+  /** Base64 PDF bytes, separate from the human-readable Markdown fallback. */
+  pdf_data?: string;
+  updated_at_ms: number;
+}
+export interface SidePanelSnapshot {
+  /** Monotonic explicit-focus intent. Absent on older servers. */
+  focus_revision?: number;
+  focused_page_id: string | null;
+  /** Omitted by the runtime when empty. */
+  pages?: SidePanelPage[];
+}
+
 export type ApiEvent =
   | { ev: "hello_ok"; version: number; server: string; capabilities?: string[] }
   | { ev: "ok" }
@@ -181,7 +203,9 @@ export type ApiEvent =
   | { ev: "session_forked"; session: SessionInfo }
   | { ev: "history"; session_id: string; messages: HistoryMessage[]; images?: RenderedImage[] }
   | { ev: "pong" }
-  | { ev: "text_delta"; session_id: string; text: string }
+  | { ev: "text_delta"; session_id: string; text: string; message_id?: string }
+  | { ev: "text_done"; session_id: string; message_id?: string }
+  | { ev: "text_replace"; session_id: string; message_id?: string; text: string }
   | { ev: "reasoning_delta"; session_id: string; text: string }
   | { ev: "reasoning_done"; session_id: string; duration_secs?: number }
   | { ev: "tool_start"; session_id: string; call_id: string; name: string }
@@ -195,6 +219,7 @@ export type ApiEvent =
       output: string;
       error?: string;
     }
+  | { ev: "side_panel_state"; session_id: string; snapshot: SidePanelSnapshot }
   | { ev: "side_pane_images"; session_id: string; images: RenderedImage[] }
   | {
       ev: "token_usage";
@@ -316,8 +341,11 @@ export const KNOWN_EVENT_KINDS = [
   "session_forked",
   "history",
   "side_pane_images",
+  "side_panel_state",
   "pong",
   "text_delta",
+  "text_done",
+  "text_replace",
   "reasoning_delta",
   "reasoning_done",
   "tool_start",

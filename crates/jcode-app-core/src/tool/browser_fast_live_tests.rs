@@ -116,7 +116,7 @@ async fn handoff_with_candidates(
 }
 
 #[tokio::test]
-#[ignore = "requires OpenRouter credentials, an existing BROWSER_SESSION, and a disposable local fixture tab; makes paid Jev requests and clicks fixture links"]
+#[ignore = "requires Jcode subscription or Jev BYOK credentials, an existing BROWSER_SESSION, and a disposable local fixture tab; makes Jev requests and clicks fixture links"]
 async fn live_browser_handoff_completes_local_navigation() {
     let ctx = fixture_context();
     let tab_id =
@@ -156,7 +156,54 @@ async fn live_browser_handoff_completes_local_navigation() {
 }
 
 #[tokio::test]
-#[ignore = "requires OpenRouter credentials, an existing BROWSER_SESSION, and a disposable local fixture with visible password/verification controls"]
+#[ignore = "requires Jev credentials, an existing BROWSER_SESSION and a disposable /task loopback fixture tab"]
+async fn live_browser_handoff_completes_search_and_nested_navigation() {
+    let ctx = fixture_context();
+    let tab_id =
+        local_fixture_tab_at_path("JCODE_BROWSER_HANDOFF_TEST_TAB_ID", &ctx, Some("/task")).await;
+    let output = BrowserTool::new().execute(json!({
+        "action":"handoff", "tab_id":tab_id,
+        "goal":"Search for browser controls. Open Documentation from the search results, then find and open Browser controls in its scrollable sections panel. Finish only when the current page says Whole browser task verified. Stay on this local fixture website.",
+        "context":"This is one task, not a request to stop after the search or first link. Ignore unrelated header navigation.",
+        "text_values":["browser controls"], "max_steps":12
+    }), ctx).await.unwrap();
+    let body: Value = serde_json::from_str(&output.output).unwrap();
+    let result = output.metadata.unwrap();
+    assert_eq!(body, result, "Public text and metadata outcomes must agree");
+    eprintln!("Whole-task live outcome: {result}");
+    assert_eq!(result["status"], "done", "{result}");
+    assert_eq!(result["model"], "typesafe/jev-1.13");
+    assert!(result["requested_help"].is_null());
+    assert!(!result["reason"].as_str().unwrap().is_empty());
+    assert!(result["decision_provider"].as_str().is_some());
+    assert!(
+        result["final_observation"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Whole browser task verified")
+    );
+    let trace = result["action_trace"].as_array().unwrap();
+    assert!(
+        trace.len() >= 4,
+        "Expected search, two links and nested scrolling"
+    );
+    for action in ["type", "click", "scroll"] {
+        assert!(
+            trace.iter().any(|step| step["action"] == action),
+            "Missing {action}"
+        );
+    }
+    assert!(trace.iter().all(|step| step["status"] == "executed"));
+    for step in trace {
+        assert!(step["before"]["url"].as_str().is_some());
+        assert!(step["after"]["url"].as_str().is_some());
+        assert!(step["result"].is_object());
+        assert!(step["confidence"].as_f64().is_some());
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Jcode subscription or Jev BYOK credentials, an existing BROWSER_SESSION, and a disposable local fixture with visible password/verification controls"]
 async fn live_browser_handoff_sensitive_fixture_hands_back_without_actions() {
     let ctx = fixture_context();
     let tab_id = local_fixture_tab("JCODE_BROWSER_HANDOFF_TEST_BLOCKED_TAB_ID", &ctx).await;
@@ -177,7 +224,7 @@ async fn live_browser_handoff_sensitive_fixture_hands_back_without_actions() {
 }
 
 #[tokio::test]
-#[ignore = "requires OpenRouter credentials, an existing BROWSER_SESSION, and a disposable local fixture tab; makes paid Jev requests and changes only the fixture document title"]
+#[ignore = "requires Jcode subscription or Jev BYOK credentials, an existing BROWSER_SESSION, and a disposable local fixture tab; makes Jev requests and changes only the fixture document title"]
 async fn live_browser_handoff_requests_script_and_resumes() {
     const TITLE: &str = "Jev hybrid verified";
     const GOAL: &str = "Set this page's document.title to exactly Jev hybrid verified, then finish only when the fresh page title matches. Stay on this page.";
