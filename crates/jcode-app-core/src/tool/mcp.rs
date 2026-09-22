@@ -476,9 +476,7 @@ impl McpManagementTool {
             .collect();
         configured.sort();
 
-        let has_configured_files =
-            !crate::mcp::McpConfig::list_configured(project_dir.as_deref()).is_empty();
-        if servers.is_empty() && configured.is_empty() && !has_configured_files {
+        if servers.is_empty() && configured.is_empty() {
             return Ok(ToolOutput::new(
                 "No MCP servers connected.\n\n\
                 Add a remote server with /mcp add <name> <url> [--project],\n\
@@ -520,15 +518,7 @@ impl McpManagementTool {
             output.push('\n');
         }
 
-        if !configured.is_empty() {
-            output.push_str("Configured but not connected:\n");
-            for (name, enabled) in &configured {
-                let state = if *enabled { "enabled" } else { "disabled" };
-                output.push_str(&format!("  - {} ({})\n", name, state));
-            }
-            output.push('\n');
-        }
-
+        drop(manager);
         output.push_str(&self.status_table(project_dir.as_deref(), &servers).await);
         Ok(ToolOutput::new(output).with_title("MCP: Server list"))
     }
@@ -821,45 +811,62 @@ impl McpManagementTool {
             .cloned()
     }
 
-    /// Table of every configured server with scope, state, and auth status.
+    /// Table of every server in the manager's effective config with scope,
+    /// state, and auth status. Scope is looked up on disk only for names the
+    /// manager already knows, so foreign definitions never leak in.
     async fn status_table(
         &self,
         project_dir: Option<&std::path::Path>,
         connected: &[String],
     ) -> String {
-        let listed = crate::mcp::McpConfig::list_configured(project_dir);
-        if listed.is_empty() {
+        let manager = self.manager.read().await;
+        let mut names: Vec<(String, McpServerConfig)> = manager
+            .config()
+            .servers
+            .iter()
+            .map(|(n, c)| (n.clone(), c.clone()))
+            .collect();
+        drop(manager);
+        if names.is_empty() {
             return String::new();
         }
-        let fresh = crate::mcp::McpConfig::load_for_dir(project_dir);
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        let scopes: HashMap<String, &'static str> =
+            crate::mcp::McpConfig::list_configured(project_dir)
+                .into_iter()
+                .map(|s| (s.name, s.scope.as_str()))
+                .collect();
         let mut out = String::from("## Configured servers\n");
-        for server in &listed {
-            let state = if connected.contains(&server.name) {
+        for (name, cfg) in &names {
+            let state = if connected.contains(name) {
                 "connected"
-            } else if server.enabled {
+            } else if cfg.is_enabled() {
                 "enabled, not connected"
             } else {
-                "disabled"
+                "disabled in config"
             };
-            let auth = fresh
-                .servers
-                .get(&server.name)
-                .map(crate::mcp::oauth::auth_status)
-                .filter(|s| *s != crate::mcp::oauth::McpAuthStatus::NotApplicable)
-                .map(|s| format!(", auth: {}", s.label()))
-                .unwrap_or_default();
+            let auth = match crate::mcp::oauth::auth_status(cfg) {
+                crate::mcp::oauth::McpAuthStatus::NotApplicable => String::new(),
+                s => format!(", auth: {}", s.label()),
+            };
+            let target = if cfg.is_http() {
+                cfg.url.clone().unwrap_or_default()
+            } else {
+                cfg.command.clone()
+            };
+            let scope = scopes.get(name).copied().unwrap_or("session");
             out.push_str(&format!(
                 "  - {} [{}] {} ({}{}) {}\n",
-                server.name,
-                server.scope.as_str(),
-                server.transport,
+                name,
+                scope,
+                cfg.transport_label(),
                 state,
                 auth,
-                server.target
+                target
             ));
         }
         out.push_str(
-            "\nManage with /mcp enable|disable <name> [--project], /mcp auth <name>, /mcp logout <name>, /mcp reload.\n",
+            "\nManage with /mcp enable|disable <name> [--project], /mcp auth <name>, /mcp logout <name>, /mcp reload.\nenable/disable/add change global config unless --project is given.\n",
         );
         out
     }
