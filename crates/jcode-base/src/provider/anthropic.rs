@@ -40,8 +40,23 @@ pub fn is_cache_ttl_1h() -> bool {
     }
 }
 
+/// Claude Code CLI version we present on OAuth requests.
+///
+/// Anthropic gates newer models on this: a version below a model's floor is
+/// rejected and the request silently falls back to an older model (for
+/// example claude-opus-5-5 requires 2.1.280, and 2.1.257 fell back to
+/// opus-5). Keep this at or above the newest model we intend to reach, and
+/// update it together with `AVAILABLE_MODELS`.
+///
+/// This is the single source of truth: the OAuth preflight `appVersion` is
+/// derived from it, so the User-Agent and the preflight body can never drift.
+pub const CLAUDE_CLI_VERSION: &str = "2.1.280";
+
 /// User-Agent for OAuth requests, matching the official Claude Code CLI.
-pub const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.257 (external, sdk-cli)";
+///
+/// Kept in sync with [`CLAUDE_CLI_VERSION`] by a unit test rather than by
+/// const concatenation, which would need an extra dependency.
+pub const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.280 (external, sdk-cli)";
 
 pub const OAUTH_BETA_HEADERS: &str = ANTHROPIC_OAUTH_BETA_HEADERS;
 
@@ -76,6 +91,9 @@ pub fn apply_oauth_attribution_headers(
 
 /// Available models
 pub const AVAILABLE_MODELS: &[&str] = &[
+    // Requires CLAUDE_CLI_VERSION >= 2.1.280; older clients are rejected and
+    // silently fall back to claude-opus-5.
+    "claude-opus-5-5",
     "claude-opus-5",
     "claude-fable-5-1",
     "claude-fable-5",
@@ -143,4 +161,50 @@ pub fn load_anthropic_api_key() -> Result<String> {
 
 pub fn has_anthropic_api_key() -> bool {
     load_anthropic_api_key().is_ok()
+}
+
+#[cfg(test)]
+mod version_gate_tests {
+    use super::*;
+
+    /// The User-Agent is written out literally, so it can drift from
+    /// [`CLAUDE_CLI_VERSION`]. Anthropic gates models on the advertised
+    /// version, and a stale one is rejected and silently downgrades the model,
+    /// so pin the two together.
+    #[test]
+    fn user_agent_advertises_the_declared_cli_version() {
+        assert_eq!(
+            CLAUDE_CLI_USER_AGENT,
+            format!("claude-cli/{CLAUDE_CLI_VERSION} (external, sdk-cli)"),
+            "CLAUDE_CLI_USER_AGENT must embed CLAUDE_CLI_VERSION"
+        );
+    }
+
+    /// claude-opus-5-5 is rejected below 2.1.280 and falls back to opus-5.
+    /// Offering the model while advertising an older client would reintroduce
+    /// exactly that silent downgrade.
+    #[test]
+    fn advertised_version_meets_the_floor_of_every_offered_model() {
+        fn parse(version: &str) -> (u32, u32, u32) {
+            let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+            (
+                parts.next().unwrap_or(0),
+                parts.next().unwrap_or(0),
+                parts.next().unwrap_or(0),
+            )
+        }
+        // (model id, minimum claude-cli version that may request it)
+        const MODEL_VERSION_FLOORS: &[(&str, &str)] = &[("claude-opus-5-5", "2.1.280")];
+
+        let advertised = parse(CLAUDE_CLI_VERSION);
+        for (model, floor) in MODEL_VERSION_FLOORS {
+            if AVAILABLE_MODELS.contains(model) {
+                assert!(
+                    advertised >= parse(floor),
+                    "{model} requires claude-cli >= {floor}, but we advertise {CLAUDE_CLI_VERSION}; \
+                     the request would be rejected and silently fall back to an older model"
+                );
+            }
+        }
+    }
 }

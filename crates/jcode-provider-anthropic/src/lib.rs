@@ -7,7 +7,11 @@ use serde_json::{Value, json};
 
 /// Claude Code billing attribution text observed in the official CLI's system
 /// prompt blocks.
-pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.257; cc_entrypoint=sdk-cli; cch=33f85;";
+///
+/// `cc_version` must track the advertised claude-cli version (see
+/// `jcode_base::provider::anthropic::CLAUDE_CLI_VERSION`), so billing
+/// attribution describes the same client the User-Agent claims to be.
+pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;";
 
 const CLAUDE_CODE_IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
