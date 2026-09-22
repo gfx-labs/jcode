@@ -1,9 +1,9 @@
 use super::available_models_dedup::available_models_dedup_key;
 use super::client_actions::{
     AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
-    handle_notify_session, handle_rename_session, handle_run_subagent, handle_set_feature,
-    handle_set_subagent_model, handle_split, handle_stdin_response, handle_transfer,
-    handle_trigger_memory_extraction,
+    handle_notify_session, handle_rename_session, handle_run_mcp_command, handle_run_subagent,
+    handle_set_feature, handle_set_subagent_model, handle_split, handle_stdin_response,
+    handle_transfer, handle_trigger_memory_extraction,
 };
 use super::client_comm::{
     handle_comm_channel_members, handle_comm_list, handle_comm_list_channels, handle_comm_message,
@@ -2288,6 +2288,22 @@ pub(super) async fn handle_client(
                         });
                     }
                 }
+            }
+
+            Request::McpCommand { id, input } => {
+                // MCP mutations reload the registry, so never run them
+                // concurrently with an active turn.
+                if reject_if_agent_busy_for_request(
+                    id,
+                    "mcp_command",
+                    &client_session_id,
+                    client_is_processing,
+                    &agent,
+                    &client_event_tx,
+                ) {
+                    continue;
+                }
+                handle_run_mcp_command(id, input, &agent, &client_event_tx);
             }
 
             Request::InputShell { id, command } => {

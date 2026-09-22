@@ -655,7 +655,14 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
         intent: None,
         thought_signature: None,
     };
+    app.subagent_status = Some("starting subagent".to_string());
+    app.set_status_notice("Running subagent");
+    launch_manual_tool_call(app, tool_call);
+}
 
+/// Execute `tool_call` directly against the local registry (no LLM turn),
+/// recording it in the transcript like a model-issued tool call.
+pub(super) fn launch_manual_tool_call(app: &mut App, tool_call: crate::message::ToolCall) {
     app.push_display_message(DisplayMessage {
         role: "tool".to_string(),
         content: tool_call.name.clone(),
@@ -679,8 +686,6 @@ fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
     });
     let message_id = app.session.add_message(Role::Assistant, content_blocks);
     let _ = app.session.save();
-    app.subagent_status = Some("starting subagent".to_string());
-    app.set_status_notice("Running subagent");
 
     let registry = app.registry.clone();
     let session_id = app.session.id.clone();

@@ -10,8 +10,8 @@
 use serde::{Deserialize, Serialize};
 
 mod comm_format;
-mod notifications;
 mod mobile_usage;
+mod notifications;
 pub use mobile_usage::{MobileProviderUsage, MobileUsageLimit};
 
 pub use comm_format::*;
@@ -653,6 +653,7 @@ impl Request {
             Request::SetRoute { id, .. } => *id,
             Request::SetSubagentModel { id, .. } => *id,
             Request::RunSubagent { id, .. } => *id,
+            Request::McpCommand { id, .. } => *id,
             Request::SetReasoningEffort { id, .. } => *id,
             Request::SetServiceTier { id, .. } => *id,
             Request::SetTransport { id, .. } => *id,

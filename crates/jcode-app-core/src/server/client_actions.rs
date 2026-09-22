@@ -263,8 +263,6 @@ pub(super) fn handle_run_subagent(
 
     tokio::spawn(async move {
         let description = derive_subagent_description(&prompt);
-        let tool_call_id = crate::id::new_id("call");
-        let tool_name = "subagent".to_string();
         let tool_input = serde_json::json!({
             "description": description,
             "prompt": prompt,
@@ -273,6 +271,34 @@ pub(super) fn handle_run_subagent(
             "session_id": session_id,
             "command": "/subagent",
         });
+        run_manual_tool(id, "subagent".to_string(), tool_input, agent, tx).await;
+    });
+}
+
+/// Run a `/mcp` management command natively (no LLM turn), recorded as a
+/// manual `mcp` tool call so its output is visible and persisted.
+pub(super) fn handle_run_mcp_command(
+    id: u64,
+    input: serde_json::Value,
+    agent: &Arc<Mutex<Agent>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let agent = Arc::clone(agent);
+    let tx = client_event_tx.clone();
+    tokio::spawn(async move {
+        run_manual_tool(id, "mcp".to_string(), input, agent, tx).await;
+    });
+}
+
+async fn run_manual_tool(
+    id: u64,
+    tool_name: String,
+    tool_input: serde_json::Value,
+    agent: Arc<Mutex<Agent>>,
+    tx: mpsc::UnboundedSender<ServerEvent>,
+) {
+    {
+        let tool_call_id = crate::id::new_id("call");
 
         let message_id = {
             let mut agent_guard = agent.lock().await;
@@ -382,7 +408,7 @@ pub(super) fn handle_run_subagent(
                 let _ = tx.send(ServerEvent::Done { id });
             }
         }
-    });
+    }
 }
 
 #[expect(

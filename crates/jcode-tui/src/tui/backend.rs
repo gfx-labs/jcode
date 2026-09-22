@@ -889,6 +889,14 @@ impl RemoteConnection {
         self.send_request(request).await
     }
 
+    /// Run a native `/mcp` management command on the server.
+    pub async fn run_mcp_command(&mut self, input: serde_json::Value) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::McpCommand { id, input }).await?;
+        Ok(id)
+    }
+
     /// Execute a `!cmd` shell command in the active remote session.
     pub async fn send_input_shell(&mut self, command: String) -> Result<u64> {
         let id = self.next_request_id;

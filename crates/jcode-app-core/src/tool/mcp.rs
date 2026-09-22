@@ -296,6 +296,20 @@ struct McpToolInput {
     args: Option<Vec<String>>,
     #[serde(default)]
     env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    replace: Option<bool>,
+}
+
+fn parse_scope(scope: Option<&str>) -> Result<crate::mcp::McpConfigScope> {
+    match scope.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("global") | Some("user") => Ok(crate::mcp::McpConfigScope::Global),
+        Some("project") | Some("local") => Ok(crate::mcp::McpConfigScope::Project),
+        Some(other) => anyhow::bail!("unknown scope '{other}' (use global or project)"),
+    }
 }
 
 pub struct McpManagementTool {
@@ -334,7 +348,7 @@ impl Tool for McpManagementTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["list", "connect", "disconnect", "reload"],
+                    "enum": ["list", "connect", "disconnect", "reload", "enable", "disable", "add", "auth", "logout"],
                     "description": "Action."
                 },
                 "server": {
@@ -354,6 +368,19 @@ impl Tool for McpManagementTool {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
                     "description": "Server env."
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Remote server URL for add."
+                },
+                "replace": {
+                    "type": "boolean",
+                    "description": "For add: overwrite an existing entry with the same name."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["global", "project"],
+                    "description": "Config scope for enable/disable/add. Default global."
                 }
             },
             "required": ["action"]
@@ -377,12 +404,19 @@ impl Tool for McpManagementTool {
         );
 
         let result = match params.action.as_str() {
-            "list" => self.list_servers().await,
+            "list" | "status" => self.list_servers(ctx.working_dir.clone()).await,
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
+            "enable" | "disable" => {
+                let enabled = params.action == "enable";
+                self.set_enabled(params, enabled, &ctx).await
+            }
+            "add" => self.add_remote(params, &ctx).await,
+            "auth" => self.authenticate(params, &ctx).await,
+            "logout" => self.logout(params, &ctx).await,
             _ => Ok(ToolOutput::new(format!(
-                "Unknown action: {}. Use 'list', 'connect', 'disconnect', or 'reload'.",
+                "Unknown action: {}. Use 'list', 'connect', 'disconnect', 'reload', 'enable', 'disable', 'add', 'auth', or 'logout'.",
                 params.action
             ))),
         };
@@ -427,7 +461,7 @@ impl McpManagementTool {
 }
 
 impl McpManagementTool {
-    async fn list_servers(&self) -> Result<ToolOutput> {
+    async fn list_servers(&self, project_dir: Option<std::path::PathBuf>) -> Result<ToolOutput> {
         let manager = self.manager.read().await;
         let servers = manager.connected_servers().await;
         let all_tools = manager.all_tools().await;
@@ -442,11 +476,13 @@ impl McpManagementTool {
             .collect();
         configured.sort();
 
-        if servers.is_empty() && configured.is_empty() {
+        let has_configured_files =
+            !crate::mcp::McpConfig::list_configured(project_dir.as_deref()).is_empty();
+        if servers.is_empty() && configured.is_empty() && !has_configured_files {
             return Ok(ToolOutput::new(
                 "No MCP servers connected.\n\n\
-                To connect a server, use:\n\
-                {\"action\": \"connect\", \"server\": \"name\", \"command\": \"/path/to/server\", \"args\": []}\n\n\
+                Add a remote server with /mcp add <name> <url> [--project],\n\
+                for example: /mcp add figma https://mcp.figma.com/mcp\n\n\
                 Or add servers to ~/.jcode/mcp.json or .jcode/mcp.json and use {\"action\": \"reload\"}.\n\
                 .claude/mcp.json is also supported for compatibility."
             ).with_title("MCP: No servers"));
@@ -487,20 +523,13 @@ impl McpManagementTool {
         if !configured.is_empty() {
             output.push_str("Configured but not connected:\n");
             for (name, enabled) in &configured {
-                if *enabled {
-                    output.push_str(&format!(
-                        "  - {} (enabled; connect with {{\"action\": \"connect\", \"server\": \"{}\"}})\n",
-                        name, name
-                    ));
-                } else {
-                    output.push_str(&format!(
-                        "  - {} (disabled in config; connect on demand with {{\"action\": \"connect\", \"server\": \"{}\"}})\n",
-                        name, name
-                    ));
-                }
+                let state = if *enabled { "enabled" } else { "disabled" };
+                output.push_str(&format!("  - {} ({})\n", name, state));
             }
+            output.push('\n');
         }
 
+        output.push_str(&self.status_table(project_dir.as_deref(), &servers).await);
         Ok(ToolOutput::new(output).with_title("MCP: Server list"))
     }
 
@@ -525,6 +554,7 @@ impl McpManagementTool {
                 enabled: None,
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             }
         } else {
             let manager = self.manager.read().await;
@@ -778,6 +808,344 @@ impl McpManagementTool {
     }
 }
 
+impl McpManagementTool {
+    fn project_dir(ctx: &ToolContext) -> Option<std::path::PathBuf> {
+        ctx.working_dir.clone()
+    }
+
+    /// Fresh config entry for `name`, including disabled servers.
+    fn configured_server(&self, name: &str, ctx: &ToolContext) -> Option<McpServerConfig> {
+        crate::mcp::McpConfig::load_for_dir(Self::project_dir(ctx).as_deref())
+            .servers
+            .get(name)
+            .cloned()
+    }
+
+    /// Table of every configured server with scope, state, and auth status.
+    async fn status_table(
+        &self,
+        project_dir: Option<&std::path::Path>,
+        connected: &[String],
+    ) -> String {
+        let listed = crate::mcp::McpConfig::list_configured(project_dir);
+        if listed.is_empty() {
+            return String::new();
+        }
+        let fresh = crate::mcp::McpConfig::load_for_dir(project_dir);
+        let mut out = String::from("## Configured servers\n");
+        for server in &listed {
+            let state = if connected.contains(&server.name) {
+                "connected"
+            } else if server.enabled {
+                "enabled, not connected"
+            } else {
+                "disabled"
+            };
+            let auth = fresh
+                .servers
+                .get(&server.name)
+                .map(crate::mcp::oauth::auth_status)
+                .filter(|s| *s != crate::mcp::oauth::McpAuthStatus::NotApplicable)
+                .map(|s| format!(", auth: {}", s.label()))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  - {} [{}] {} ({}{}) {}\n",
+                server.name,
+                server.scope.as_str(),
+                server.transport,
+                state,
+                auth,
+                server.target
+            ));
+        }
+        out.push_str(
+            "\nManage with /mcp enable|disable <name> [--project], /mcp auth <name>, /mcp logout <name>, /mcp reload.\n",
+        );
+        out
+    }
+
+    async fn set_enabled(
+        &self,
+        params: McpToolInput,
+        enabled: bool,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        let verb = if enabled { "enable" } else { "disable" };
+        let name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for {verb}"))?;
+        let scope = parse_scope(params.scope.as_deref())?;
+        let path = crate::mcp::McpConfig::set_server_enabled(
+            &name,
+            enabled,
+            scope,
+            Self::project_dir(ctx).as_deref(),
+        )?;
+        let reload = self.reload_config(&ctx.session_id).await?;
+        let project_dir = Self::project_dir(ctx);
+        let effective = crate::mcp::McpConfig::list_configured(project_dir.as_deref())
+            .into_iter()
+            .find(|s| s.name == name);
+        let saved = format!(
+            "Saved {} {} for MCP server '{}' in {}.",
+            scope.as_str(),
+            if enabled { "enabled" } else { "disabled" },
+            name,
+            path.display()
+        );
+        let effect = match effective {
+            Some(e) if e.enabled == enabled => format!(
+                "Effective in this project: {} (from {} config).",
+                if e.enabled { "enabled" } else { "disabled" },
+                e.scope.as_str()
+            ),
+            Some(e) => format!(
+                "Effective in this project: still {} because {} config overrides it. Use --{} to change that.",
+                if e.enabled { "enabled" } else { "disabled" },
+                e.scope.as_str(),
+                e.scope.as_str()
+            ),
+            None => "Server is no longer in the effective config.".to_string(),
+        };
+        Ok(
+            ToolOutput::new(format!("{saved}\n{effect}\n\n{}", reload.output))
+                .with_title(format!("MCP: {verb}d {name}")),
+        )
+    }
+
+    async fn add_remote(&self, params: McpToolInput, ctx: &ToolContext) -> Result<ToolOutput> {
+        let name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for add"))?;
+        let url = params
+            .url
+            .or(params.command)
+            .ok_or_else(|| anyhow::anyhow!("'url' is required for add"))?;
+        let scope = parse_scope(params.scope.as_deref())?;
+        let path = crate::mcp::McpConfig::add_remote_server(
+            &name,
+            &url,
+            HashMap::new(),
+            scope,
+            Self::project_dir(ctx).as_deref(),
+            params.replace.unwrap_or(false),
+        )?;
+        let reload = self.reload_config(&ctx.session_id).await?;
+        let needs_auth = self
+            .configured_server(&name, ctx)
+            .map(|cfg| {
+                matches!(
+                    crate::mcp::oauth::auth_status(&cfg),
+                    crate::mcp::oauth::McpAuthStatus::NotAuthenticated
+                        | crate::mcp::oauth::McpAuthStatus::Expired { refreshable: false }
+                )
+            })
+            .unwrap_or(false);
+        let hint = if needs_auth {
+            format!("\nIf the server requires sign-in, run /mcp auth {name}.\n")
+        } else {
+            String::new()
+        };
+        Ok(ToolOutput::new(format!(
+            "Added MCP server '{}' -> {} ({} scope, {}).\n{}\n{}",
+            name,
+            url,
+            scope.as_str(),
+            path.display(),
+            hint,
+            reload.output
+        ))
+        .with_title(format!("MCP: added {name}")))
+    }
+
+    async fn authenticate(&self, params: McpToolInput, ctx: &ToolContext) -> Result<ToolOutput> {
+        let name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for auth"))?;
+        let config = self
+            .configured_server(&name, ctx)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{name}' is not configured"))?;
+        if crate::mcp::oauth::auth_status(&config)
+            == crate::mcp::oauth::McpAuthStatus::NotApplicable
+        {
+            return Ok(ToolOutput::new(format!(
+                "MCP server '{name}' does not use OAuth (stdio server or static Authorization header)."
+            ))
+            .with_title("MCP: auth not applicable"));
+        }
+
+        // The flow blocks until the browser callback arrives (up to five
+        // minutes), so run it in the background and return the URL now.
+        let (url_tx, url_rx) = tokio::sync::oneshot::channel::<String>();
+        let url_tx = std::sync::Mutex::new(Some(url_tx));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+        let manager = Arc::clone(&self.manager);
+        let registry = self.registry.as_ref().and_then(|r| r.upgrade());
+        let session_id = ctx.session_id.clone();
+        let server = name.clone();
+        let handle = tokio::spawn(async move {
+            let result = crate::mcp::oauth::authenticate(&server, &config, |url| {
+                if let Some(tx) = url_tx.lock().ok().and_then(|mut g| g.take()) {
+                    let _ = tx.send(url.to_string());
+                }
+            })
+            .await;
+            let message = match &result {
+                Ok(()) => match reconnect_after_auth(&manager, registry.as_ref(), &server, &config)
+                    .await
+                {
+                    Ok(true) => format!("MCP server '{server}' authenticated and connected."),
+                    Ok(false) => format!(
+                        "MCP server '{server}' authenticated. It is disabled or its config changed, so it was not reconnected."
+                    ),
+                    Err(e) => {
+                        format!("MCP server '{server}' authenticated, but reconnect failed: {e}")
+                    }
+                },
+                Err(e) => format!("MCP authentication for '{server}' failed: {e}"),
+            };
+            forget_pending_auth(&server);
+            crate::bus::Bus::global().publish(crate::bus::BusEvent::UiActivity(
+                crate::bus::UiActivity::auth(Some(session_id), message.clone(), Some(message)),
+            ));
+            let _ = done_tx.send(result);
+        });
+        // A new auth (or logout) supersedes any in-flight flow for this server
+        // so a late callback cannot store stale credentials.
+        replace_pending_auth(&name, handle.abort_handle());
+
+        tokio::select! {
+            url = url_rx => match url {
+                Ok(url) => Ok(ToolOutput::new(format!(
+                    "Open this URL to authenticate MCP server '{name}':\n\n{url}\n\n\
+                    A browser window was opened if possible. jcode reconnects '{name}' \
+                    automatically when sign-in completes (check with /mcp list)."
+                ))
+                .with_title(format!("MCP: auth {name}"))),
+                Err(_) => match done_rx.await {
+                    Ok(Ok(())) => Ok(ToolOutput::new(format!("MCP server '{name}' authenticated."))
+                        .with_title(format!("MCP: auth {name}"))),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => anyhow::bail!("MCP authentication for '{name}' was cancelled"),
+                },
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                cancel_pending_auth(&name);
+                anyhow::bail!("timed out preparing the authorization URL for '{name}'")
+            }
+        }
+    }
+
+    async fn logout(&self, params: McpToolInput, ctx: &ToolContext) -> Result<ToolOutput> {
+        let name = params
+            .server
+            .ok_or_else(|| anyhow::anyhow!("'server' is required for logout"))?;
+        let config = self
+            .configured_server(&name, ctx)
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{name}' is not configured"))?;
+        let cancelled = cancel_pending_auth(&name);
+        let removed = crate::mcp::oauth::logout(&config)?;
+        let connected = self.manager.read().await.connected_servers().await;
+        if connected.contains(&name) {
+            let _ = self
+                .disconnect_server(McpToolInput {
+                    action: "disconnect".into(),
+                    server: Some(name.clone()),
+                    command: None,
+                    args: None,
+                    env: None,
+                    url: None,
+                    scope: None,
+                    replace: None,
+                })
+                .await;
+        }
+        let msg = if cancelled && !removed {
+            format!("Cancelled pending OAuth sign-in for MCP server '{name}'.")
+        } else if removed {
+            format!("Removed stored OAuth credentials for MCP server '{name}' and disconnected it.")
+        } else {
+            format!("No stored OAuth credentials for MCP server '{name}'.")
+        };
+        Ok(ToolOutput::new(msg).with_title(format!("MCP: logout {name}")))
+    }
+}
+
+type PendingAuthMap = HashMap<String, tokio::task::AbortHandle>;
+
+fn pending_auth() -> &'static std::sync::Mutex<PendingAuthMap> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<PendingAuthMap>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
+
+fn replace_pending_auth(name: &str, handle: tokio::task::AbortHandle) {
+    if let Ok(mut map) = pending_auth().lock()
+        && let Some(old) = map.insert(name.to_string(), handle)
+    {
+        old.abort();
+    }
+}
+
+/// Abort an in-flight OAuth flow. Returns whether one was pending.
+fn cancel_pending_auth(name: &str) -> bool {
+    pending_auth()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(name))
+        .map(|h| {
+            h.abort();
+            true
+        })
+        .unwrap_or(false)
+}
+
+fn forget_pending_auth(name: &str) {
+    if let Ok(mut map) = pending_auth().lock() {
+        map.remove(name);
+    }
+}
+
+/// Whether `fresh` still describes the endpoint that was authenticated.
+fn same_remote_endpoint(authed: &McpServerConfig, fresh: &McpServerConfig) -> bool {
+    authed.url == fresh.url && authed.transport == fresh.transport && authed.oauth == fresh.oauth
+}
+
+/// Reconnect a server after OAuth completes. Re-reads config under the manager
+/// write guard (draining in-flight calls) and skips reconnecting when the
+/// server was disabled, removed, or repointed during consent.
+async fn reconnect_after_auth(
+    manager: &Arc<RwLock<McpManager>>,
+    registry: Option<&crate::tool::Registry>,
+    name: &str,
+    authed: &McpServerConfig,
+) -> Result<bool> {
+    let guard = manager.write().await;
+    let fresh = guard.load_fresh_config();
+    let Some(current) = fresh.servers.get(name).cloned() else {
+        return Ok(false);
+    };
+    if !current.is_enabled() || !same_remote_endpoint(authed, &current) {
+        return Ok(false);
+    }
+    if guard.connected_servers().await.iter().any(|s| s == name) {
+        guard.disconnect(name).await?;
+    }
+    guard.connect(name, &current).await?;
+    let tools = guard.all_tools().await;
+    let connected = guard.connected_servers().await;
+    drop(guard);
+    if let Some(registry) = registry {
+        registry
+            .refresh_mcp_tools(
+                crate::mcp::create_mcp_tools_from_cached_many(&tools, Arc::clone(manager)),
+                &connected,
+            )
+            .await;
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,6 +1316,7 @@ mod tests {
                 enabled: Some(false),
                 disabled: None,
                 timeout_secs: None,
+                oauth: None,
             },
         );
         let manager = Arc::new(RwLock::new(McpManager::with_config(config)));

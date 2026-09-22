@@ -303,6 +303,11 @@ pub enum Request {
         session_id: Option<String>,
     },
 
+    /// Run a native `/mcp` management command without an LLM turn. `input`
+    /// is the `mcp` tool input (action, server, url, scope, ...).
+    #[serde(rename = "mcp_command")]
+    McpCommand { id: u64, input: serde_json::Value },
+
     /// Set reasoning effort for providers that expose it (OpenAI: none|minimal|low|medium|high|xhigh|max; Anthropic: none|low|medium|high|xhigh|max; DeepSeek: none|low|medium|high|max)
     #[serde(rename = "set_reasoning_effort")]
     SetReasoningEffort {

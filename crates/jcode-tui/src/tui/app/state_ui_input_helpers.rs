@@ -137,6 +137,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/dictate", "Run configured external dictation command"),
     RegisteredCommand::public("/dictation", "Alias for /dictate"),
     RegisteredCommand::public("/memory", "Toggle memory feature"),
+    RegisteredCommand::public(
+        "/mcp",
+        "List, add, enable/disable, and authenticate MCP servers",
+    ),
     RegisteredCommand::public("/test", "Verify a claim/current changes with layered tests"),
     RegisteredCommand::public(
         "/initiatives",
@@ -934,6 +938,10 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
+        if prefix.starts_with("/mcp ") {
+            return self.rank_suggestions(input, Self::mcp_suggestions(&prefix));
+        }
+
         if prefix.starts_with("/memory ") {
             return self.rank_suggestions(
                 input,
@@ -1675,6 +1683,7 @@ impl App {
                 | "/subscription"
                 | "/poke"
                 | "/memory"
+                | "/mcp"
                 | "/test"
                 | "/initiatives"
                 | "/initiatives show"

@@ -240,6 +240,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(help_entry("/usage", "Show connected provider usage limits"));
     lines.push(help_entry(
+        "/mcp",
+        "MCP servers: list, add <name> <url>, enable/disable [--project], auth, logout, reload",
+    ));
+    lines.push(help_entry(
         "/support",
         "Email support with diagnostics prefilled",
     ));

@@ -1039,6 +1039,12 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if super::super::commands_mcp::handle_remote_mcp_command(app, remote, trimmed)
+                    .await?
+                {
+                    return Ok(());
+                }
+
                 if trimmed == "/continue" || trimmed == "/resumeall" || trimmed == "/resume-all" {
                     app.push_display_message(DisplayMessage::system(
                         "Continuing all interrupted sessions...".to_string(),
