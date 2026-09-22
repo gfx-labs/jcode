@@ -330,3 +330,62 @@ async fn refresh_does_not_resurrect_after_logout() {
     assert_eq!(access_token_at(&p, "k").await.unwrap(), None);
     assert_eq!(load_credentials(&p, "k"), None);
 }
+
+/// LIVE, opt-in: proves Figma's client_name allowlist accepts jcode's
+/// compatibility identity. Run explicitly with:
+///   JCODE_LIVE_FIGMA_DCR=1 cargo test -p jcode-base live_figma_discovery_and_dcr -- --ignored
+///
+/// This performs real network requests to mcp.figma.com / api.figma.com:
+/// metadata discovery plus ONE unauthenticated dynamic client registration.
+/// It never opens a browser, never requests user authorization, never obtains
+/// a token, and grants no account access. The registered client is an
+/// orphaned, unused public registration. client_id/client_secret are never
+/// printed.
+#[tokio::test]
+#[ignore = "live network: registers an unauthenticated OAuth client with Figma"]
+async fn live_figma_discovery_and_dcr() {
+    if std::env::var("JCODE_LIVE_FIGMA_DCR").as_deref() != Ok("1") {
+        eprintln!("set JCODE_LIVE_FIGMA_DCR=1 to run");
+        return;
+    }
+    let url = "https://mcp.figma.com/mcp";
+    let client = http_client().unwrap();
+    let challenge = probe_challenge(&client, url).await;
+    let flow = discover(&client, url, challenge.as_deref()).await.unwrap();
+    assert_eq!(flow.resource.as_deref(), Some(url));
+
+    let name = effective_client_name(url, &McpOAuthConfig::default());
+    assert_eq!(name, FIGMA_COMPAT_CLIENT_NAME);
+    let method = choose_auth_method(&flow.as_meta.token_endpoint_auth_methods_supported, false);
+    let reg_endpoint = flow
+        .as_meta
+        .registration_endpoint
+        .as_deref()
+        .expect("Figma advertises a registration endpoint");
+    // Redirect target is never contacted: no authorization happens.
+    let registration = register_client(
+        &client,
+        reg_endpoint,
+        &name,
+        "http://127.0.0.1:43219/callback",
+        method,
+    )
+    .await
+    .expect("Figma accepted client_name registration");
+    assert!(!registration.client_id.is_empty());
+    let supported = &flow.as_meta.token_endpoint_auth_methods_supported;
+    assert!(
+        supported.is_empty() || supported.iter().any(|m| m == registration.auth_method.as_str()),
+        "registered method {} not in advertised {:?}",
+        registration.auth_method.as_str(),
+        supported
+    );
+    if registration.auth_method != TokenAuthMethod::None {
+        assert!(registration.client_secret.is_some());
+    }
+    eprintln!(
+        "live Figma DCR ok: client_name={name} method={} secret_issued={}",
+        registration.auth_method.as_str(),
+        registration.client_secret.is_some()
+    );
+}
