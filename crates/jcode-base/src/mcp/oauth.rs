@@ -81,7 +81,9 @@ pub enum McpAuthStatus {
     NotAuthenticated,
     Authenticated,
     /// Access token expired. `refreshable` means it will renew automatically.
-    Expired { refreshable: bool },
+    Expired {
+        refreshable: bool,
+    },
 }
 
 impl McpAuthStatus {
@@ -251,9 +253,10 @@ where
     let challenge = remembered_challenge(&server_url);
     let flow = prepare_flow(&client, &server_url, challenge.as_deref()).await?;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", oauth_cfg.callback_port.unwrap_or(0)))
-        .await
-        .context("Failed to bind OAuth loopback callback listener")?;
+    let listener =
+        tokio::net::TcpListener::bind(("127.0.0.1", oauth_cfg.callback_port.unwrap_or(0)))
+            .await
+            .context("Failed to bind OAuth loopback callback listener")?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}{CALLBACK_PATH}");
 
@@ -370,9 +373,7 @@ pub(crate) fn is_auth_required_message(message: &str) -> bool {
 }
 
 pub(crate) fn auth_required_message(server_name: &str) -> String {
-    format!(
-        "MCP server '{server_name}' {AUTH_REQUIRED_MARKER}: run `/mcp auth {server_name}`"
-    )
+    format!("MCP server '{server_name}' {AUTH_REQUIRED_MARKER}: run `/mcp auth {server_name}`")
 }
 
 /// Bearer token for a request, refreshing it when expired. `Ok(None)` means no
@@ -511,7 +512,10 @@ impl Pkce {
     pub(crate) fn generate() -> Self {
         let verifier = random_token(48);
         let challenge = pkce_challenge(&verifier);
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
@@ -604,7 +608,11 @@ fn resource_matches(resource: &str, server: &Url) -> bool {
     }
     let rp = res.path().trim_end_matches('/');
     let sp = server.path().trim_end_matches('/');
-    rp.is_empty() || sp == rp || sp.strip_prefix(rp).is_some_and(|rest| rest.starts_with('/'))
+    rp.is_empty()
+        || sp == rp
+        || sp
+            .strip_prefix(rp)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) async fn discover(
@@ -626,9 +634,7 @@ pub(crate) async fn discover(
             if let Some(res) = meta.resource.as_deref()
                 && !resource_matches(res, &server)
             {
-                bail!(
-                    "Protected resource metadata at {candidate} is for {res}, not {server_url}"
-                );
+                bail!("Protected resource metadata at {candidate} is for {res}, not {server_url}");
             }
             prm = Some(meta);
             break;
@@ -641,7 +647,11 @@ pub(crate) async fn discover(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| origin(&server)),
-            Some(meta.resource.clone().unwrap_or_else(|| server_url.to_string())),
+            Some(
+                meta.resource
+                    .clone()
+                    .unwrap_or_else(|| server_url.to_string()),
+            ),
             meta.scopes_supported.clone(),
         ),
         // Legacy (2025-03-26) servers: the MCP origin is the auth server.
@@ -653,7 +663,10 @@ pub(crate) async fn discover(
     as_candidates.extend(well_known_urls(&issuer_url, "openid-configuration"));
     let path = issuer_url.path().trim_end_matches('/');
     if !path.is_empty() {
-        as_candidates.push(format!("{}{path}/.well-known/openid-configuration", origin(&issuer_url)));
+        as_candidates.push(format!(
+            "{}{path}/.well-known/openid-configuration",
+            origin(&issuer_url)
+        ));
     }
 
     let mut as_meta = None;
@@ -792,7 +805,10 @@ pub(crate) async fn register_client(
         .and_then(TokenAuthMethod::parse)
         .unwrap_or(method);
     if auth_method != TokenAuthMethod::None && secret.is_none() {
-        bail!("Registration requires {} but no client_secret was issued", auth_method.as_str());
+        bail!(
+            "Registration requires {} but no client_secret was issued",
+            auth_method.as_str()
+        );
     }
     if auth_method == TokenAuthMethod::None && secret.is_some() {
         auth_method = TokenAuthMethod::ClientSecretPost;
@@ -870,17 +886,23 @@ pub(crate) async fn wait_for_callback(
         let parsed = Url::parse(&format!("http://127.0.0.1{target}")).ok();
         let Some(parsed) = parsed.filter(|u| u.path() == CALLBACK_PATH) else {
             let _ = stream
-                .write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
                 .await;
             continue;
         };
         let params: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
         let result = if params.get("state").map(String::as_str) != Some(expected_state) {
-            Err(anyhow::anyhow!("OAuth callback state mismatch; possible CSRF, aborting"))
+            Err(anyhow::anyhow!(
+                "OAuth callback state mismatch; possible CSRF, aborting"
+            ))
         } else if let (Some(iss), Some(exp)) = (params.get("iss"), expected_issuer)
             && iss.trim_end_matches('/') != exp.trim_end_matches('/')
         {
-            Err(anyhow::anyhow!("OAuth callback issuer mismatch (RFC 9207), aborting"))
+            Err(anyhow::anyhow!(
+                "OAuth callback issuer mismatch (RFC 9207), aborting"
+            ))
         } else if let Some(err) = params.get("error") {
             let desc: String = params
                 .get("error_description")
@@ -928,7 +950,10 @@ async fn token_request(
     let mut req = client
         .post(token_endpoint)
         .header("accept", "application/json");
-    match (registration.auth_method, registration.client_secret.as_deref()) {
+    match (
+        registration.auth_method,
+        registration.client_secret.as_deref(),
+    ) {
         (TokenAuthMethod::ClientSecretBasic, Some(secret)) => {
             let enc = |s: &str| urlencoding::encode(s).into_owned();
             req = req.basic_auth(enc(&registration.client_id), Some(enc(secret)));
@@ -1016,6 +1041,7 @@ pub(crate) async fn access_token_at(path: &Path, key: &str) -> Result<Option<Str
     if !creds.is_expired(now_secs()) {
         return Ok(Some(creds.access_token));
     }
+    let original = creds.clone();
     match refresh(&http_client()?, &creds).await {
         Ok(token) => {
             creds.access_token = token.access_token;
@@ -1027,8 +1053,14 @@ pub(crate) async fn access_token_at(path: &Path, key: &str) -> Result<Option<Str
                 creds.scope = token.scope;
             }
             let access = creds.access_token.clone();
-            save_credentials(path, key, creds)?;
-            Ok(Some(access))
+            // Compare-and-swap: a concurrent logout or re-auth wins; never
+            // resurrect a removed entry.
+            match replace_credentials_if(path, key, &original, creds)? {
+                true => Ok(Some(access)),
+                false => Ok(load_credentials(path, key)
+                    .filter(|c| !c.is_expired(now_secs()))
+                    .map(|c| c.access_token)),
+            }
         }
         Err(err) => {
             crate::logging::warn(&format!("MCP OAuth refresh failed: {err:#}"));
@@ -1073,8 +1105,59 @@ fn write_store(path: &Path, store: &HashMap<String, StoredCredentials>) -> Resul
     Ok(())
 }
 
+/// In-process mutex plus an advisory `flock` on a sibling lock file so
+/// concurrent jcode processes serialize read-modify-write cycles.
+struct StoreGuard {
+    _mutex: std::sync::MutexGuard<'static, ()>,
+    _file: Option<std::fs::File>,
+}
+
+fn lock_store(path: &Path) -> StoreGuard {
+    let mutex = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let file = path.parent().and_then(|dir| {
+        std::fs::create_dir_all(dir).ok()?;
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("lock"))
+            .ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let _ = jcode_core::fs::set_permissions_owner_only(&path.with_extension("lock"));
+            // Blocks; entries are small so holders are brief.
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return None;
+            }
+        }
+        Some(f)
+    });
+    StoreGuard {
+        _mutex: mutex,
+        _file: file,
+    }
+}
+
+/// Replace `key` only if it still equals `expected`. Returns whether written.
+pub(crate) fn replace_credentials_if(
+    path: &Path,
+    key: &str,
+    expected: &StoredCredentials,
+    new: StoredCredentials,
+) -> Result<bool> {
+    let _g = lock_store(path);
+    let mut store = read_store(path)?;
+    if store.get(key) != Some(expected) {
+        return Ok(false);
+    }
+    store.insert(key.to_string(), new);
+    write_store(path, &store)?;
+    Ok(true)
+}
+
 pub(crate) fn load_credentials(path: &Path, key: &str) -> Option<StoredCredentials> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = lock_store(path);
     match read_store(path) {
         Ok(mut store) => store.remove(key),
         Err(e) => {
@@ -1085,14 +1168,14 @@ pub(crate) fn load_credentials(path: &Path, key: &str) -> Option<StoredCredentia
 }
 
 pub(crate) fn save_credentials(path: &Path, key: &str, creds: StoredCredentials) -> Result<()> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = lock_store(path);
     let mut store = read_store(path)?;
     store.insert(key.to_string(), creds);
     write_store(path, &store)
 }
 
 pub(crate) fn remove_credentials(path: &Path, key: &str) -> Result<bool> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = lock_store(path);
     let mut store = read_store(path)?;
     let removed = store.remove(key).is_some();
     if removed {

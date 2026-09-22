@@ -12,14 +12,26 @@ fn cfg(url: &str, oauth: Option<McpOAuthConfig>) -> McpServerConfig {
 #[test]
 fn figma_identity_only_for_exact_host() {
     let d = McpOAuthConfig::default();
-    assert_eq!(effective_client_name("https://mcp.figma.com/mcp", &d), "Codex");
-    assert_eq!(effective_client_name("https://evil.figma.com/mcp", &d), "jcode");
-    assert_eq!(effective_client_name("https://mcp.figma.com.evil.io/mcp", &d), "jcode");
+    assert_eq!(
+        effective_client_name("https://mcp.figma.com/mcp", &d),
+        "Codex"
+    );
+    assert_eq!(
+        effective_client_name("https://evil.figma.com/mcp", &d),
+        "jcode"
+    );
+    assert_eq!(
+        effective_client_name("https://mcp.figma.com.evil.io/mcp", &d),
+        "jcode"
+    );
     let o = McpOAuthConfig {
         client_name: Some("Custom".into()),
         ..Default::default()
     };
-    assert_eq!(effective_client_name("https://mcp.figma.com/mcp", &o), "Custom");
+    assert_eq!(
+        effective_client_name("https://mcp.figma.com/mcp", &o),
+        "Custom"
+    );
 }
 
 #[test]
@@ -52,14 +64,23 @@ fn resource_match_requires_segment_boundary() {
 
 #[test]
 fn auth_method_negotiation() {
-    let figma = vec!["client_secret_basic".to_string(), "client_secret_post".to_string()];
-    assert_eq!(choose_auth_method(&figma, false), TokenAuthMethod::ClientSecretPost);
+    let figma = vec![
+        "client_secret_basic".to_string(),
+        "client_secret_post".to_string(),
+    ];
+    assert_eq!(
+        choose_auth_method(&figma, false),
+        TokenAuthMethod::ClientSecretPost
+    );
     assert_eq!(
         choose_auth_method(&["none".into(), "client_secret_post".into()], false),
         TokenAuthMethod::None
     );
     assert_eq!(choose_auth_method(&[], false), TokenAuthMethod::None);
-    assert_eq!(choose_auth_method(&[], true), TokenAuthMethod::ClientSecretBasic);
+    assert_eq!(
+        choose_auth_method(&[], true),
+        TokenAuthMethod::ClientSecretBasic
+    );
 }
 
 #[test]
@@ -112,7 +133,10 @@ async fn expired_token_is_refreshed_with_secret_post() {
     let tc = Arc::clone(&token_calls);
     let server = test_http_mock::start(Arc::new(move |req| {
         tc.lock().unwrap().push(req.clone());
-        Reply::json(200, r#"{"access_token":"new","expires_in":3600,"refresh_token":"r2"}"#)
+        Reply::json(
+            200,
+            r#"{"access_token":"new","expires_in":3600,"refresh_token":"r2"}"#,
+        )
     }))
     .await;
     let dir = tempfile::tempdir().unwrap();
@@ -132,7 +156,10 @@ async fn expired_token_is_refreshed_with_secret_post() {
         },
     )
     .unwrap();
-    assert_eq!(access_token_at(&p, "k").await.unwrap().as_deref(), Some("new"));
+    assert_eq!(
+        access_token_at(&p, "k").await.unwrap().as_deref(),
+        Some("new")
+    );
     let stored = load_credentials(&p, "k").unwrap();
     assert_eq!(stored.refresh_token.as_deref(), Some("r2"));
     let body = &token_calls.lock().unwrap()[0].body;
@@ -191,7 +218,9 @@ async fn full_flow_against_mock_figma_like_server() {
         &store,
         "figma",
         &config,
-        AuthOptions { open_browser: false },
+        AuthOptions {
+            open_browser: false,
+        },
         move |url| {
             *su.lock().unwrap() = url.to_string();
             let u = Url::parse(url).unwrap();
@@ -230,7 +259,10 @@ async fn full_flow_against_mock_figma_like_server() {
     let key = store_key(&config.url.clone().unwrap(), &McpOAuthConfig::default());
     let creds = load_credentials(&store, &key).unwrap();
     assert_eq!(creds.access_token, "at");
-    assert_eq!(creds.token_endpoint_auth_method, TokenAuthMethod::ClientSecretPost);
+    assert_eq!(
+        creds.token_endpoint_auth_method,
+        TokenAuthMethod::ClientSecretPost
+    );
 }
 
 #[tokio::test]
@@ -268,4 +300,33 @@ async fn metadata_for_other_resource_is_rejected() {
         .err()
         .unwrap();
     assert!(err.to_string().contains("is for"), "{err}");
+}
+
+/// Logout during an in-flight refresh must not resurrect credentials.
+#[tokio::test]
+async fn refresh_does_not_resurrect_after_logout() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("s.json");
+    let p2 = p.clone();
+    let server = test_http_mock::start(Arc::new(move |_| {
+        // Logout happens while the token endpoint is "processing".
+        remove_credentials(&p2, "k").unwrap();
+        Reply::json(200, r#"{"access_token":"new","expires_in":3600}"#)
+    }))
+    .await;
+    save_credentials(
+        &p,
+        "k",
+        StoredCredentials {
+            client_id: "cid".into(),
+            token_endpoint: format!("{}/token", server.base),
+            access_token: "old".into(),
+            refresh_token: Some("r1".into()),
+            expires_at: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(access_token_at(&p, "k").await.unwrap(), None);
+    assert_eq!(load_credentials(&p, "k"), None);
 }
