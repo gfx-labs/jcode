@@ -76,6 +76,8 @@ pub struct McpHandle {
     request_timeout: std::time::Duration,
     /// Set for streamable HTTP servers. Requests then bypass `writer_tx`.
     http: Option<Arc<HttpTransport>>,
+    /// Set once the stdio reader exits (server died or closed stdout).
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Protocol version offered to streamable HTTP servers.
@@ -115,6 +117,11 @@ impl McpHandle {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending.lock().await;
+            // Checked under the lock: the reader sets `closed` before it
+            // drains `pending`, so a request either sees the flag or is drained.
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(self.closed_error());
+            }
             pending.insert(id, tx);
         }
 
@@ -125,7 +132,7 @@ impl McpHandle {
             .context("Failed to send request")?;
 
         let response = match tokio::time::timeout(self.request_timeout, rx).await {
-            Ok(r) => r.context("Channel closed")?,
+            Ok(r) => r.map_err(|_| self.closed_error())?,
             Err(_) => {
                 self.pending.lock().await.remove(&id);
                 return Err(self.timeout_error());
@@ -137,6 +144,13 @@ impl McpHandle {
         }
 
         Ok(response)
+    }
+
+    fn closed_error(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "MCP server '{}' exited or closed its output before replying (channel closed)",
+            self.name
+        )
     }
 
     fn timeout_error(&self) -> anyhow::Error {
@@ -328,6 +342,8 @@ impl McpClient {
 
         // Spawn reader task
         let pending_clone = Arc::clone(&pending);
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_closed = Arc::clone(&closed);
         let reader_name = name.clone();
         let mut reader = BufReader::new(stdout);
         tokio::spawn(async move {
@@ -363,6 +379,9 @@ impl McpClient {
                     }
                 }
             }
+            // Fail every waiter now instead of letting each hit its timeout.
+            reader_closed.store(true, Ordering::SeqCst);
+            pending_clone.lock().await.clear();
         });
 
         let handle = McpHandle {
@@ -375,6 +394,7 @@ impl McpClient {
             tools: Arc::new(std::sync::RwLock::new(Vec::new())),
             request_timeout: request_timeout_for(config),
             http: None,
+            closed,
         };
 
         let mut client = Self {
@@ -406,6 +426,7 @@ impl McpClient {
             tools: Arc::new(std::sync::RwLock::new(Vec::new())),
             request_timeout: request_timeout_for(config),
             http: Some(transport),
+            closed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let mut client = Self {
             handle,
@@ -671,6 +692,44 @@ done
             timeout_secs: None,
             oauth: None,
         }
+    }
+
+    fn sh_config(script: &str, timeout_secs: Option<u64>) -> McpServerConfig {
+        McpServerConfig {
+            args: vec!["-c".to_string(), script.to_string()],
+            timeout_secs,
+            ..fake_server_config()
+        }
+    }
+
+    /// A server that exits without replying must fail promptly, not after
+    /// the full request timeout.
+    #[tokio::test]
+    async fn dead_stdio_server_fails_fast() {
+        let config = sh_config("exit 0", Some(30));
+        let start = std::time::Instant::now();
+        let err = McpClient::connect("dead".into(), &config)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{err:#}"
+        );
+        assert!(format!("{err:#}").contains("channel closed"), "{err:#}");
+    }
+
+    /// A live server that never answers still hits the explicit timeout.
+    #[tokio::test]
+    async fn silent_live_stdio_server_times_out() {
+        let config = sh_config("while IFS= read -r line; do :; done", Some(1));
+        let start = std::time::Instant::now();
+        let err = McpClient::connect("silent".into(), &config)
+            .await
+            .err()
+            .unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(900));
+        assert!(format!("{err:#}").contains("Request timeout"), "{err:#}");
     }
 
     #[tokio::test]
