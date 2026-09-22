@@ -497,9 +497,10 @@ swarm_max_concurrent_agents = 32
 # memory_embedding_dim = 1536
 
 # Optional task-aware model selection for newly spawned swarm workers.
-# Sends the assigned task (not the conversation) to the selected Jev provider. Hosted TypeSafe requires
-# TYPESAFE_API_KEY in the server environment or ~/.config/jcode/typesafe.env
-# (mode 0600). Explicit model overrides win.
+# Sends the assigned task (not the conversation) to the [agents.jev] provider.
+# Hosted TypeSafe requires TYPESAFE_API_KEY in the server environment or
+# ~/.config/jcode/typesafe.env (mode 0600). Local openjev is keyless by default.
+# Explicit model overrides win.
 # Missing credentials, invalid answers, and API failures fall back to
 # agents.swarm_model, or coordinator inheritance when that is unset.
 # [agents.swarm_router]
@@ -516,9 +517,11 @@ swarm_max_concurrent_agents = 32
 # "jev", each fresh user turn asks the configured Jev decision model
 # directly (POST {base_url}/systemone) which registered skill best fits the
 # request, injecting that skill's prompt when confident enough. Routing is a
-# bounded async wait performed before the provider request is sent. Requires
-# TYPESAFE_API_KEY in the server environment or ~/.config/jcode/typesafe.env
-# (mode 0600); see docs/SKILL_ROUTER.md.
+# bounded async wait performed before the provider request is sent. [agents.jev]
+# selects the provider. Only hosted providers require credentials: TypeSafe uses
+# TYPESAFE_API_KEY or ~/.config/jcode/typesafe.env (mode 0600), OpenRouter uses
+# OPENROUTER_API_KEY/openrouter.env, and local openjev is keyless by default.
+# See docs/SKILL_ROUTER.md and docs/JEV_PROVIDERS.md.
 # Env override: JCODE_SKILL_SUGGESTION_BACKEND
 # skill_suggestion_backend = "off"
 # skill_suggestion_model = "jev-latest"
