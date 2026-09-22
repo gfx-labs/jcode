@@ -1,5 +1,6 @@
 //! MCP Client - handles communication with a single MCP server
 
+use super::http::HttpTransport;
 use super::protocol::*;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -73,7 +74,12 @@ pub struct McpHandle {
     tools: Arc<std::sync::RwLock<Vec<McpToolDef>>>,
     /// Reply timeout applied to every request on this server.
     request_timeout: std::time::Duration,
+    /// Set for streamable HTTP servers. Requests then bypass `writer_tx`.
+    http: Option<Arc<HttpTransport>>,
 }
+
+/// Protocol version offered to streamable HTTP servers.
+pub const HTTP_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Default reply timeout when a server config does not set `timeout_secs`.
 pub const DEFAULT_MCP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -93,6 +99,19 @@ impl McpHandle {
         let id = self.request_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method, params);
 
+        if let Some(http) = &self.http {
+            let body = serde_json::to_string(&request)?;
+            // The timeout drops the in-flight HTTP future, so no orphan task
+            // or pending entry outlives the request.
+            let response = tokio::time::timeout(self.request_timeout, http.request(id, body))
+                .await
+                .map_err(|_| self.timeout_error())??;
+            if let Some(err) = &response.error {
+                anyhow::bail!("MCP error {}: {}", err.code, err.message);
+            }
+            return Ok(response);
+        }
+
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.pending.lock().await;
@@ -105,22 +124,45 @@ impl McpHandle {
             .await
             .context("Failed to send request")?;
 
-        let response = tokio::time::timeout(self.request_timeout, rx)
-            .await
-            .with_context(|| {
-                format!(
-                    "Request timeout after {}s (raise `timeout_secs` for MCP server '{}' if its tools legitimately run longer)",
-                    self.request_timeout.as_secs(),
-                    self.name
-                )
-            })?
-            .context("Channel closed")?;
+        let response = match tokio::time::timeout(self.request_timeout, rx).await {
+            Ok(r) => r.context("Channel closed")?,
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                return Err(self.timeout_error());
+            }
+        };
 
         if let Some(err) = &response.error {
             anyhow::bail!("MCP error {}: {}", err.code, err.message);
         }
 
         Ok(response)
+    }
+
+    fn timeout_error(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "Request timeout after {}s (raise `timeout_secs` for MCP server '{}' if its tools legitimately run longer)",
+            self.request_timeout.as_secs(),
+            self.name
+        )
+    }
+
+    /// Send a notification (no response expected).
+    pub async fn notify(&self, method: &str, params: Option<Value>) -> Result<()> {
+        let notif = JsonRpcNotification::new(method, params);
+        let body = serde_json::to_string(&notif)?;
+        if let Some(http) = &self.http {
+            return tokio::time::timeout(self.request_timeout, http.notify(body))
+                .await
+                .map_err(|_| self.timeout_error())?;
+        }
+        self.writer_tx.send(body + "\n").await?;
+        Ok(())
+    }
+
+    /// Whether this handle talks to a remote HTTP server.
+    pub fn is_http(&self) -> bool {
+        self.http.is_some()
     }
 
     /// Call a tool
@@ -206,6 +248,9 @@ impl McpClient {
         config: &McpServerConfig,
         working_dir: Option<&std::path::Path>,
     ) -> Result<Self> {
+        if super::http::is_http_config(config) {
+            return Self::connect_http(name, config).await;
+        }
         let working_dir = working_dir.filter(|dir| dir.is_dir());
         crate::logging::info(&format!(
             "MCP: Connecting to '{}' ({} {:?}) cwd={:?}",
@@ -329,6 +374,7 @@ impl McpClient {
             capabilities: Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),
             tools: Arc::new(std::sync::RwLock::new(Vec::new())),
             request_timeout: request_timeout_for(config),
+            http: None,
         };
 
         let mut client = Self {
@@ -336,6 +382,41 @@ impl McpClient {
             child: Some(child),
         };
 
+        client.finish_connect(&name).await?;
+        Ok(client)
+    }
+
+    /// Connect to a remote streamable HTTP MCP server.
+    async fn connect_http(name: String, config: &McpServerConfig) -> Result<Self> {
+        crate::logging::info(&format!(
+            "MCP: Connecting to '{}' over HTTP ({})",
+            name,
+            config.url.as_deref().unwrap_or_default()
+        ));
+        let transport = Arc::new(HttpTransport::new(name.clone(), config)?);
+        // HTTP handles never use the writer channel; keep a closed one.
+        let (writer_tx, _) = mpsc::channel::<String>(1);
+        let handle = McpHandle {
+            name: name.clone(),
+            request_id: Arc::new(AtomicU64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            writer_tx,
+            server_info: Arc::new(std::sync::RwLock::new(None)),
+            capabilities: Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),
+            tools: Arc::new(std::sync::RwLock::new(Vec::new())),
+            request_timeout: request_timeout_for(config),
+            http: Some(transport),
+        };
+        let mut client = Self {
+            handle,
+            child: None,
+        };
+        client.finish_connect(&name).await?;
+        Ok(client)
+    }
+
+    async fn finish_connect(&mut self, name: &str) -> Result<()> {
+        let client = self;
         client
             .initialize()
             .await
@@ -352,8 +433,7 @@ impl McpClient {
             name,
             client.handle.tools().len()
         ));
-
-        Ok(client)
+        Ok(())
     }
 
     /// Get a shareable handle to this client
@@ -363,8 +443,13 @@ impl McpClient {
 
     /// Initialize the MCP connection
     async fn initialize(&mut self) -> Result<()> {
+        let protocol_version = if self.handle.http.is_some() {
+            HTTP_PROTOCOL_VERSION
+        } else {
+            "2024-11-05"
+        };
         let params = InitializeParams {
-            protocol_version: "2024-11-05".to_string(),
+            protocol_version: protocol_version.to_string(),
             capabilities: ClientCapabilities::default(),
             client_info: ClientInfo {
                 name: "jcode".to_string(),
@@ -378,6 +463,12 @@ impl McpClient {
             .await?;
 
         if let Some(result) = response.result {
+            if let (Some(http), Some(v)) = (
+                &self.handle.http,
+                result.get("protocolVersion").and_then(|v| v.as_str()),
+            ) {
+                http.set_protocol_version(v);
+            }
             let init_result: InitializeResult = serde_json::from_value(result)?;
             *self
                 .handle
@@ -392,15 +483,17 @@ impl McpClient {
         }
 
         // Send initialized notification
-        let notif = JsonRpcNotification::new("notifications/initialized", None);
-        let msg = serde_json::to_string(&notif)? + "\n";
-        self.handle.writer_tx.send(msg).await?;
+        // Awaited so the server sees it before any later request.
+        self.handle.notify("notifications/initialized", None).await?;
 
         Ok(())
     }
 
     /// Check if server is still running
     pub fn is_running(&mut self) -> bool {
+        if self.handle.http.is_some() {
+            return true;
+        }
         match self.child.as_mut().map(Child::try_wait) {
             Some(Ok(None)) => true,
             Some(Ok(Some(_))) | Some(Err(_)) | None => false,
@@ -409,6 +502,10 @@ impl McpClient {
 
     /// Shutdown the server
     pub async fn shutdown(&mut self) {
+        if let Some(http) = &self.handle.http {
+            http.terminate().await;
+            return;
+        }
         let _ = self
             .handle
             .writer_tx
@@ -570,6 +667,7 @@ done
             enabled: None,
             disabled: None,
             timeout_secs: None,
+            oauth: None,
         }
     }
 
