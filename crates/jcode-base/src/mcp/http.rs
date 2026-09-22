@@ -325,7 +325,8 @@ where
     find(decoder.finish()).context("SSE stream ended without a response")
 }
 
-/// Parse a complete SSE body (test/helper convenience).
+/// Parse a complete SSE body (test helper).
+#[cfg(test)]
 pub(crate) fn parse_sse_messages(text: &str) -> Vec<JsonRpcResponse> {
     let mut d = SseDecoder::default();
     let mut events = d.feed(text.as_bytes()).unwrap_or_default();
