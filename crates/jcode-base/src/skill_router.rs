@@ -424,7 +424,9 @@ mod tests {
         assert_eq!(questions.len(), 1);
         let q = &questions["skill"];
         assert!(
-            q["instructions"].as_str().is_some_and(|s| !s.trim().is_empty()),
+            q["instructions"]
+                .as_str()
+                .is_some_and(|s| !s.trim().is_empty()),
             "choice questions require text instructions"
         );
         let criteria = q["criteria"].as_object().unwrap();

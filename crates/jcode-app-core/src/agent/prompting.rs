@@ -2,6 +2,30 @@ use super::Agent;
 use crate::logging;
 use crate::message::{Message, ToolDefinition};
 
+/// Whether `messages` ends the first *real* user turn of a session.
+///
+/// The immutable session-context snapshot is stored with `Role::User`, so a
+/// naive count of user messages sees 2 on the very first turn. That made the
+/// skill router skip its inline wait and defer every decision to a turn that,
+/// for one-shot runs, never arrives, so an accepted suggestion was computed and
+/// then silently dropped. Exclude the snapshot.
+fn is_first_user_turn(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .filter(|m| {
+            m.role == crate::message::Role::User
+                && !m.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        crate::message::ContentBlock::Text { text, .. }
+                            if text.starts_with(jcode_base::session::SESSION_CONTEXT_PREFIX)
+                    )
+                })
+        })
+        .count()
+        <= 1
+}
+
 impl Agent {
     /// Explicitly prepare/freeze the same tool surface used by provider turns.
     /// Unlike `debug_context`, this may update the tool cache. It never calls a provider.
@@ -122,14 +146,7 @@ impl Agent {
                 description: skill.description.clone(),
             })
             .collect();
-        // First user turn of a session: nothing could have prepared a
-        // suggestion yet, and jev is fast, so wait briefly for it inline.
-        // Later turns stay non-blocking (consume last, spawn next).
-        let first_turn = messages
-            .iter()
-            .filter(|m| m.role == crate::message::Role::User)
-            .count()
-            <= 1;
+        let first_turn = is_first_user_turn(messages);
         let suggestion = if first_turn && pending.is_none() {
             crate::skill_router::suggest_inline(session_id, messages, candidates)
         } else {
@@ -236,5 +253,49 @@ Its instructions follow; apply them if they fit, otherwise ignore.\n\n{}\n</syst
         _memory_event_tx: Option<crate::memory::MemoryEventSink>,
     ) -> Option<crate::memory::PendingMemory> {
         self.build_memory_prompt_nonblocking_shared(messages.to_vec().into(), _memory_event_tx)
+    }
+}
+
+#[cfg(test)]
+mod first_turn_tests {
+    use super::*;
+    use crate::message::Message;
+
+    fn session_context() -> Message {
+        Message::user(&format!(
+            "{}\nDate: 2026-09-23\n</system-reminder>",
+            jcode_base::session::SESSION_CONTEXT_PREFIX
+        ))
+    }
+
+    /// Regression: the session-context snapshot is a `Role::User` message, so
+    /// counting user messages naively reported 2 on the first real turn. The
+    /// skill router then skipped its inline wait and dropped the suggestion.
+    #[test]
+    fn session_context_snapshot_does_not_consume_the_first_turn() {
+        let messages = vec![
+            session_context(),
+            Message::user("extract tables from a PDF"),
+        ];
+        assert!(
+            is_first_user_turn(&messages),
+            "the leading session-context snapshot must not count as a user turn"
+        );
+    }
+
+    #[test]
+    fn a_real_second_user_turn_is_not_the_first_turn() {
+        let messages = vec![
+            session_context(),
+            Message::user("first"),
+            Message::assistant_text("reply"),
+            Message::user("second"),
+        ];
+        assert!(!is_first_user_turn(&messages));
+    }
+
+    #[test]
+    fn a_lone_user_message_is_the_first_turn() {
+        assert!(is_first_user_turn(&[Message::user("hello")]));
     }
 }

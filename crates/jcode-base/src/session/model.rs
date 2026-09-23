@@ -38,4 +38,7 @@ pub enum StoredReplayEventKind {
     },
 }
 
-pub(super) const SESSION_CONTEXT_PREFIX: &str = "<system-reminder>\n# Session Context";
+/// Marker for the immutable session-context snapshot that leads a new
+/// transcript. It is stored with `Role::User`, so anything counting real user
+/// turns must exclude it.
+pub const SESSION_CONTEXT_PREFIX: &str = "<system-reminder>\n# Session Context";

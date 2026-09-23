@@ -1406,17 +1406,25 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(decode_request_or_event(&line), ServerEvent::Sessions { id: response_id, sessions } if response_id == id && sessions.is_empty()));
+        assert!(
+            matches!(decode_request_or_event(&line), ServerEvent::Sessions { id: response_id, sessions } if response_id == id && sessions.is_empty())
+        );
         assert!(client_connections.read().await.is_empty());
         assert!(sessions.read().await.is_empty());
         assert!(!forked.load(Ordering::SeqCst));
-        client_writer.write_all(b"{\"type\":\"ping\",\"id\":99}\n").await.unwrap();
+        client_writer
+            .write_all(b"{\"type\":\"ping\",\"id\":99}\n")
+            .await
+            .unwrap();
         line.clear();
         tokio::time::timeout(Duration::from_secs(2), client_reader.read_line(&mut line))
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(decode_request_or_event(&line), ServerEvent::Pong { id: 99, .. }));
+        assert!(matches!(
+            decode_request_or_event(&line),
+            ServerEvent::Pong { id: 99, .. }
+        ));
     }
     let request = Request::CommList {
         id: 7,
