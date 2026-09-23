@@ -124,6 +124,10 @@ mod render_lazy;
 #[path = "markdown_render_support.rs"]
 mod render_support;
 
+#[path = "markdown_streaming_copy.rs"]
+mod streaming_copy;
+pub use streaming_copy::extract_streaming_copy_targets;
+
 mod render_core_adapter;
 pub use render_core_adapter::{
     document_to_lines, render_markdown_via_core, render_markdown_via_core_wrapped,
