@@ -45,10 +45,21 @@ pub(crate) fn copy_badge_alt_badge() -> String {
     format!("[{}]", copy_badge_alt_label())
 }
 
+/// Explicit label rendered before the shortcut badges so the copy affordance
+/// reads clearly (e.g. "Copy [Alt] [⇧] [S]") instead of relying solely on the
+/// hotkey glyphs.
+pub(crate) const COPY_BADGE_LABEL: &str = "Copy";
+
 fn copy_badge_shortcut_width(key_label: &str) -> usize {
     // Includes the single separator space rendered between the row content and
-    // the first badge.
-    UnicodeWidthStr::width(format!(" {} [⇧] [{key_label}]", copy_badge_alt_badge()).as_str())
+    // the first badge, plus the explicit "Copy" label ahead of the hotkeys.
+    UnicodeWidthStr::width(
+        format!(
+            " {COPY_BADGE_LABEL} {} [⇧] [{key_label}]",
+            copy_badge_alt_badge()
+        )
+        .as_str(),
+    )
 }
 
 /// Display width reserved for the inline expand-edit badge (`[Alt] [⇧] [E] …`).
@@ -869,6 +880,18 @@ pub(super) fn draw_messages(
 
             let shortcut_start = line.width();
 
+            let label_style = if copy_badge_ui.alt_is_active(copy_badge_now)
+                || copy_badge_ui.shift_is_active(copy_badge_now)
+                || copy_badge_ui.key_is_active(key, copy_badge_now)
+            {
+                Style::default().fg(accent_color()).bold()
+            } else {
+                Style::default().fg(dim_color())
+            };
+            line.spans
+                .push(Span::styled(COPY_BADGE_LABEL, label_style));
+            line.spans.push(Span::raw(" "));
+
             line.spans
                 .push(Span::styled(copy_badge_alt_badge(), alt_style));
             line.spans.push(Span::raw(" "));
@@ -1672,5 +1695,20 @@ mod tests {
             "Option"
         );
         assert_eq!(super::copy_badge_alt_label_from_config("⌥"), "⌥");
+    }
+
+    #[test]
+    fn copy_badge_reserved_width_includes_explicit_copy_label() {
+        // The reserved width must be wide enough to hold the visible "Copy"
+        // text ahead of the hotkey glyphs, not just the hotkeys themselves.
+        let with_label = super::copy_badge_shortcut_width("S");
+        let hotkeys_only = unicode_width::UnicodeWidthStr::width(
+            format!(" {} [⇧] [S]", super::copy_badge_alt_badge()).as_str(),
+        );
+        assert!(
+            with_label > hotkeys_only,
+            "expected reserved width ({with_label}) to exceed hotkey-only width ({hotkeys_only})"
+        );
+        assert!(with_label >= hotkeys_only + super::COPY_BADGE_LABEL.len());
     }
 }

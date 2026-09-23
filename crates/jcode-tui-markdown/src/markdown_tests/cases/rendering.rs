@@ -1205,3 +1205,95 @@ fn test_reasoning_summary_line_markup_folds_to_single_dim_italic_trace() {
     }
     assert!(saw_marker, "summary marker '▸' must be visible: {lines:?}");
 }
+
+#[test]
+fn streaming_copy_requires_explicit_fence_close() {
+    let source =
+        "before\n\n```rust\nlet x = 1;\n```\n\n~~~text\nhello\n~~~\n\n```python\nunfinished";
+    let lines = render_markdown(source);
+    let all = extract_copy_targets_from_rendered_lines(&lines);
+    let targets = extract_streaming_copy_targets(source, &lines);
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].content, "let x = 1;");
+    assert_eq!(targets[1].content, "hello");
+    assert_eq!(targets[0].start_raw_line, all[0].start_raw_line);
+    assert_eq!(targets[1].badge_raw_line, all[1].badge_raw_line);
+}
+
+#[test]
+fn streaming_copy_ignores_non_fence_and_incomplete_fences() {
+    for source in [
+        "```rs\ncode",
+        "~~~~\ncode\n~~~",
+        "    indented\n",
+        "```rs\n~~~\n",
+    ] {
+        let lines = render_markdown(source);
+        assert!(
+            extract_streaming_copy_targets(source, &lines).is_empty(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn streaming_copy_nested_and_diagram_frames() {
+    let source = "> ```rust\n> let x = 1;\n> ```\n\n```mermaid\ngraph TD; A-->B;\n```\n\n~~~text\ncopy me\n~~~";
+    let lines = render_markdown(source);
+    let targets = extract_streaming_copy_targets(source, &lines);
+    assert!(
+        targets
+            .iter()
+            .any(|target| target.content.contains("let x = 1"))
+    );
+    assert!(targets.iter().any(|target| target.content == "copy me"));
+    // A diagram may fall back to a code frame. That frame is copyable too,
+    // but it must not consume the following ordinary block's copy target.
+    assert_eq!(targets.last().unwrap().content, "copy me");
+}
+
+#[test]
+fn streaming_copy_skips_indented_and_math_frames() {
+    let source = "    indented\n\n$$x^2$$\n\n```rust\ncopy\n```";
+    let lines = render_markdown(source);
+    let targets = extract_streaming_copy_targets(source, &lines);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].content, "copy");
+}
+
+#[test]
+fn streaming_copy_does_not_accept_fake_closer_in_body() {
+    for source in ["```rust\n    ```\ncode", "```rust\n> ```\ncode"] {
+        let lines = render_markdown(source);
+        assert!(
+            extract_streaming_copy_targets(source, &lines).is_empty(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn streaming_copy_empty_blocks_and_trailing_blank_lines() {
+    for source in ["```", "```\n", "```rust\n"] {
+        assert!(extract_streaming_copy_targets(source, &render_markdown(source)).is_empty());
+    }
+    for source in [
+        "```\n```",
+        "```rust\n```",
+        "```rust\ncode\n\n```",
+        "```rust title\ncode\n```",
+        "> > ```rust\n> > code\n> > ```",
+    ] {
+        let lines = render_markdown(source);
+        let targets = extract_streaming_copy_targets(source, &lines);
+        assert_eq!(targets.len(), 1, "{source}");
+        let all = extract_copy_targets_from_rendered_lines(&lines);
+        assert_eq!(
+            targets[0].content,
+            all.iter()
+                .find(|target| matches!(target.kind, CopyTargetKind::CodeBlock { .. }))
+                .unwrap()
+                .content
+        );
+    }
+}

@@ -1483,3 +1483,112 @@ fn test_changelog_overlay_mouse_drag_release_copies_text() {
         Some("Copied selection") | Some("Failed to copy selection") | Some("Selection is empty")
     ));
 }
+
+fn create_streaming_code_copy_test_app() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>)
+{
+    let (mut app, terminal) = create_copy_test_app();
+    app.display_messages.truncate(1);
+    app.bump_display_messages_version();
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.streaming.streaming_text = "```rust\nfn main() {}\n".to_string();
+    (app, terminal)
+}
+
+#[test]
+fn test_streaming_code_copy_shortcut_before_message_finishes() {
+    let _render_lock = scroll_render_test_lock();
+    let clipboard = CapturedClipboard::new();
+    for centered in [false, true] {
+        let (mut app, mut terminal) = create_streaming_code_copy_test_app();
+        app.centered = centered;
+        render_and_snap(&app, &mut terminal);
+        assert!(crate::tui::ui::visible_copy_target_for_key('s').is_none());
+
+        // A closing fence makes this block copyable without finalizing the message.
+        app.streaming
+            .streaming_text
+            .push_str("```\nStill explaining");
+        let frame = render_and_snap(&app, &mut terminal);
+        assert!(
+            frame.contains("[S]"),
+            "missing streaming copy shortcut: {frame}"
+        );
+        assert!(app.is_processing);
+        app.handle_key(KeyCode::Char('S'), KeyModifiers::ALT)
+            .unwrap();
+        assert_eq!(clipboard.text().as_deref(), Some("fn main() {}"));
+
+        // Further tokens and a second unfinished block must preserve the first target.
+        app.streaming
+            .streaming_text
+            .push_str(" the example.\n\n```python\nprint('partial')");
+        render_and_snap(&app, &mut terminal);
+        assert_eq!(
+            crate::tui::ui::visible_copy_target_for_key('s')
+                .unwrap()
+                .content,
+            "fn main() {}"
+        );
+        assert!(crate::tui::ui::visible_copy_target_for_key('d').is_none());
+    }
+}
+
+#[test]
+fn test_streaming_code_copy_remote_shortcut_before_message_finishes() {
+    let _render_lock = scroll_render_test_lock();
+    let clipboard = CapturedClipboard::new();
+    let (mut app, mut terminal) = create_streaming_code_copy_test_app();
+    app.streaming
+        .streaming_text
+        .push_str("```\nStill explaining");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    render_and_snap(&app, &mut terminal);
+    rt.block_on(app.handle_remote_key(KeyCode::Char('S'), KeyModifiers::ALT, &mut remote))
+        .unwrap();
+    assert!(app.is_processing);
+    assert_eq!(clipboard.text().as_deref(), Some("fn main() {}"));
+}
+
+#[test]
+fn test_streaming_code_copy_click_before_message_finishes() {
+    let _render_lock = scroll_render_test_lock();
+    let clipboard = CapturedClipboard::new();
+    let (mut app, mut terminal) = create_streaming_code_copy_test_app();
+    app.streaming
+        .streaming_text
+        .push_str("```\nStill explaining");
+    let frame = render_and_snap(&app, &mut terminal);
+    assert!(
+        frame.contains("Copy"),
+        "missing clickable Copy label: {frame}"
+    );
+    let buf = terminal.backend().buffer();
+    let area = *buf.area();
+    let (column, row) = (0..area.height)
+        .find_map(|row| {
+            let line = (0..area.width)
+                .map(|col| buf[(col, row)].symbol())
+                .collect::<String>();
+            // Click the label, not the hotkey, to exercise its entire hitbox.
+            line.find("Copy")
+                .map(|byte| (line[..byte].chars().count() as u16, row))
+        })
+        .expect("Copy button must be visible");
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.handle_mouse_event(MouseEvent {
+            kind,
+            column: column + 1,
+            row,
+            modifiers: KeyModifiers::empty(),
+        });
+    }
+    assert!(app.is_processing);
+    assert_eq!(clipboard.text().as_deref(), Some("fn main() {}"));
+    assert!(render_and_snap(&app, &mut terminal).contains("Copied!"));
+}

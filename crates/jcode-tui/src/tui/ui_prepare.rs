@@ -2340,11 +2340,19 @@ fn prepare_streaming_cached(
     if prefix_blank {
         lines.push(Line::from(""));
     }
+    // Streaming sections need the same copy metadata as finalized messages.
+    // Only explicitly closed blocks are eligible, not the parser's EOF closure.
+    let copy_targets: Vec<_> = markdown::extract_streaming_copy_targets(streaming, &md_lines)
+        .into_iter()
+        .map(|target| offset_copy_target(target, lines.len()))
+        .collect();
     for line in md_lines {
         lines.push(align_if_unset(line, align));
     }
 
-    let mut prepared = wrap_lines(lines, &[], &[], &[], width);
+    let mut prepared = wrap_lines_with_map(
+        lines, &[], &[], &[], &[], &[], width, &[], &copy_targets, &[],
+    );
     stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
     prepared
 }
@@ -2402,6 +2410,11 @@ pub(super) fn prepare_body(
             markdown::recenter_structured_blocks_for_display(&mut md_lines, display_width);
         }
         let align = default_message_alignment("assistant", centered);
+        acc.copy_targets.extend(
+            markdown::extract_streaming_copy_targets(app.streaming_text(), &md_lines)
+                .into_iter()
+                .map(|target| offset_copy_target(target, acc.lines.len())),
+        );
         for line in md_lines {
             acc.lines.push(align_if_unset(line, align));
             acc.line_raw_overrides.push(None);
