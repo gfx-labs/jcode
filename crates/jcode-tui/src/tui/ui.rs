@@ -141,6 +141,7 @@ pub(crate) use messages::{
     render_swarm_message, render_system_message, render_tool_message, render_usage_message,
 };
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
+use pinned_ui::draw_side_panel_markdown;
 pub use pinned_ui::{
     SidePanelDebugStats, SidePanelMermaidProbe, SidePanelMermaidProbeRect,
     debug_probe_side_panel_mermaid,
@@ -149,7 +150,6 @@ pub(crate) use pinned_ui::{
     clear_side_panel_debug_snapshot, clear_side_panel_render_caches, prewarm_focused_side_panel,
     reset_side_panel_debug_stats, side_panel_debug_json, side_panel_debug_stats,
 };
-use pinned_ui::draw_side_panel_markdown;
 #[cfg(test)]
 use transitions::extract_line_text;
 #[cfg(test)]
@@ -236,6 +236,7 @@ thread_local! {
     static TEST_TAIL_FOLLOW_SNAP_PENDING: Cell<bool> = const { Cell::new(false) };
     static TEST_LAST_USER_PROMPT_POSITIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     static TEST_LAST_LAYOUT: RefCell<Option<LayoutSnapshot>> = const { RefCell::new(None) };
+    static TEST_LAST_CHAT_FRAME: RefCell<Option<Arc<PreparedChatFrame>>> = const { RefCell::new(None) };
     static TEST_LAST_STATUS_AREA: RefCell<Option<Rect>> = const { RefCell::new(None) };
     static TEST_VISIBLE_COPY_TARGETS: RefCell<Vec<VisibleCopyTarget>> = RefCell::new(Vec::new());
     static TEST_VISIBLE_EXPAND_EDIT_BADGE: Cell<bool> = const { Cell::new(false) };
@@ -510,9 +511,11 @@ pub(crate) fn set_tail_catchup_active(active: bool) {
 
 /// Request that the next tail-follow render land at the exact bottom.
 ///
-/// This is reserved for explicit navigation or composer actions. Automatic
-/// transcript growth does not set it, so large committed blocks still use the
-/// bounded catch-up animation.
+/// Set by explicit navigation and composer actions, and by a terminal resize,
+/// which rewraps the transcript and would otherwise look like a large append
+/// that the catch-up animation slides through. Automatic transcript growth does
+/// not set it, so large committed blocks still use the bounded catch-up
+/// animation.
 pub(crate) fn request_tail_follow_snap() {
     #[cfg(test)]
     {
@@ -1445,6 +1448,17 @@ pub struct LayoutSnapshot {
 #[cfg(not(test))]
 static LAST_LAYOUT: OnceLock<Mutex<Option<LayoutSnapshot>>> = OnceLock::new();
 
+/// The prepared transcript frame the renderer last drew. The retained frame
+/// *is* the published geometry: it carries per-item row ranges and totals, so
+/// handlers outside `draw` can resolve a viewport anchor against it.
+#[cfg(not(test))]
+static LAST_CHAT_FRAME: OnceLock<Mutex<Option<Arc<PreparedChatFrame>>>> = OnceLock::new();
+
+#[cfg(not(test))]
+fn last_chat_frame_state() -> &'static Mutex<Option<Arc<PreparedChatFrame>>> {
+    LAST_CHAT_FRAME.get_or_init(|| Mutex::new(None))
+}
+
 #[cfg(not(test))]
 fn last_layout_state() -> &'static Mutex<Option<LayoutSnapshot>> {
     LAST_LAYOUT.get_or_init(|| Mutex::new(None))
@@ -1492,6 +1506,38 @@ pub fn last_layout_snapshot() -> Option<LayoutSnapshot> {
             .lock()
             .ok()
             .and_then(|snapshot| *snapshot)
+    }
+}
+
+/// Record the prepared transcript frame the renderer just drew.
+pub(crate) fn set_last_chat_frame(frame: Arc<PreparedChatFrame>) {
+    #[cfg(test)]
+    {
+        TEST_LAST_CHAT_FRAME.with(|slot| *slot.borrow_mut() = Some(frame));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(mut slot) = last_chat_frame_state().lock() {
+            *slot = Some(frame);
+        }
+    }
+}
+
+/// The prepared transcript frame the renderer last drew, if any.
+// First production consumer lands in epic #1411 phase 4/5a.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn last_chat_frame() -> Option<Arc<PreparedChatFrame>> {
+    #[cfg(test)]
+    {
+        return TEST_LAST_CHAT_FRAME.with(|slot| slot.borrow().clone());
+    }
+    #[cfg(not(test))]
+    {
+        last_chat_frame_state()
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 }
 
@@ -1584,6 +1630,9 @@ fn clear_test_render_state_locked() {
     frame_metrics::clear_flicker_frame_history_for_tests();
     TEST_LAST_LAYOUT.with(|snapshot| {
         *snapshot.borrow_mut() = None;
+    });
+    TEST_LAST_CHAT_FRAME.with(|slot| {
+        *slot.borrow_mut() = None;
     });
     TEST_LAST_STATUS_AREA.with(|snapshot| {
         *snapshot.borrow_mut() = None;
@@ -3064,7 +3113,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     let show_donut = !onboarding_welcome && super::idle_donut_active(app);
     let donut_height: u16 = idle_donut_reserved_height(show_donut, input_height);
-    let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
+    let notification_height =
+        input_ui::notification_height(app, chat_area.width).min(chat_area.height.saturating_sub(4));
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
     let overscroll_height: u16 = if app.chat_overscroll_active() { 1 } else { 0 };

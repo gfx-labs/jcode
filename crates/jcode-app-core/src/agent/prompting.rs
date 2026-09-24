@@ -163,7 +163,7 @@ Its instructions follow; apply them if they fit, otherwise ignore.\n\n{}\n</syst
         &self,
         memory_prompt: Option<&str>,
     ) -> crate::prompt::SplitSystemPrompt {
-        if let Some(ref override_prompt) = self.system_prompt_override {
+        if let Some(ref override_prompt) = self.session.system_prompt {
             return crate::prompt::SplitSystemPrompt {
                 static_part: override_prompt.clone(),
                 dynamic_part: String::new(),

@@ -8,7 +8,7 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 6;
+export const API_VERSION_MINOR = 8;
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -119,16 +119,33 @@ export interface RenderedImage {
 /** Base64 image attachment: [mediaType, base64Data]. */
 export type ImageAttachment = [string, string];
 
+/** A tool definition exposed to the model. */
+export interface SessionToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Wire-level session tool policy. Callback functions never cross the wire. */
+export interface ToolConfiguration {
+  enabled?: string[] | null;
+  disabled?: string[];
+  custom?: SessionToolDefinition[];
+}
+
 export type ApiRequest =
   | { req: "hello"; min_version: number; max_version: number; client: string }
   | { req: "list_sessions"; include_archived?: boolean; limit?: number }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
   | { req: "set_retention_policy"; archive_after_days?: number }
-  | { req: "create_session"; working_dir?: string }
+  | { req: "create_session"; working_dir?: string; system_prompt?: string }
   | { req: "attach_session"; session_id: string }
   | { req: "fork_session"; session_id: string }
   | { req: "detach_session"; session_id: string }
+  | { req: "configure_tools"; session_id: string; tools: ToolConfiguration }
+  | { req: "list_tools"; session_id: string }
+  | { req: "tool_result"; session_id: string; call_id: string; output: string; error?: string }
   | {
       req: "send_message";
       session_id: string;
@@ -159,6 +176,7 @@ export type ApiRequest =
   | { req: "get_runtime_info"; session_id: string }
   | { req: "set_api_key"; provider: string; api_key: string }
   | { req: "notify_auth_changed"; provider: string }
+  | { req: "invalidate_usage"; provider: string; account_label?: string }
   | { req: "clear_api_key"; provider: string }
   | { req: "read_file"; session_id: string; path: string; max_bytes?: number }
   | { req: "find_files"; session_id: string; query: string; limit?: number }
@@ -211,6 +229,8 @@ export type ApiEvent =
   | { ev: "tool_start"; session_id: string; call_id: string; name: string }
   | { ev: "tool_input_delta"; session_id: string; call_id: string; delta: string }
   | { ev: "tool_exec"; session_id: string; call_id: string; name: string }
+  | { ev: "tools"; session_id: string; tools: SessionToolDefinition[] }
+  | { ev: "tool_call"; session_id: string; call_id: string; name: string; input: unknown }
   | {
       ev: "tool_done";
       session_id: string;
@@ -229,6 +249,7 @@ export type ApiEvent =
       cache_read_input?: number;
       cache_creation_input?: number;
     }
+  | { ev: "turn_stopped"; session_id: string; reason: TurnStopReason; message: string; provider_stop_reason?: string }
   | { ev: "turn_done"; session_id: string }
   | {
       ev: "wake_requested";
@@ -349,11 +370,14 @@ export const KNOWN_EVENT_KINDS = [
   "reasoning_delta",
   "reasoning_done",
   "tool_start",
+  "tools",
+  "tool_call",
   "tool_input_delta",
   "tool_exec",
   "tool_done",
   "token_usage",
   "turn_done",
+  "turn_stopped",
   "wake_requested",
   "background_progress",
   "message_accepted",
@@ -384,6 +408,9 @@ export const KNOWN_REQUEST_KINDS = [
   "attach_session",
   "fork_session",
   "detach_session",
+  "configure_tools",
+  "list_tools",
+  "tool_result",
   "send_message",
   "cancel",
   "soft_interrupt",
@@ -397,6 +424,7 @@ export const KNOWN_REQUEST_KINDS = [
   "set_api_key",
   "clear_api_key",
   "notify_auth_changed",
+  "invalidate_usage",
   "read_file",
   "find_files",
   "search_text",
@@ -413,3 +441,6 @@ export const KNOWN_REQUEST_KINDS = [
 export function isKnownEvent(frame: AnyApiEvent): frame is ApiEvent {
   return (KNOWN_EVENT_KINDS as readonly string[]).includes(frame.ev);
 }
+
+/** Natural completion has no stop reason. Transport loss is not proof of a crash. */
+export type TurnStopReason = "interrupted" | "failure" | "crash" | "provider_guardrail" | "limit_reached" | "unknown";

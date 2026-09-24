@@ -94,11 +94,13 @@ mod replay;
 pub(crate) mod run_shell;
 mod runtime_memory;
 mod shortcut_hints;
+mod slash_command_parser;
 mod split_view;
 mod state_ui;
 mod state_ui_input_helpers;
 mod update_sim;
-pub(crate) use state_ui_input_helpers::registered_command_entries;
+mod usage_reset;
+pub(crate) use state_ui_input_helpers::{registered_command_entries, registered_command_names};
 mod state_ui_maintenance;
 mod state_ui_messages;
 mod state_ui_runtime;
@@ -122,6 +124,10 @@ pub(crate) use self::state_ui_storage::compact_display_messages_for_storage;
 
 pub(crate) fn extract_input_shell_command(input: &str) -> Option<&str> {
     self::input::extract_input_shell_command(input)
+}
+
+pub(crate) fn has_safe_slash_command_token(input: &str) -> bool {
+    self::slash_command_parser::active_token_before_cursor(input, input.len()).is_some()
 }
 
 pub(crate) const COMMAND_SUGGESTION_VISIBLE_LIMIT: usize = 8;
@@ -968,6 +974,9 @@ pub struct App {
     /// Whether the clean completion handoff has already requested a user-facing
     /// final response for the current todo cycle.
     todo_final_response_requested: bool,
+    /// Todo state at the final-response handoff. Unchanged finished work must
+    /// not re-enter quality gates on later turn-end or timer callbacks.
+    final_response_todo_fingerprint: Option<String>,
     /// Exact continuation sent for the last incomplete todo state. An unchanged
     /// list must not trigger another automatic turn: the agent may be parked on
     /// a worker, wake, or human decision, and repeated pokes cannot help.
@@ -1486,6 +1495,9 @@ pub struct App {
     stashed_input: Option<(String, usize)>,
     // Undo history for in-progress input editing (Ctrl+Z)
     input_undo_stack: Vec<(String, usize)>,
+    // Draft replaced by an explicit jump into prompt history (Ctrl+Up),
+    // restored when Down walks back past the newest entry
+    history_draft: Option<(String, usize)>,
     // Short-lived notice for status feedback (model switch, cycle diff mode, etc.)
     status_notice: Option<(String, Instant)>,
     // Distinct learned-keybinding nudge ("you keep doing X the slow way, press
@@ -1658,6 +1670,7 @@ pub struct App {
     usage_overlay: Option<RefCell<super::usage_overlay::UsageOverlay>>,
     /// Whether a usage refresh request is currently in flight.
     usage_report_refreshing: bool,
+    usage_reset: usage_reset::ResetState,
     /// Whether a `/productivity` report generation is currently in flight.
     productivity_refreshing: bool,
     /// Last time the passive overnight progress card polled its run files.

@@ -1126,6 +1126,10 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if app.handle_usage_reset_command(trimmed) {
+                    return Ok(());
+                }
+
                 if app_mod::commands::handle_usage_command(app, trimmed) {
                     return Ok(());
                 }
@@ -1895,6 +1899,9 @@ async fn handle_remote_key_internal(
                         )));
                         return Ok(());
                     }
+                    // The daemon's in-memory session owns later writes. Without
+                    // this it would persist `saved: false` on its next save.
+                    remote.set_session_saved(true, label.clone()).await?;
                     crate::tui::session_picker::invalidate_session_list_cache();
                     if app.memory_enabled
                         && let Err(err) = remote.trigger_memory_extraction().await
@@ -1931,6 +1938,7 @@ async fn handle_remote_key_internal(
                         )));
                         return Ok(());
                     }
+                    remote.set_session_saved(false, None).await?;
                     crate::tui::session_picker::invalidate_session_list_cache();
                     let name = app.session.display_name().to_string();
                     app.push_display_message(DisplayMessage::system(format!(
@@ -2020,6 +2028,7 @@ async fn handle_remote_key_internal(
 
                 if trimmed == "/commit"
                     || trimmed == "/merge"
+                    || trimmed == "/merge-remote-release"
                     || trimmed == "/commit-push"
                     || trimmed == "/commit-and-push"
                     || trimmed == "/fast-release"
@@ -2038,8 +2047,11 @@ async fn handle_remote_key_internal(
                     let is_remote_release = trimmed == "/remote-release";
                     let is_fast_macos_release = trimmed == "/fast-macos-release";
                     let is_merge = trimmed == "/merge";
+                    let is_merge_remote_release = trimmed == "/merge-remote-release";
                     let is_push = matches!(trimmed, "/commit-push" | "/commit-and-push");
-                    let prompt = if is_merge {
+                    let prompt = if is_merge_remote_release {
+                        app_mod::commands::build_merge_remote_release_prompt()
+                    } else if is_merge {
                         app_mod::commands::build_merge_prompt()
                     } else if is_triage {
                         app_mod::commands::build_triage_prompt(
@@ -2057,7 +2069,9 @@ async fn handle_remote_key_internal(
                         app_mod::commands::build_commit_prompt()
                     };
                     let launch_notice = |interrupted: bool| {
-                        if is_merge {
+                        if is_merge_remote_release {
+                            app_mod::commands::merge_remote_release_launch_notice(interrupted)
+                        } else if is_merge {
                             app_mod::commands::merge_launch_notice(interrupted)
                         } else if is_triage {
                             app_mod::commands::triage_launch_notice(interrupted)
@@ -2073,7 +2087,9 @@ async fn handle_remote_key_internal(
                             app_mod::commands::commit_launch_notice(interrupted)
                         }
                     };
-                    let cmd_label = if is_merge {
+                    let cmd_label = if is_merge_remote_release {
+                        "/merge-remote-release"
+                    } else if is_merge {
                         "/merge"
                     } else if is_triage {
                         "/triage"
