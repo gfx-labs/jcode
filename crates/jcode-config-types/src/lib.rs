@@ -696,54 +696,10 @@ pub struct AgentsConfig {
     /// Env override: `JCODE_SWARM_MAX_CONCURRENT_AGENTS`.
     #[serde(default = "default_swarm_max_concurrent_agents")]
     pub swarm_max_concurrent_agents: usize,
-
-    /// Per-turn skill suggestion backend: `"off"` (default) or `"jev"`. This
-    /// is opt-in. With `"jev"`, each fresh user turn asks a TypeSafe System
-    /// One decision model directly (`POST {base_url}/systemone`, no
-    /// OpenRouter hop) which registered skill best fits the request, and
-    /// injects that skill's prompt when the answer clears
-    /// `skill_suggestion_min_confidence`. The request carries only a short
-    /// tail of the recent conversation (a handful of trailing user/assistant
-    /// turns, text only) plus the candidate skills' names and descriptions,
-    /// and only when this backend is enabled; the winning skill's full prompt
-    /// is fetched and injected ephemerally for that turn and is not persisted
-    /// in config or session state. Routing is a bounded async wait (an
-    /// internal ~1500ms inline timeout) performed before the provider request
-    /// is sent, and fails open (falls through to no suggestion) on timeout,
-    /// missing credentials, or any request error. There is no carry-over from
-    /// a previous turn's suggestion; each fresh user turn is decided
-    /// independently.
-    /// Env: `JCODE_SKILL_SUGGESTION_BACKEND`.
-    #[serde(default = "default_skill_suggestion_backend")]
-    pub skill_suggestion_backend: String,
-    /// Decision model slug sent to the TypeSafe System One endpoint. Unset =
-    /// `jev-latest`. Env: `JCODE_SKILL_SUGGESTION_MODEL`.
-    #[serde(default)]
-    pub skill_suggestion_model: Option<String>,
-    /// Base URL of the TypeSafe System One API (no trailing slash); the
-    /// `/systemone` path is appended by the router. Unset =
-    /// `https://api.typesafe.ai/v1`. Env: `JCODE_SKILL_SUGGESTION_BASE_URL`.
-    #[serde(default)]
-    pub skill_suggestion_base_url: Option<String>,
-    /// Environment variable holding the bearer key. Unset = `TYPESAFE_API_KEY`.
-    /// Falls back to the existing provider-catalog `typesafe.env` config-file
-    /// loader when the environment variable is unset, so a saved TypeSafe key
-    /// used elsewhere (e.g. swarm model routing) also covers this feature.
-    /// Env: `JCODE_SKILL_SUGGESTION_API_KEY_ENV`.
-    #[serde(default)]
-    pub skill_suggestion_api_key_env: Option<String>,
-    /// Minimum decision confidence (0.0-1.0) before a suggested skill is
-    /// injected. Unset = 0.6. Env: `JCODE_SKILL_SUGGESTION_MIN_CONFIDENCE`.
-    #[serde(default)]
-    pub skill_suggestion_min_confidence: Option<f32>,
 }
 
 fn default_swarm_max_concurrent_agents() -> usize {
     32
-}
-
-fn default_skill_suggestion_backend() -> String {
-    "off".to_string()
 }
 
 fn default_memory_embedding_backend() -> String {
@@ -798,11 +754,6 @@ impl Default for AgentsConfig {
             memory_embedding_base_url: None,
             memory_embedding_dim: None,
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
-            skill_suggestion_backend: default_skill_suggestion_backend(),
-            skill_suggestion_model: None,
-            skill_suggestion_base_url: None,
-            skill_suggestion_api_key_env: None,
-            skill_suggestion_min_confidence: None,
         }
     }
 }

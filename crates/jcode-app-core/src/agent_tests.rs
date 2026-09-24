@@ -2580,3 +2580,149 @@ fn system_prompt_override_restores_and_does_not_leak_across_sessions() {
         assert_eq!(attached.build_system_prompt_split(None).static_part, prompt);
     }
 }
+
+#[derive(Clone, Default)]
+struct RecordingProvider {
+    requests: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+}
+
+#[async_trait]
+impl Provider for RecordingProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.requests.lock().unwrap().push(messages.to_vec());
+        let events = vec![
+            StreamEvent::TextDelta("ok".into()),
+            StreamEvent::MessageEnd {
+                stop_reason: Some("end_turn".into()),
+            },
+        ];
+        Ok(Box::pin(futures::stream::iter(events.into_iter().map(Ok))))
+    }
+    fn name(&self) -> &str {
+        "recording-test"
+    }
+    fn supports_compaction(&self) -> bool {
+        false
+    }
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+/// Regression: the Jev per-turn skill router was removed. Even with a legacy
+/// config that enabled it and a reachable Jev endpoint with credentials, neither
+/// the capture (`run_turn`) nor the streaming mpsc turn path may contact Jev,
+/// while skills remain loadable and listed normally.
+#[tokio::test]
+async fn legacy_skill_router_config_sends_no_jev_requests_on_either_turn_path() {
+    let _lock = crate::storage::lock_test_env();
+    let vars = ["JCODE_HOME", "HOME", "SKILL_ROUTER_REGRESSION_KEY"];
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                match value {
+                    Some(value) => crate::env::set_var(key, value),
+                    None => crate::env::remove_var(key),
+                }
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+    let _restore = Restore(vars.iter().map(|k| (*k, std::env::var_os(k))).collect());
+
+    // Fake Jev endpoint: counts every inbound connection.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+
+    let home = tempfile::tempdir().unwrap();
+    let jcode_home = home.path().join(".jcode");
+    let skill_dir = jcode_home.join("skills").join("demo-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: demo-skill\ndescription: Demo skill for router regression\n---\nDEMO SKILL BODY\n",
+    )
+    .unwrap();
+    std::fs::write(
+        jcode_home.join("config.toml"),
+        format!(
+            "[agents]\nskill_suggestion_backend = \"jev\"\n\
+             skill_suggestion_base_url = \"{base}\"\n\
+             skill_suggestion_api_key_env = \"SKILL_ROUTER_REGRESSION_KEY\"\n\
+             skill_suggestion_min_confidence = 0.0\n\
+             [agents.jev]\nprovider = \"typesafe\"\nbase_url = \"{base}\"\n\
+             api_key_env = \"SKILL_ROUTER_REGRESSION_KEY\"\n"
+        ),
+    )
+    .unwrap();
+    crate::env::set_var("HOME", home.path());
+    crate::env::set_var("JCODE_HOME", &jcode_home);
+    crate::env::set_var("SKILL_ROUTER_REGRESSION_KEY", "regression-key");
+    crate::config::Config::invalidate_cache();
+    assert_eq!(
+        crate::config::config().agents.jev.base_url.as_deref(),
+        Some(base.as_str()),
+        "legacy config must still load"
+    );
+
+    let provider = Arc::new(RecordingProvider::default());
+    let registry = Registry::empty();
+    *registry.skills().write().await = crate::skill::SkillRegistry::load_global().unwrap();
+    let mut agent = Agent::new(provider.clone(), registry);
+    assert!(
+        agent
+            .available_skill_names()
+            .contains(&"demo-skill".to_string()),
+        "ordinary skill loading still works"
+    );
+
+    agent.run_once_capture("please use a skill").await.unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    agent
+        .run_once_streaming_mpsc("please use a skill again", vec![], None, tx)
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2, "both turn paths reached the provider");
+    for request in &requests {
+        for block in request.iter().flat_map(|message| message.content.iter()) {
+            let ContentBlock::Text { text, .. } = block else {
+                continue;
+            };
+            assert!(!text.contains("Suggested skill for this request"), "{text}");
+            assert!(!text.contains("DEMO SKILL BODY"), "{text}");
+        }
+    }
+    // Explicit/manual skill loading still returns the skill body.
+    let skill_tool = crate::tool::skill::SkillTool::new(agent.registry.skills());
+    let loaded = crate::tool::Tool::execute(
+        &skill_tool,
+        serde_json::json!({"action": "load", "name": "demo-skill"}),
+        crate::tool::ToolContext {
+            session_id: "skill-router-regression".into(),
+            message_id: "m".into(),
+            tool_call_id: "t".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: crate::tool::ToolExecutionMode::Direct,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(loaded.output.contains("DEMO SKILL BODY"), "{}", loaded.output);
+
+    match listener.accept() {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("skill routing contacted the Jev endpoint: {other:?}"),
+    }
+}

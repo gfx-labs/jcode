@@ -113,10 +113,6 @@ impl Agent {
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending =
                 self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
-            let skill_suggestion = self.skill_router_suggestion(&messages).await;
-            if self.is_graceful_shutdown() {
-                break;
-            }
             // Use split prompt for better caching - static content cached, dynamic not
             self.log_prompt_prefix_accounting(&split_prompt, &tools);
 
@@ -142,15 +138,6 @@ impl Agent {
                 ));
                 let (memory_msg, _persisted) = self.prepare_memory_injection_message(memory);
                 messages_with_memory.push(memory_msg);
-            }
-            if let Some(suggestion) = skill_suggestion.as_ref()
-                && let Some(msg) = self.skill_router_injection_message(suggestion)
-            {
-                logging::info(&format!(
-                    "[skill-router] injecting skill `{}` (confidence {:.2})",
-                    suggestion.skill, suggestion.decision.confidence
-                ));
-                messages_with_memory.push(msg);
             }
             if Self::should_inject_batch_nudge(
                 batch_nudge_pending,

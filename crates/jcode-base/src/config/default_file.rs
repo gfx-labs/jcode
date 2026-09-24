@@ -508,23 +508,7 @@ swarm_max_concurrent_agents = 32
 # "openai-oauth:gpt-5.6-sol" = "Preferred for scoped implementation and tests."
 # "openai-oauth:gpt-6-astra" = "Preferred for architecture and hard debugging."
 
-# Optional per-turn skill suggestion. Opt-in: off by default. When set to
-# "jev", each fresh user turn asks the configured Jev decision model
-# through upstream JevClient which registered skill best fits the
-# request, injecting that skill's prompt when confident enough. Routing is a
-# bounded async wait performed before the provider request is sent. [agents.jev]
-# selects the hosted provider. Both require credentials: TypeSafe uses
-# TYPESAFE_API_KEY or ~/.config/jcode/typesafe.env (mode 0600), OpenRouter uses
-# OPENROUTER_API_KEY/openrouter.env. Local provider openjev is rejected.
-# See docs/SKILL_ROUTER.md and docs/JEV_PROVIDERS.md.
-# Env override: JCODE_SKILL_SUGGESTION_BACKEND
-# skill_suggestion_backend = "off"
-# skill_suggestion_model = "jev-latest"
-# skill_suggestion_base_url = "https://api.typesafe.ai/v1"
-# skill_suggestion_api_key_env = "TYPESAFE_API_KEY"
-# skill_suggestion_min_confidence = 0.6
-
-# Shared Jev provider for skill suggestions, swarm routing, and browser handoff.
+# Shared Jev provider for swarm routing and browser handoff.
 # Config-file changes hot reload for new decisions, with metadata checks about every 500 ms.
 # No restart is needed for config edits. Environment changes need a new server environment.
 # Both supported providers require hosted API keys. Local openjev is rejected,

@@ -231,17 +231,6 @@ impl Agent {
                 }
                 messages_with_memory.push(memory_msg);
             }
-            if let Some(suggestion) = self.skill_router_suggestion(&messages).await
-                && let Some(msg) = self.skill_router_injection_message(&suggestion)
-            {
-                logging::info(&format!(
-                    "[skill-router] injecting skill `{}` (confidence {:.2})",
-                    suggestion.skill, suggestion.decision.confidence
-                ));
-                ephemeral_signature_messages.push(msg.clone());
-                messages_with_memory.push(msg);
-            }
-
             if self.is_graceful_shutdown() {
                 break;
             }

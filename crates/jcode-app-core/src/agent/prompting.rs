@@ -97,49 +97,6 @@ impl Agent {
         pending
     }
 
-    /// Route only fresh user turns, with a bounded async wait for this request.
-    pub(super) async fn skill_router_suggestion(
-        &self,
-        messages: &[Message],
-    ) -> Option<crate::skill_router::SkillSuggestion> {
-        if !crate::message::ends_with_fresh_user_turn(messages) || self.active_skill.is_some() {
-            return None;
-        }
-        let cfg = crate::skill_router::SkillRouterConfig::from_config()?;
-        let skills = self.current_skills_snapshot();
-        let candidates: Vec<crate::skill_router::SkillCandidate> = skills
-            .list()
-            .into_iter()
-            .map(|skill| crate::skill_router::SkillCandidate {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-            })
-            .collect();
-        tokio::select! {
-            biased;
-            _ = self.graceful_shutdown.notified() => None,
-            suggestion = crate::skill_router::suggest(&cfg, messages, &candidates) => suggestion,
-        }
-    }
-
-    /// Render an accepted suggestion as an ephemeral user-role reminder, the
-    /// same shape memory injection uses so the transcript stays cache-friendly.
-    pub(super) fn skill_router_injection_message(
-        &self,
-        suggestion: &crate::skill_router::SkillSuggestion,
-    ) -> Option<Message> {
-        let skills = self.current_skills_snapshot();
-        let skill = skills.get(&suggestion.skill)?;
-        let body = format!(
-            "<system-reminder>\nSuggested skill for this request: `/{}` (confidence {:.0}%). \
-Its instructions follow; apply them if they fit, otherwise ignore.\n\n{}\n</system-reminder>",
-            skill.name,
-            suggestion.decision.confidence * 100.0,
-            skill.get_prompt()
-        );
-        Some(Message::user(&body))
-    }
-
     fn append_current_turn_system_reminder(&self, split: &mut crate::prompt::SplitSystemPrompt) {
         let Some(reminder) = self
             .current_turn_system_reminder

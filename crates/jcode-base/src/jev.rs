@@ -42,7 +42,6 @@ const VOICE_HEDGE_DELAYS: [Duration; 3] = [
 enum JevPurpose {
     Memory,
     Browser,
-    Skill,
     Swarm,
     Voice,
 }
@@ -52,7 +51,6 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory",
             Self::Browser => "browser",
-            Self::Skill => "skill",
             Self::Swarm => "swarm",
             Self::Voice => "voice",
         }
@@ -62,7 +60,7 @@ impl JevPurpose {
         match self {
             Self::Memory => "memory_jev",
             Self::Browser => "browser_jev",
-            Self::Skill | Self::Swarm => unreachable!("configured-only Jev purpose"),
+            Self::Swarm => unreachable!("configured-only Jev purpose"),
             // Voice uses the gateway's existing typed noul contract.
             Self::Voice => "memory_jev",
         }
@@ -76,7 +74,7 @@ impl JevPurpose {
         let key = match self {
             Self::Memory => PROVIDER_ENV,
             Self::Browser => BROWSER_PROVIDER_ENV,
-            Self::Skill | Self::Swarm => {
+            Self::Swarm => {
                 bail!("This Jev purpose requires configured hosted settings")
             }
             Self::Voice => VOICE_PROVIDER_ENV,
@@ -86,7 +84,7 @@ impl JevPurpose {
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
                 Self::Browser => "auto".into(),
-                Self::Skill | Self::Swarm => unreachable!("configured-only Jev purpose"),
+                Self::Swarm => unreachable!("configured-only Jev purpose"),
                 Self::Voice => "auto".into(),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
@@ -192,12 +190,6 @@ impl JevClient {
     /// falling back to any other account. A valid hosted credential is required.
     pub fn for_browser_settings(settings: ResolvedJev, provider: &str) -> Result<Self> {
         Self::configured(settings, provider, JevPurpose::Browser)
-    }
-
-    /// Construct a configured hosted route for typed skill decisions.
-    /// Subscription routing is not supported for this purpose.
-    pub fn for_skill_settings(settings: ResolvedJev, provider: &str) -> Result<Self> {
-        Self::configured(settings, provider, JevPurpose::Skill)
     }
 
     /// Construct a configured hosted route for typed swarm decisions.
@@ -433,7 +425,6 @@ impl JevClient {
                 match self.purpose {
                     JevPurpose::Memory => "Jcode Memory",
                     JevPurpose::Browser => "Jcode Browser",
-                    JevPurpose::Skill => "Jcode Skill",
                     JevPurpose::Swarm => "Jcode Swarm",
                     JevPurpose::Voice => "Jcode Voice",
                 },
@@ -986,7 +977,6 @@ mod tests {
     ) -> Result<JevClient> {
         match purpose {
             JevPurpose::Browser => JevClient::for_browser_settings(settings, provider),
-            JevPurpose::Skill => JevClient::for_skill_settings(settings, provider),
             JevPurpose::Swarm => JevClient::for_swarm_settings(settings, provider),
             JevPurpose::Memory | JevPurpose::Voice => panic!("not a configured purpose"),
         }
@@ -994,7 +984,7 @@ mod tests {
 
     #[test]
     fn configured_purposes_require_hosted_provider_and_valid_credentials() {
-        for purpose in [JevPurpose::Browser, JevPurpose::Skill, JevPurpose::Swarm] {
+        for purpose in [JevPurpose::Browser, JevPurpose::Swarm] {
             for provider in [
                 "openjev",
                 "local",
@@ -1035,7 +1025,7 @@ mod tests {
     #[test]
     fn generic_choice_purposes_preserve_validation_without_browser_action_restriction() {
         let questions = json!({"route": {"type": "choice", "instructions": "Choose route", "criteria": {"a": "First", "b": "Second"}}}).as_object().unwrap().clone();
-        for purpose in [JevPurpose::Skill, JevPurpose::Swarm] {
+        for purpose in [JevPurpose::Swarm] {
             for provider in [JevProvider::TypeSafe, JevProvider::OpenRouter] {
                 assert!(
                     request_body_for(purpose, provider, json!({"task": "test"}), &questions)
@@ -1093,7 +1083,6 @@ mod tests {
     #[tokio::test]
     async fn configured_generic_routes_use_shared_transport_and_attribution() {
         for (purpose, title) in [
-            (JevPurpose::Skill, "Jcode Skill"),
             (JevPurpose::Swarm, "Jcode Swarm"),
         ] {
             for provider in ["typesafe", "openrouter"] {
@@ -1143,7 +1132,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_generic_routes_preserve_response_guards() {
-        for purpose in [JevPurpose::Skill, JevPurpose::Swarm] {
+        for purpose in [JevPurpose::Swarm] {
             for (status, body, expected) in [
                 (
                     307,

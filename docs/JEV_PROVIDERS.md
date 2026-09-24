@@ -1,12 +1,12 @@
 # Jev providers and shared transport
 
-Skill suggestions, swarm model routing, browser handoff, and memory recall all
+Swarm model routing, browser handoff, and memory recall all
 use the upstream `JevClient` typed Decisions transport, not chat completions.
 They do not all expose the same provider-selection knobs.
 
 ## Shared hosted configuration
 
-Skill suggestions, swarm routing, and browser handoff by default use
+Swarm routing and browser handoff by default use
 `[agents.jev]` in `~/.jcode/config.toml`. Supported shared providers are
 `typesafe` (default) and `openrouter`. Both require an API key.
 Local provider `openjev` is rejected, with no silent hosted fallback.
@@ -36,9 +36,6 @@ Remove stale overrides when switching providers.
 Enable consumers separately, retaining your existing settings:
 
 ```toml
-[agents]
-skill_suggestion_backend = "jev"
-
 [agents.swarm_router]
 enabled = true
 ```
@@ -63,12 +60,19 @@ throttled to roughly 500 ms, without a daemon restart. An in-progress browser
 handoff retains its starting transport. Existing swarm workers retain their
 models. Environment changes require starting the server with the new environment.
 
-Legacy explicit skill endpoint/model/key settings remain consumer-specific
-overrides. Non-default swarm model and timeout values override shared settings;
+Non-default swarm model and timeout values override shared settings;
 legacy defaults (`jev-latest` and 5000 ms) inherit shared settings. Shared provider
-selection alone does not enable skill suggestions or swarm routing.
+selection alone does not enable swarm routing.
 
-A failed skill decision produces no suggestion. A failed swarm decision uses
+A failed swarm decision uses
 existing default/inheritance rules. A failed browser decision returns control.
 These are application fallbacks, not silent requests to a different provider.
 Memory retains its independent selector and failure behavior through `JevClient`.
+
+## Removed: per-turn skill suggestion
+
+The Jev skill router (`agents.skill_suggestion_*`, `JCODE_SKILL_SUGGESTION_*`)
+was removed because it issued a Jev request on every fresh user turn. Existing
+configs containing those keys still load, and the keys are ignored. Skills are
+still listed in the system prompt and loaded manually or by the model via `/name`
+and the skill tool.
