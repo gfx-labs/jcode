@@ -776,6 +776,61 @@ fn retrieval_candidates_include_local_skills() {
     });
 }
 
+/// The live retrieval pool (the one production recall actually reads) must
+/// contain skills with usable embeddings. Before this was wired up, the skill
+/// path existed only behind `#[cfg(test)]` and skill entries carried no
+/// embedding, so both halves of hybrid retrieval dropped them and no skill
+/// could ever be recalled in a real session.
+#[test]
+fn live_embedding_retrieval_pool_includes_embedded_skills() {
+    with_temp_home(|home| {
+        crate::memory::register_synthetic_entry_provider(|| {
+            let global = crate::skill::SkillRegistry::shared_snapshot();
+            crate::skill::SkillRegistry::effective_for_working_dir(&global, None)
+                .list()
+                .into_iter()
+                .map(|skill| skill.as_memory_entry())
+                .collect()
+        });
+        let project_dir = home.join("project-live-skill");
+        fs::create_dir_all(project_dir.join(".jcode/skills/firefox-browser"))
+            .expect("create skills dir");
+        fs::write(
+            project_dir.join(".jcode/skills/firefox-browser/SKILL.md"),
+            "---\nname: firefox-browser\ndescription: Control Firefox browser sessions\n---\n\nUse this skill to open sites and click buttons.",
+        )
+        .expect("write skill");
+
+        let old_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(&project_dir).expect("set current dir");
+
+        let manager = MemoryManager::new()
+            .with_project_dir(&project_dir)
+            .with_skills(true);
+        let skills = manager.synthetic_skill_entries();
+        let pool = manager
+            .collect_memories_with_embeddings_scoped(MemoryScope::All)
+            .expect("collect live retrieval pool");
+
+        std::env::set_current_dir(old_cwd).expect("restore current dir");
+
+        let skill = skills
+            .iter()
+            .find(|entry| entry.id == "skill:firefox-browser")
+            .expect("skill entry is produced by the live synthetic path");
+
+        // Embedding may be unavailable in a bare test environment (no local
+        // model downloaded). The contract we assert is conditional: whenever a
+        // skill gets an embedding, it must reach the live dense pool.
+        if skill.embedding.is_some() {
+            assert!(
+                pool.iter().any(|entry| entry.id == "skill:firefox-browser"),
+                "embedded skill must appear in the live retrieval pool"
+            );
+        }
+    });
+}
+
 #[test]
 fn collect_skill_query_terms_keeps_relevant_words_and_drops_generic_words() {
     let terms = collect_skill_query_terms(

@@ -33,6 +33,10 @@ impl RelevanceTransport for JevClient {
 
 /// Exhaustive scoped scan, with storage errors propagated rather than treated as
 /// empty stores. This intentionally does not use the manager's search methods.
+///
+/// Includes skill-derived synthetic candidates for the global scope, so Jev can
+/// select a skill the same way it selects a stored memory. Jev scores text, so
+/// these do not need embeddings here.
 pub fn collect_scoped(manager: &MemoryManager, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
     let mut entries = Vec::new();
     if scope.includes_project() {
@@ -40,6 +44,7 @@ pub fn collect_scoped(manager: &MemoryManager, scope: MemoryScope) -> Result<Vec
     }
     if scope.includes_global() {
         entries.extend(manager.load_global_graph()?.active_memories().cloned());
+        entries.extend(manager.synthetic_skill_entries());
     }
     Ok(entries)
 }

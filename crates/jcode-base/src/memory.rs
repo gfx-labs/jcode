@@ -87,7 +87,6 @@ pub fn register_synthetic_entry_provider(provider: SyntheticEntryProvider) {
         .push(provider);
 }
 
-#[cfg(test)]
 fn collect_synthetic_entries() -> Vec<MemoryEntry> {
     let providers = SYNTHETIC_ENTRY_PROVIDERS
         .read()
@@ -97,6 +96,76 @@ fn collect_synthetic_entries() -> Vec<MemoryEntry> {
         entries.extend(provider());
     }
     entries
+}
+
+/// Synthetic entries (skills) carry no stored embedding, so the dense half of
+/// retrieval would drop them before scoring. Embed them on demand with the
+/// active backend and cache by (entry id, active model id) so a registry or
+/// backend change re-embeds but steady state costs nothing.
+///
+/// Embedding failures are non-fatal: the entry is still returned without a
+/// vector so it stays reachable through the lexical/BM25 half.
+fn embedded_synthetic_entries() -> Vec<MemoryEntry> {
+    static CACHE: std::sync::LazyLock<
+        std::sync::RwLock<std::collections::HashMap<(String, String), Option<Vec<f32>>>>,
+    > = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+
+    let entries = collect_synthetic_entries();
+    if entries.is_empty() {
+        return entries;
+    }
+    let active_model = crate::embedding_backend::active_model_id();
+
+    entries
+        .into_iter()
+        .map(|mut entry| {
+            if entry.embedding.is_some() {
+                return entry;
+            }
+            let key = (entry.id.clone(), active_model.clone());
+            if let Some(cached) = CACHE
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&key)
+            {
+                if let Some(vector) = cached {
+                    entry.set_embedding(Some(vector.clone()), Some(active_model.clone()));
+                }
+                return entry;
+            }
+
+            // Embed the search text, which is the skill's name/description/body
+            // already normalized for retrieval.
+            let text = if entry.search_text.trim().is_empty() {
+                entry.content.clone()
+            } else {
+                entry.search_text.clone()
+            };
+            let embedded = match crate::embedding_backend::embed_passage_active(&text) {
+                Ok((vector, model)) => {
+                    entry.set_embedding(Some(vector.clone()), Some(model));
+                    Some(vector)
+                }
+                Err(err) => {
+                    // One line per run, not per skill: with a stubbed-out
+                    // embedding backend every skill fails identically and would
+                    // otherwise flood the log on each retrieval.
+                    static WARNED: std::sync::Once = std::sync::Once::new();
+                    WARNED.call_once(|| {
+                        crate::logging::info(&format!(
+                            "Skill entries left unembedded ({err}); still reachable lexically"
+                        ));
+                    });
+                    None
+                }
+            };
+            CACHE
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key, embedded);
+            entry
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -644,7 +713,7 @@ impl MemoryManager {
         self.collect_memories_with_embeddings_scoped(MemoryScope::All)
     }
 
-    fn collect_memories_with_embeddings_scoped(
+    pub(crate) fn collect_memories_with_embeddings_scoped(
         &self,
         scope: MemoryScope,
     ) -> Result<Vec<MemoryEntry>> {
@@ -669,6 +738,16 @@ impl MemoryManager {
                     .cloned(),
             );
         }
+        // Skills are global-scoped synthetic candidates. They are embedded on
+        // demand, so include them here rather than leaving retrieval to the
+        // stored graphs alone.
+        if scope.includes_global() {
+            entries.extend(
+                self.synthetic_skill_entries()
+                    .into_iter()
+                    .filter(|m| m.embedding.is_some()),
+            );
+        }
         Ok(entries)
     }
 
@@ -687,17 +766,25 @@ impl MemoryManager {
         Ok(entries)
     }
 
-    #[cfg(test)]
-    fn synthetic_skill_entries(&self) -> Vec<MemoryEntry> {
+    /// Skill-derived retrieval candidates, embedded with the active backend so
+    /// they survive the dense-side `embedding.is_some()` filters.
+    pub(crate) fn synthetic_skill_entries(&self) -> Vec<MemoryEntry> {
         if !self.include_skills {
             return Vec::new();
         }
 
-        collect_synthetic_entries()
+        embedded_synthetic_entries()
     }
 
+    /// Full candidate pool for retrieval: stored memories plus skills,
+    /// regardless of whether an entry carries an embedding. The live paths use
+    /// the embedding-filtered collector and `memory_jev::collect_scoped`
+    /// instead, so this remains a test-only view of the same composition.
     #[cfg(test)]
-    fn collect_retrieval_candidates_scoped(&self, scope: MemoryScope) -> Result<Vec<MemoryEntry>> {
+    pub(crate) fn collect_retrieval_candidates_scoped(
+        &self,
+        scope: MemoryScope,
+    ) -> Result<Vec<MemoryEntry>> {
         let mut entries = self.collect_memories_scoped(scope)?;
         if scope.includes_global() {
             entries.extend(self.synthetic_skill_entries());
