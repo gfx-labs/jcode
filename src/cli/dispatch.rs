@@ -148,7 +148,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             }
             let provider_start = Instant::now();
             let provider =
-                provider_init::init_provider(&args.provider, args.model.as_deref()).await?;
+                provider_init::init_provider_for_serve(&args.provider, args.model.as_deref())
+                    .await?;
             let provider_ms = provider_start.elapsed().as_millis();
             let server_new_start = Instant::now();
             let server = server::Server::new_with_name(provider, server_name);
@@ -449,8 +450,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Ambient(subcmd)) => {
             commands::run_ambient_command(map_ambient_subcommand(subcmd)).await?;
         }
+        Some(Command::Cloud(CloudCommand::Sessions { action })) => {
+            commands::run_cloud_command(commands::CloudSubcommand::Sessions(
+                map_cloud_sessions_subcommand(action),
+            ))?;
+        }
         Some(Command::Cloud(subcmd)) => {
-            commands::run_cloud_command(map_cloud_subcommand(subcmd))?;
+            super::cloud_move::run_cli(subcmd)?;
         }
         Some(Command::Pair { list, revoke }) => {
             commands::run_pair_command(list, revoke)?;
@@ -484,8 +490,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::SetupLauncher) => {
             setup_hints::run_setup_launcher()?;
         }
-        Some(Command::Browser { action }) => {
-            commands::run_browser(&action).await?;
+        Some(Command::Browser { action, browser }) => {
+            commands::run_browser(&action, browser.as_deref()).await?;
         }
         Some(Command::Replay {
             session,
@@ -759,14 +765,6 @@ fn map_ambient_subcommand(subcmd: AmbientCommand) -> commands::AmbientSubcommand
         AmbientCommand::Trigger => commands::AmbientSubcommand::Trigger,
         AmbientCommand::Stop => commands::AmbientSubcommand::Stop,
         AmbientCommand::RunVisible => commands::AmbientSubcommand::RunVisible,
-    }
-}
-
-fn map_cloud_subcommand(subcmd: CloudCommand) -> commands::CloudSubcommand {
-    match subcmd {
-        CloudCommand::Sessions { action } => {
-            commands::CloudSubcommand::Sessions(map_cloud_sessions_subcommand(action))
-        }
     }
 }
 
