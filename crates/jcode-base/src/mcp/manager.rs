@@ -904,6 +904,7 @@ done
                 transport: None,
                 url: None,
                 headers: HashMap::new(),
+                oauth: None,
                 enabled: None,
                 disabled: None,
                 timeout_secs: Some(10),
