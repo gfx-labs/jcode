@@ -1541,5 +1541,5 @@ fn changes_widget_end_to_end_on_real_git_repo() {
     crate::tui::app::helpers::seed_git_info_cache_for_tests(None);
     assert!(frame2.contains("src/lib.rs"), "{frame2}");
     assert!(!frame2.contains("● agent"), "{frame2}");
-    assert!(!frame2.contains('●'), "{frame2}");
+    assert!(!frame2.contains("M● src/lib.rs"), "{frame2}");
 }

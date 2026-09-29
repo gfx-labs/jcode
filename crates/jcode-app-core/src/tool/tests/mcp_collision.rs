@@ -171,16 +171,18 @@ for line in sys.stdin:
 fn mcp_collision_manual_lifecycle_real_stdio() {
     const MARKER: &str = "JCODE_MCP_MANAGEMENT_TEST_CHILD";
     if std::env::var_os(MARKER).is_none() {
-        if !std::process::Command::new("python3")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-        {
+        let python = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output();
+        let Ok(python) = python else {
+            eprintln!("SKIP: python3 unavailable for real MCP stdio test");
+            return;
+        };
+        if !python.status.success() {
             eprintln!("SKIP: python3 unavailable for real MCP stdio test");
             return;
         }
+        let python = String::from_utf8_lossy(&python.stdout).trim().to_owned();
         let home = tempfile::tempdir().unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child.env_clear();
@@ -200,6 +202,7 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
         }
         let status = child
             .env(MARKER, "1")
+            .env("JCODE_MCP_TEST_PYTHON", &python)
             .env("JCODE_HOME", home.path().join("jcode"))
             .env("JCODE_RUNTIME_DIR", home.path().join("runtime"))
             .current_dir(home.path())
@@ -229,7 +232,7 @@ fn mcp_collision_manual_lifecycle_real_stdio() {
             let legacy = crate::mcp::dispatch_name(&catalog[0].0, &catalog[0].1.name);
             for (index, (server, tool)) in catalog.iter().enumerate() {
                 let output = management.execute(serde_json::json!({
-                    "action":"connect", "server":server, "command":"python3",
+                    "action":"connect", "server":server, "command":std::env::var("JCODE_MCP_TEST_PYTHON").unwrap(),
                     "args":["-I", "-S", "-u", "-c", SERVER, server, serde_json::to_string(&vec![&tool.name]).unwrap()]
                 }), ctx.clone()).await.unwrap();
                 assert!(output.output.contains("Connected to MCP server"), "{}", output.output);
