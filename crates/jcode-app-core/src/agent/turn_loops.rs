@@ -42,7 +42,16 @@ impl Agent {
         pending && batch_available
     }
 
+    pub(super) fn plan_limit_reminder(
+        notice: &crate::subscription_notice::QuotaExceeded,
+    ) -> String {
+        format!(
+            "<system-reminder>Jcode plan limit: {notice} An upgrade card with a button is already shown to the user in the chat. Mention the limit in one short sentence, including the upgrade link if one is given. Do not open checkout or purchase anything. Continue the task without that feature.</system-reminder>"
+        )
+    }
+
     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
+        self.ensure_session_lease()?;
         self.set_log_context();
         let usage_turn_id = self.model_usage_turn_id();
         crate::session_metrics::record_turn(&self.session.id);
@@ -72,6 +81,12 @@ impl Agent {
                 logging::info("Cancel observed at turn-loop head - not starting another request");
                 break;
             }
+            if let Some(block) = self.session.migration_lease_block() {
+                logging::info(&format!(
+                    "Session migrated mid-turn - stopping local turn loop: {block}"
+                ));
+                break;
+            }
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 logging::warn(&format!(
@@ -91,6 +106,7 @@ impl Agent {
             if let Some(event) = compaction_event {
                 // Reset cache tracker and tool lock on compaction since the message history changes
                 self.cache_tracker.reset();
+                self.kv_cache_monitor.reset();
                 self.locked_tools = None;
                 if print_output {
                     let tokens_str = event
@@ -146,6 +162,19 @@ impl Agent {
                 messages_with_memory.push(Message::user(Self::BATCH_NUDGE));
                 batch_nudge_pending = false;
                 sequential_single_tool_rounds = 0;
+            }
+            // Background features (memory recall) can hit a plan limit with no
+            // visible failure. Surface it once through the agent so every UI
+            // shows the upgrade prompt instead of silently degrading.
+            // Agents without memory (auth smoke tests, headless probes) leave
+            // the notice for a user-facing session.
+            if let Some(notice) = self
+                .memory_enabled
+                .then(crate::subscription_notice::take)
+                .flatten()
+            {
+                crate::subscription_notice::show_upgrade_card(&notice, &self.session.id);
+                messages_with_memory.push(Message::user(&Self::plan_limit_reminder(&notice)));
             }
 
             logging::info(&format!(
@@ -780,6 +809,18 @@ impl Agent {
                     usage_cache_read,
                     usage_cache_creation,
                 );
+                crate::telemetry::record_provider_usage(
+                    Some(&self.session.id),
+                    self.provider.name(),
+                    &self.provider.model(),
+                    crate::telemetry::UsageSource::Agent,
+                    crate::telemetry::ProviderUsage {
+                        input_tokens: usage_input.unwrap_or(0),
+                        output_tokens: usage_output.unwrap_or(0),
+                        cache_read_input_tokens: usage_cache_read,
+                        cache_creation_input_tokens: usage_cache_creation,
+                    },
+                );
             }
 
             if print_output
@@ -1320,5 +1361,21 @@ mod tests {
         assert!(!Agent::should_inject_batch_nudge(true, false));
         assert!(Agent::BATCH_NUDGE.contains("use the batch tool"));
         assert!(Agent::BATCH_NUDGE.contains("result is required"));
+    }
+
+    #[test]
+    fn plan_limit_reminder_relays_upgrade_link_without_purchasing() {
+        let reminder = Agent::plan_limit_reminder(&crate::subscription_notice::QuotaExceeded {
+            feature: "memory".into(),
+            tier: Some("plus".into()),
+            upgrade_tier: Some("pro".into()),
+            upgrade_url: Some("https://jcode.sh/pricing".into()),
+            resets_at: None,
+        });
+        assert!(reminder.starts_with("<system-reminder>"));
+        assert!(reminder.contains("Daily memory recall limit reached on your Plus plan"));
+        assert!(reminder.contains("Upgrade to Pro"));
+        assert!(reminder.contains("https://jcode.sh/pricing"));
+        assert!(reminder.contains("Do not open checkout"));
     }
 }

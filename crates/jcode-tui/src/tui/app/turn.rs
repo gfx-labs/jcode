@@ -186,7 +186,10 @@ impl App {
                         match event {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
-                                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                                self.observe_voice_key_release(&key);
+                                if self.handle_voice_key_event(&key) {
+                                    // Voice keys work from every screen and never type.
+                                } else if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                     let _ = self.handle_key_press_event(key);
                                     if self.cancel_requested {
@@ -316,6 +319,9 @@ impl App {
             let mut first_event = true;
             let mut saw_message_end = false;
             let mut call_output_tokens_seen: u64 = 0;
+            // Latest provider-reported usage for this API call, for usage_report.
+            let mut call_usage = jcode_provider_core::SimpleCompletionUsage::default();
+            let model_at_request_start = self.provider.model();
             let mut interleaved = false; // Track if we interleaved a message mid-stream
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
@@ -372,7 +378,10 @@ impl App {
                         match event {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
-                                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                                self.observe_voice_key_release(&key);
+                                if self.handle_voice_key_event(&key) {
+                                    // Voice keys work from every screen and never type.
+                                } else if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                     let _ = self.handle_key_press_event(key);
                                     // Check for cancel request
@@ -723,6 +732,12 @@ impl App {
                                         cache_read_input_tokens,
                                         cache_creation_input_tokens,
                                     } => {
+                                        call_usage.observe(
+                                            input_tokens,
+                                            output_tokens,
+                                            cache_read_input_tokens,
+                                            cache_creation_input_tokens,
+                                        );
                                         let mut usage_changed = self
                                             .apply_stream_usage_input_report(
                                                 input_tokens,
@@ -1156,6 +1171,16 @@ impl App {
                 }
             }
 
+            // Record before the interleave early-continue: an interrupted call
+            // still consumed whatever the provider reported.
+            crate::telemetry::record_simple_completion_usage(
+                Some(&self.session.id),
+                &provider_name,
+                &model_at_request_start,
+                crate::telemetry::UsageSource::Agent,
+                call_usage,
+            );
+
             // If we interleaved a message, skip post-processing and go straight to new API call
             if interleaved {
                 continue;
@@ -1393,7 +1418,10 @@ impl App {
                             match event {
                                 Some(Ok(Event::Key(key))) => {
                                     self.update_copy_badge_key_event(key);
-                                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                                    self.observe_voice_key_release(&key);
+                                    if self.handle_voice_key_event(&key) {
+                                        // Voice keys work from every screen and never type.
+                                    } else if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                                         let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                         let _ = self.handle_key_press_event(key);
                                         if self.cancel_requested {

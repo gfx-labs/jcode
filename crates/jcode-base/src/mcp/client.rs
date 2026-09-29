@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -68,6 +68,8 @@ pub struct McpHandle {
     pub(crate) name: String,
     request_id: Arc<AtomicU64>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    /// Set by the reader on stdout EOF: no reply can arrive, so requests fail fast.
+    closed: Arc<AtomicBool>,
     writer_tx: mpsc::Sender<String>,
     server_info: Arc<std::sync::RwLock<Option<ServerInfo>>>,
     capabilities: Arc<std::sync::RwLock<ServerCapabilities>>,
@@ -76,8 +78,6 @@ pub struct McpHandle {
     request_timeout: std::time::Duration,
     /// Set for streamable HTTP servers. Requests then bypass `writer_tx`.
     http: Option<Arc<HttpTransport>>,
-    /// Set once the stdio reader exits (server died or closed stdout).
-    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Protocol version offered to streamable HTTP servers.
@@ -342,7 +342,7 @@ impl McpClient {
 
         // Spawn reader task
         let pending_clone = Arc::clone(&pending);
-        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
         let reader_closed = Arc::clone(&closed);
         let reader_name = name.clone();
         let mut reader = BufReader::new(stdout);
@@ -380,21 +380,23 @@ impl McpClient {
                 }
             }
             // Fail every waiter now instead of letting each hit its timeout.
+            // Set `closed` under the lock so a request either sees it or is drained.
+            let mut pending = pending_clone.lock().await;
             reader_closed.store(true, Ordering::SeqCst);
-            pending_clone.lock().await.clear();
+            pending.clear();
         });
 
         let handle = McpHandle {
             name: name.clone(),
             request_id: Arc::new(AtomicU64::new(1)),
             pending,
+            closed,
             writer_tx,
             server_info: Arc::new(std::sync::RwLock::new(None)),
             capabilities: Arc::new(std::sync::RwLock::new(ServerCapabilities::default())),
             tools: Arc::new(std::sync::RwLock::new(Vec::new())),
             request_timeout: request_timeout_for(config),
             http: None,
-            closed,
         };
 
         let mut client = Self {
@@ -730,6 +732,27 @@ done
             .unwrap();
         assert!(start.elapsed() >= std::time::Duration::from_millis(900));
         assert!(format!("{err:#}").contains("Request timeout"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn connect_fails_fast_when_server_exits_before_initialize() {
+        // A server that prints to stderr and exits before answering
+        // `initialize` must fail connect promptly, even with a huge
+        // `timeout_secs` (previously the pending request waited it out).
+        let config = McpServerConfig {
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "echo boom >&2; exit 1".to_string()],
+            timeout_secs: Some(86_400),
+            ..fake_server_config()
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            McpClient::connect("dead".to_string(), &config),
+        )
+        .await
+        .expect("connect must not hang on a server that exited");
+        let err = format!("{:#}", result.err().expect("connect must fail"));
+        assert!(err.contains("exited"), "unexpected error: {err}");
     }
 
     #[tokio::test]
