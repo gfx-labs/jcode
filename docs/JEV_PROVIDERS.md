@@ -76,3 +76,31 @@ was removed because it issued a Jev request on every fresh user turn. Existing
 configs containing those keys still load, and the keys are ignored. Skills are
 still listed in the system prompt and loaded manually or by the model via `/name`
 and the skill tool.
+
+## Reducing usage while keeping memory and swarm routing enabled
+
+Automatic memory recall first applies the local lexical shortlist introduced
+upstream: at most 72 eligible memories proceed to Jev. Explicit queried memory
+recall retains its exhaustive scoped behavior. The relevance threshold, original
+memory contents, and per-candidate question policy are not changed by batching.
+
+Memory batches use the selected transport's question capacity: up to 64 for the
+current direct TypeSafe route and 24 for the other routes. The existing 64 KiB
+serialized-request budget may split a batch earlier. TypeSafe meters shared state
+once per request, so fuller batches avoid sending the same query repeatedly.
+This reduces repeated context, not the number of candidates judged. See the
+[TypeSafe batching cookbook](https://docs.typesafe.ai/cookbooks/parallel_questions.md).
+Actual savings depend on query length, memory size, and the selected provider.
+
+Successful validated evaluations write a content-free `Jev usage` log line with
+`purpose`, `provider`, `questions`, `request_bytes`, and provider-reported
+`input_tokens`/`output_tokens` (or `none` when unavailable). No queries, memory
+contents, answers, credentials, or arbitrary provider metadata are logged.
+Use the token fields to attribute observed usage, not request bytes as a token
+estimate. These lines describe accepted responses, not a complete billing ledger:
+failed/retried requests and losing voice hedges may incur additional provider use.
+
+Both `[features] memory = true` and `[agents.swarm_router] enabled = true` can
+remain enabled. Worker routing still evaluates qualifying new workers normally.
+Changing provider, relevance threshold, or result count is not a substitute for
+measuring token usage, and switching billing providers does not remove the work.
