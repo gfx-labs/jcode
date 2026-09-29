@@ -54,8 +54,7 @@ pub const CLAUDE_CLI_VERSION: &str = "2.1.280";
 
 /// User-Agent for OAuth requests, matching the official Claude Code CLI.
 ///
-/// Kept in sync with [`CLAUDE_CLI_VERSION`] by a unit test rather than by
-/// const concatenation, which would need an extra dependency.
+/// Kept in sync with [`CLAUDE_CLI_VERSION`] by a unit test.
 pub const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.280 (external, sdk-cli)";
 
 pub const OAUTH_BETA_HEADERS: &str = ANTHROPIC_OAUTH_BETA_HEADERS;
@@ -90,24 +89,7 @@ pub fn apply_oauth_attribution_headers(
 }
 
 /// Available models
-pub const AVAILABLE_MODELS: &[&str] = &[
-    // Requires CLAUDE_CLI_VERSION >= 2.1.280; older clients are rejected and
-    // silently fall back to claude-opus-5.
-    "claude-opus-5-5",
-    "claude-opus-5",
-    "claude-fable-5-1",
-    "claude-fable-5",
-    "claude-opus-4-8",
-    "claude-opus-4-6",
-    "claude-opus-4-6[1m]",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-6[1m]",
-    "claude-haiku-4-5",
-    "claude-opus-4-5",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-20250514",
-];
+pub const AVAILABLE_MODELS: &[&str] = jcode_provider_core::ALL_CLAUDE_MODELS;
 
 pub fn load_anthropic_api_key() -> Result<String> {
     if std::env::var("JCODE_ANTHROPIC_AUTH")
