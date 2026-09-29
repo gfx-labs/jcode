@@ -23,9 +23,7 @@ use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
 use std::sync::Mutex;
-#[cfg(not(test))]
 use std::sync::OnceLock;
-#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(test))]
 use std::sync::mpsc::TrySendError;
@@ -40,7 +38,6 @@ const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const BLOCKING_FIRST_PROMPT_TIMEOUT: Duration = Duration::from_millis(500);
 const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
-#[cfg(not(test))]
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
 #[cfg(not(test))]
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
@@ -48,7 +45,6 @@ static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
 static TELEMETRY_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
 #[cfg(not(test))]
 static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
-#[cfg(not(test))]
 static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -1299,7 +1295,6 @@ pub fn record_command_family(command: &str) {
     maybe_emit_session_start();
 }
 
-#[cfg(not(test))]
 fn telemetry_http_client() -> &'static reqwest::blocking::Client {
     TELEMETRY_HTTP_CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
@@ -1311,7 +1306,6 @@ fn telemetry_http_client() -> &'static reqwest::blocking::Client {
     })
 }
 
-#[cfg(not(test))]
 fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     if !is_enabled() || TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
         return false;
@@ -1372,7 +1366,6 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
     false
 }
 
-#[cfg(not(test))]
 fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     // Recheck consent at delivery time, including work already queued.
     if !content_sharing_enabled() {
