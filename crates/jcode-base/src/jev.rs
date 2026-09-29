@@ -605,13 +605,15 @@ fn request_body_for(
             ),
             _ => bail!("Unsupported Jev question type; expected noul, choice, or score"),
         }
-        if provider == JevProvider::Jcode && purpose != JevPurpose::Browser {
+        if provider == JevProvider::Jcode
+            && matches!(purpose, JevPurpose::Memory | JevPurpose::Voice)
+        {
             ensure!(
                 question["type"] == "noul"
                     && instructions.as_str().is_some_and(|s| !s.trim().is_empty())
                     && question["criteria"]["true"].is_string()
                     && question["criteria"]["false"].is_string(),
-                "Jcode memory Decisions supports noul questions with text instructions and true/false criteria"
+                "Jcode memory/voice Decisions supports noul questions with text instructions and true/false criteria"
             );
         }
     }
