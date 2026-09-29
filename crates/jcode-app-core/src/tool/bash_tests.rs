@@ -406,12 +406,21 @@ async fn test_reload_persistable_bash_continues_in_background() {
             .expect("status_file should be present"),
     );
 
-    tokio::time::sleep(std::time::Duration::from_millis(1400)).await;
-
-    let status = crate::background::global()
-        .status(&task_id)
-        .await
-        .expect("status should exist");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        let status = crate::background::global()
+            .status(&task_id)
+            .await
+            .expect("status should exist");
+        if status.status != BackgroundTaskStatus::Running {
+            break status;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "background task did not finish"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
     assert_eq!(status.status, BackgroundTaskStatus::Completed);
     let output = crate::background::global()
         .output(&task_id)
