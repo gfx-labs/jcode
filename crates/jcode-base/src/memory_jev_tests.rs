@@ -12,15 +12,27 @@ fn entry(id: &str, content: &str) -> MemoryEntry {
 #[derive(Default)]
 struct Mock {
     calls: Mutex<Vec<Value>>,
+    questions: Mutex<Vec<Map<String, Value>>>,
+    request_bytes: Mutex<Vec<usize>>,
     fail_at: Option<usize>,
     malformed_at: Option<usize>,
+    /// None models a route using the trait default (24 questions).
+    max_questions: Option<usize>,
 }
 
 #[async_trait]
 impl RelevanceTransport for Mock {
+    fn max_questions(&self) -> usize {
+        self.max_questions.unwrap_or(MAX_BATCH_ENTRIES)
+    }
     async fn evaluate(&self, state: Value, questions: Map<String, Value>) -> Result<Value> {
-        assert!(questions.len() <= MAX_BATCH_ENTRIES);
+        assert!(questions.len() <= RelevanceTransport::max_questions(self).max(1));
         assert!(request_size(&state, &questions)? <= MAX_REQUEST_BYTES);
+        self.request_bytes
+            .lock()
+            .unwrap()
+            .push(request_size(&state, &questions)?);
+        self.questions.lock().unwrap().push(questions.clone());
         let mut calls = self.calls.lock().unwrap();
         let call = calls.len();
         calls.push(state.clone());
@@ -250,7 +262,14 @@ fn query_and_serialized_request_budgets_are_byte_based_and_utf8_safe() {
     assert!(build_batch(&exact, &[entry("a", "text")]).is_ok());
     assert!(build_batch(&(exact + "é"), &[entry("a", "text")]).is_err());
     assert!(build_batch("q", &[]).is_err());
-    assert!(build_batch("q", &vec![entry("a", "text"); 25]).is_err());
+    assert!(build_batch("q", &vec![entry("a", "text"); MAX_PROVIDER_BATCH_ENTRIES]).is_ok());
+    assert!(
+        build_batch(
+            "q",
+            &vec![entry("a", "text"); MAX_PROVIDER_BATCH_ENTRIES + 1]
+        )
+        .is_err()
+    );
     assert!(build_batch("q", &[entry("a", &"x".repeat(MAX_REQUEST_BYTES))]).is_err());
     // This raw string is under 64 KiB, but double JSON escaping exceeds the budget.
     assert!(build_batch("q", &[entry("a", &"\"\\\n".repeat(9000))]).is_err());
@@ -518,4 +537,234 @@ async fn private_metadata_stays_local_but_full_original_is_returned() {
     assert!(candidate.get("source").is_none());
     assert!(candidate.get("id").is_none());
     assert!(candidate.get("embedding").is_none());
+}
+
+// Serialized request bytes (double-escaped state, as budgeted), not tokens.
+const LEGACY_SHORT_BYTES: usize = 67_657;
+const SIZED_SHORT_BYTES: usize = 67_150;
+const LEGACY_LONG_BYTES: usize = 90_829;
+const SIZED_LONG_BYTES: usize = 82_590;
+
+/// 72 memories (the automatic-recall prefilter cap) with the median local
+/// memory size (~208 bytes serialized) and a ~500-byte focused query.
+fn recall_fixture() -> (String, Vec<MemoryEntry>) {
+    let query = "User: please fix the flaky swarm spawn test in the server crate and keep the \
+                 existing jcode memory settings enabled. "
+        .repeat(4);
+    let entries = (0..72)
+        .map(|i| {
+            let content = format!(
+                "Memory {i:02}: {}",
+                if i % 9 == 0 {
+                    "relevant preference: run cargo tests with set -euo pipefail and never mask pipeline failures in scripts."
+                } else {
+                    "unrelated project fact about some configuration value that should not be injected here today."
+                }
+            );
+            let mut memory = entry(&format!("m{i:03}"), &content);
+            memory.tags = vec!["jcode".into(), "testing".into()];
+            memory
+        })
+        .collect();
+    (query, entries)
+}
+
+#[tokio::test]
+async fn provider_sized_batches_cut_requests_without_changing_questions_or_results() {
+    let (query, entries) = recall_fixture();
+    let mut runs = Vec::new();
+    for max_questions in [None, Some(64)] {
+        let mock = Mock {
+            max_questions,
+            ..Mock::default()
+        };
+        let result = select_with_transport(&mock, &query, entries.clone(), 10, 0.8)
+            .await
+            .unwrap();
+        runs.push((mock, result));
+    }
+    let [(legacy, legacy_result), (typesafe, typesafe_result)] = runs.try_into().ok().unwrap();
+
+    // Same selection, same full original entries.
+    assert_eq!(legacy_result.len(), 8);
+    let full = |result: &[(MemoryEntry, f32)]| {
+        result
+            .iter()
+            .map(|(e, s)| (serde_json::to_string(e).unwrap(), *s))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(full(&legacy_result), full(&typesafe_result));
+
+    // Every candidate is judged exactly once in both layouts, with full content.
+    for mock in [&legacy, &typesafe] {
+        let mut seen: Vec<String> = mock
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|state| {
+                assert_eq!(state["query"], query.as_str());
+                state["candidates"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .map(|c| c["content"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        seen.sort();
+        let mut expected: Vec<_> = entries.iter().map(|e| e.content.clone()).collect();
+        expected.sort();
+        assert_eq!(seen, expected);
+    }
+
+    // Question semantics are unchanged: identical criteria, and instructions
+    // that differ only in the candidate reference they name.
+    let normalize = |questions: &Map<String, Value>| -> Vec<Value> {
+        questions
+            .iter()
+            .map(|(id, question)| {
+                let mut question = question.clone();
+                let text = question["instructions"].as_str().unwrap();
+                assert_eq!(
+                    text.matches(id.as_str()).count(),
+                    2,
+                    "question names its own candidate"
+                );
+                question["instructions"] = Value::String(text.replace(id.as_str(), "REF"));
+                question
+            })
+            .collect()
+    };
+    let legacy_questions: Vec<_> = legacy
+        .questions
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(normalize)
+        .collect();
+    let typesafe_questions: Vec<_> = typesafe
+        .questions
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(normalize)
+        .collect();
+    assert_eq!(legacy_questions.len(), 72);
+    assert!(
+        legacy_questions
+            .iter()
+            .chain(&typesafe_questions)
+            .all(|q| *q == legacy_questions[0])
+    );
+
+    // Request counts and serialized bytes (bytes, not billed tokens). TypeSafe
+    // meters shared state once per request, so fewer requests send the query
+    // fewer times; per-question text is unchanged.
+    let questions_per_request = |mock: &Mock| {
+        mock.questions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Map::len)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(questions_per_request(&legacy), [24, 24, 24]);
+    assert_eq!(questions_per_request(&typesafe), [64, 8]);
+}
+
+/// Serialized request bytes (not billed tokens) for the same 72 candidates.
+/// Question text is identical in both layouts; the saving is one fewer copy
+/// of the shared query plus per-request envelope, so it grows with the query.
+#[tokio::test]
+async fn provider_sized_batches_reduce_serialized_request_bytes() {
+    let (short_query, entries) = recall_fixture();
+    let long_query = "q".repeat(MAX_QUERY_BYTES);
+    let mut totals = Vec::new();
+    for query in [short_query.as_str(), long_query.as_str()] {
+        let mut per_layout = Vec::new();
+        for max_questions in [None, Some(64)] {
+            let mock = Mock {
+                max_questions,
+                ..Mock::default()
+            };
+            select_with_transport(&mock, query, entries.clone(), 10, 0.8)
+                .await
+                .unwrap();
+            let bytes = mock.request_bytes.lock().unwrap().clone();
+            per_layout.push((bytes.len(), bytes.iter().sum::<usize>()));
+        }
+        eprintln!(
+            "query_bytes={} legacy(requests,bytes)={:?} provider_sized(requests,bytes)={:?}",
+            query.len(),
+            per_layout[0],
+            per_layout[1]
+        );
+        assert!(per_layout[1].1 < per_layout[0].1);
+        totals.push((per_layout[0], per_layout[1]));
+    }
+    assert_eq!(
+        totals,
+        [
+            ((3, LEGACY_SHORT_BYTES), (2, SIZED_SHORT_BYTES)),
+            ((3, LEGACY_LONG_BYTES), (2, SIZED_LONG_BYTES)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn provider_batch_limit_is_clamped_and_byte_budget_still_splits() {
+    let (query, entries) = recall_fixture();
+    for (max_questions, expected) in [(Some(0), vec![1; 72]), (Some(10_000), vec![64, 8])] {
+        let mock = Mock {
+            max_questions,
+            ..Mock::default()
+        };
+        select_with_transport(&mock, &query, entries.clone(), 10, 0.8)
+            .await
+            .unwrap();
+        let sizes: Vec<_> = mock
+            .questions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Map::len)
+            .collect();
+        assert_eq!(sizes, expected);
+    }
+
+    // Large memories hit the 64 KiB request budget before 64 questions, and
+    // every entry is still sent whole in a later request, never truncated.
+    let content = "relevant ".repeat(200);
+    let large: Vec<_> = (0..64)
+        .map(|i| entry(&format!("{i:02}"), &content))
+        .collect();
+    let mock = Mock {
+        max_questions: Some(64),
+        ..Mock::default()
+    };
+    let result = select_with_transport(&mock, "q", large, 100, 0.8)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 64);
+    assert!(result.iter().all(|(e, _)| e.content == content));
+    let sizes: Vec<_> = mock
+        .questions
+        .lock()
+        .unwrap()
+        .iter()
+        .map(Map::len)
+        .collect();
+    assert!(
+        sizes.len() > 1 && sizes.iter().all(|&n| n < 64),
+        "{sizes:?}"
+    );
+    assert_eq!(sizes.iter().sum::<usize>(), 64);
+    assert!(
+        mock.request_bytes
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|&b| b <= MAX_REQUEST_BYTES)
+    );
 }

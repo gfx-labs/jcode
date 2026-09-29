@@ -11,7 +11,13 @@ use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
+/// Default question count per request for routes that do not advertise more.
 pub const MAX_BATCH_ENTRIES: usize = 24;
+/// Upper bound on any route's batch, matching the largest current transport
+/// capacity (`jev::TYPESAFE_MAX_QUESTIONS`, 64). The shared state (query and
+/// candidates) is metered once per request, so fuller batches send the query
+/// fewer times without changing any question.
+pub const MAX_PROVIDER_BATCH_ENTRIES: usize = 64;
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 pub const MAX_QUERY_BYTES: usize = 8 * 1024;
 const SELECTION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -21,11 +27,18 @@ const MODEL: &str = "typesafe/jev-1.13";
 /// already-scored batches. Implementations must return the full response object.
 #[async_trait]
 pub trait RelevanceTransport: Send + Sync {
+    /// Largest question count this route accepts in one request.
+    fn max_questions(&self) -> usize {
+        MAX_BATCH_ENTRIES
+    }
     async fn evaluate(&self, state: Value, questions: Map<String, Value>) -> Result<Value>;
 }
 
 #[async_trait]
 impl RelevanceTransport for JevClient {
+    fn max_questions(&self) -> usize {
+        JevClient::max_questions(self)
+    }
     async fn evaluate(&self, state: Value, questions: Map<String, Value>) -> Result<Value> {
         JevClient::evaluate(self, state, questions).await
     }
@@ -92,7 +105,7 @@ pub fn build_batch(query: &str, entries: &[MemoryEntry]) -> Result<(Value, Map<S
     validate_query(query)?;
     ensure!(!query.trim().is_empty(), "Jev memory query is empty");
     ensure!(
-        (1..=MAX_BATCH_ENTRIES).contains(&entries.len()),
+        (1..=MAX_PROVIDER_BATCH_ENTRIES).contains(&entries.len()),
         "Invalid Jev memory batch size"
     );
     let mut candidates = Map::new();
@@ -144,7 +157,7 @@ fn request_size(state: &Value, questions: &Map<String, Value>) -> Result<usize> 
 /// metadata outside `answers` is allowed, but missing/extra IDs are not.
 pub fn parse_scores(response: &Value, count: usize) -> Result<Vec<f64>> {
     ensure!(
-        (1..=MAX_BATCH_ENTRIES).contains(&count),
+        (1..=MAX_PROVIDER_BATCH_ENTRIES).contains(&count),
         "Invalid Jev answer count"
     );
     let answers = response
@@ -198,6 +211,9 @@ pub async fn select_with_transport<T: RelevanceTransport + ?Sized>(
     // Compare before f32 rounding, using the configured decimal threshold.
     // A provider score just below 0.8 must not round up into acceptance.
     let threshold: f64 = threshold.to_string().parse()?;
+    let batch_limit = transport
+        .max_questions()
+        .clamp(1, MAX_PROVIDER_BATCH_ENTRIES);
     tokio::time::timeout(SELECTION_TIMEOUT, async {
         // Canonical tie order independent of graph HashMap iteration and recency.
         let mut keyed = entries
@@ -213,7 +229,7 @@ pub async fn select_with_transport<T: RelevanceTransport + ?Sized>(
         while !entries.is_empty() {
             tokio::task::yield_now().await;
             let mut batch = Vec::new();
-            while batch.len() < MAX_BATCH_ENTRIES {
+            while batch.len() < batch_limit {
                 let Some(entry) = entries.pop_front() else {
                     break;
                 };

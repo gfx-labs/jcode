@@ -338,11 +338,29 @@ impl JevClient {
             );
         }
         if self.purpose == JevPurpose::Voice {
-            return self.send_hedged(body, &questions).await;
+            let request_bytes = body.len();
+            let value = self.send_hedged(body, &questions).await?;
+            self.log_usage(questions.len(), request_bytes, &value);
+            return Ok(value);
         }
+        let request_bytes = body.len();
         let value = self.send(&self.endpoint, body).await?;
         validate_answers(&value, &questions)?;
+        self.log_usage(questions.len(), request_bytes, &value);
         Ok(value)
+    }
+
+    /// Content-free accounting for accepted responses only (failed, retried,
+    /// and losing hedge attempts are not logged), so request volume and
+    /// provider-reported token usage can be attributed per purpose.
+    fn log_usage(&self, questions: usize, request_bytes: usize, response: &Value) {
+        crate::logging::info(&usage_log_line(
+            self.purpose,
+            self.provider,
+            questions,
+            request_bytes,
+            response,
+        ));
     }
 
     /// Send once, then again on a fresh connection after each
@@ -602,6 +620,32 @@ fn request_body_for(
     questions: &Map<String, Value>,
 ) -> Result<Vec<u8>> {
     request_body_for_model(purpose, provider, provider.model(), state, questions)
+}
+
+/// Build the per-request usage line. Only an allowlist of non-negative integer
+/// usage fields is read; any other provider data, including strings, nested
+/// objects, and answers, never reaches the log.
+fn usage_log_line(
+    purpose: JevPurpose,
+    provider: JevProvider,
+    questions: usize,
+    request_bytes: usize,
+    response: &Value,
+) -> String {
+    let token = |key: &str| {
+        response
+            .get("usage")
+            .and_then(|usage| usage.get(key))
+            .and_then(Value::as_u64)
+            .map_or_else(|| "none".to_string(), |value| value.to_string())
+    };
+    format!(
+        "Jev usage purpose={} provider={} questions={questions} request_bytes={request_bytes} input_tokens={} output_tokens={}",
+        purpose.name(),
+        provider.name(),
+        token("input_tokens"),
+        token("output_tokens"),
+    )
 }
 
 fn request_body_for_model(
@@ -1452,6 +1496,66 @@ mod tests {
     }
 
     #[test]
+    fn full_memory_batches_fit_each_provider_request_contract() {
+        use crate::memory::{MemoryCategory, MemoryEntry};
+        let entries: Vec<_> = (0..crate::memory_jev::MAX_PROVIDER_BATCH_ENTRIES)
+            .map(|i| MemoryEntry::new(MemoryCategory::Fact, format!("memory {i} ").repeat(20)))
+            .collect();
+        for provider in [
+            JevProvider::TypeSafe,
+            JevProvider::OpenRouter,
+            JevProvider::Aimlapi,
+            JevProvider::Jcode,
+        ] {
+            let limit = provider.max_questions();
+            assert!(limit <= crate::memory_jev::MAX_PROVIDER_BATCH_ENTRIES);
+            let (state, questions) =
+                crate::memory_jev::build_batch("query", &entries[..limit]).unwrap();
+            assert!(
+                request_body(provider, state, &questions).is_ok(),
+                "{provider:?}"
+            );
+            if limit < entries.len() {
+                let (state, questions) =
+                    crate::memory_jev::build_batch("query", &entries[..=limit]).unwrap();
+                assert!(request_body(provider, state, &questions).is_err());
+            }
+        }
+        assert_eq!(JevProvider::TypeSafe.max_questions(), 64);
+        assert_eq!(JevProvider::OpenRouter.max_questions(), 24);
+    }
+
+    #[test]
+    fn usage_log_is_numeric_allowlist_only() {
+        let response = json!({
+            "answers": {"m0": {"type": "noul", "noul": 0.91, "secret": "PRIVATE_ANSWER"}},
+            "usage": {"input_tokens": 1234, "output_tokens": 20, "note": "PRIVATE_USAGE"},
+            "model": "PRIVATE_MODEL_ECHO"
+        });
+        assert_eq!(
+            usage_log_line(
+                JevPurpose::Memory,
+                JevProvider::TypeSafe,
+                64,
+                45_678,
+                &response
+            ),
+            "Jev usage purpose=memory provider=typesafe questions=64 request_bytes=45678 input_tokens=1234 output_tokens=20"
+        );
+        for response in [
+            json!({"answers": {}}),
+            json!({"usage": {"input_tokens": "PRIVATE", "output_tokens": -1}}),
+            json!({"usage": "PRIVATE"}),
+        ] {
+            let line = usage_log_line(JevPurpose::Swarm, JevProvider::Jcode, 1, 10, &response);
+            assert_eq!(
+                line,
+                "Jev usage purpose=swarm provider=jcode questions=1 request_bytes=10 input_tokens=none output_tokens=none"
+            );
+        }
+    }
+
+    #[test]
     fn answers_must_match_questions_and_have_valid_noul_probabilities() {
         assert!(validate_answers(&response(), &questions()).is_ok());
         for value in [
@@ -1571,6 +1675,53 @@ mod tests {
             endpoint: format!("{base}/v1/decisions"),
             me_endpoint: (provider == JevProvider::Jcode).then(|| format!("{base}/v1/me")),
             model_override: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_selection_uses_each_client_route_batch_capacity_over_http() {
+        use crate::memory::{MemoryCategory, MemoryEntry};
+        let entries: Vec<_> = (0..72)
+            .map(|i| MemoryEntry::new(MemoryCategory::Fact, format!("memory {i:02}")))
+            .collect();
+        for (provider, expected) in [
+            (JevProvider::TypeSafe, vec![64, 8]),
+            (JevProvider::OpenRouter, vec![24, 24, 24]),
+        ] {
+            // Answer every question in the request with an accepted score.
+            let (base, worker) = mock_server_with(expected.len(), |request| {
+                let body: Value =
+                    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                let answers: Map<String, Value> = body["questions"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(|id| (id.clone(), json!({"type": "noul", "noul": 0.9})))
+                    .collect();
+                (200, json!({"answers": answers}).to_string(), vec![])
+            });
+            let client = mock_client(&base, provider);
+            let selected = crate::memory_jev::select_with_transport(
+                &client,
+                "query",
+                entries.clone(),
+                100,
+                0.8,
+            )
+            .await
+            .unwrap();
+            assert_eq!(selected.len(), 72, "{provider:?}");
+            let sizes: Vec<usize> = worker
+                .join()
+                .unwrap()
+                .iter()
+                .map(|request| {
+                    let body: Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    body["questions"].as_object().unwrap().len()
+                })
+                .collect();
+            assert_eq!(sizes, expected, "{provider:?}");
         }
     }
 
