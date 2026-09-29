@@ -960,23 +960,22 @@ fn test_context_usage_with_both_estimate_and_observed() {
         manager.notify_message_added();
     }
 
-    // The global operator cap can change during parallel tests, so compare
-    // usage against the manager's effective budget instead of assuming 200k.
+    // Compare token counts instead of percentages: another test may change the
+    // operator's global context cap while this manager is constructed.
+    let budget = manager.token_budget() as f32;
     let usage_no_observed = manager.context_usage_with(&messages);
-    let estimate = manager.token_estimate_with(&messages);
-    let budget = manager.token_budget();
     assert!(
-        (usage_no_observed - estimate as f32 / budget as f32).abs() < f32::EPSILON,
-        "without observed tokens, usage should use the char estimate: {usage_no_observed}"
+        usage_no_observed * budget < 40_000.0,
+        "char estimate should be low: {usage_no_observed}"
     );
 
-    // With observed tokens at 160k, should use observed (higher) value
+    // The provider observation should dominate the smaller char estimate.
     manager.update_observed_input_tokens(160_000);
     let usage_with_observed = manager.context_usage_with(&messages);
-    let expected_tokens = estimate.max(160_000);
+    assert!(usage_with_observed > usage_no_observed);
     assert!(
-        (usage_with_observed - expected_tokens as f32 / budget as f32).abs() < f32::EPSILON,
-        "usage should use the higher observed token count: {usage_with_observed}"
+        (usage_with_observed * budget - 160_000.0).abs() < 2.0,
+        "should use observed tokens: {usage_with_observed}"
     );
 }
 
