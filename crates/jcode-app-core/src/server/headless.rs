@@ -49,6 +49,7 @@ pub(super) async fn create_headless_session(
     provider_key_override: Option<String>,
     route_api_method_override: Option<String>,
     effort_override: Option<String>,
+    service_tier_override: Option<String>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
     report_back_to_session_id: Option<String>,
     memory_scope: HeadlessMemoryScope,
@@ -161,7 +162,8 @@ pub(super) async fn create_headless_session(
     if report_back_to_session_id.is_some() {
         // Apply after model/auth-route resolution, never to the shared server
         // template or to an ordinary debug-created main session.
-        new_agent.initialize_spawn_openai_service_tier()?;
+        new_agent
+            .initialize_spawn_openai_service_tier_with_override(service_tier_override.as_deref())?;
     }
 
     new_agent.set_debug(true);

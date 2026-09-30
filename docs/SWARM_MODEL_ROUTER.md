@@ -29,6 +29,9 @@ candidates = [
 "openai-oauth:gpt-6.1-sol" = "high"
 "claude-oauth:claude-opus-5-5" = "medium"
 
+[agents.swarm_router.service_tiers]
+"openai-oauth:gpt-6-luna" = "priority"
+
 [agents.swarm_router.descriptions]
 "openai-oauth:gpt-6.1-sol" = "Choose for hard debugging, architecture, and verification."
 "zai:glm-5.3" = "Choose for reading, searching, and summarizing."
@@ -41,6 +44,10 @@ candidates = [
   assignment policy, not benchmark claims. Missing entries fall back to catalog
   text, so write one for every candidate.
 - `efforts` sets the worker's reasoning effort when that candidate wins.
+- `service_tiers` sets the OpenAI service tier (`priority`/`fast`, `flex`,
+  `off`) when that candidate wins. It overrides
+  `agents.swarm_openai_service_tier` for that worker and has no effect on
+  non-OpenAI routes.
 - Keys in `descriptions` and `efforts` match the candidate as written.
 
 Config changes apply to the next spawn without a restart.

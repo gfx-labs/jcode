@@ -42,6 +42,7 @@ fn config() -> SwarmRouterConfig {
             ("openai-oauth:gpt-6.1-sol".into(), "high".into()),
             ("claude-oauth:claude-opus-5-5".into(), "medium".into()),
         ]),
+        service_tiers: BTreeMap::from([("openai-oauth:gpt-6-luna".into(), "priority".into())]),
         ..SwarmRouterConfig::default()
     }
 }
@@ -62,6 +63,8 @@ fn candidates_resolve_to_available_route_specs_in_config_order() {
     assert_eq!(candidates[0].description, "Hard work");
     assert_eq!(candidates[0].effort.as_deref(), Some("high"));
     assert_eq!(candidates[1].effort.as_deref(), Some("medium"));
+    assert_eq!(candidates[2].service_tier.as_deref(), Some("priority"));
+    assert_eq!(candidates[0].service_tier, None);
     // Bare ids pick up descriptions keyed as written in config.
     assert_eq!(candidates[3].description, "Cheap bulk work");
     // Undescribed candidates fall back to catalog text.

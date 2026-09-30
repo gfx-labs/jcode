@@ -782,6 +782,10 @@ pub struct SwarmRouterConfig {
     /// Reasoning effort applied when a candidate is selected, keyed like
     /// `descriptions`. An explicit spawn `effort` still wins.
     pub efforts: std::collections::BTreeMap<String, String>,
+    /// OpenAI service tier (`priority`/`fast`, `flex`, `off`) applied when a
+    /// candidate is selected, keyed like `descriptions`. Overrides
+    /// `swarm_openai_service_tier` for that worker. Ignored by non-OpenAI routes.
+    pub service_tiers: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for SwarmRouterConfig {
@@ -792,6 +796,7 @@ impl Default for SwarmRouterConfig {
             candidates: Vec::new(),
             descriptions: std::collections::BTreeMap::new(),
             efforts: std::collections::BTreeMap::new(),
+            service_tiers: std::collections::BTreeMap::new(),
         }
     }
 }

@@ -539,6 +539,8 @@ swarm_max_concurrent_agents = 32
 # candidates = ["openai-oauth:gpt-6.1-sol", "zai:glm-5.3"]
 # [agents.swarm_router.efforts]
 # "openai-oauth:gpt-6.1-sol" = "high"
+# [agents.swarm_router.service_tiers]
+# "openai-oauth:gpt-6.1-sol" = "priority"
 # [agents.swarm_router.descriptions]
 # "openai-oauth:gpt-6.1-sol" = "Choose for hard debugging and architecture."
 # "zai:glm-5.3" = "Choose for reading, searching, and summarizing."

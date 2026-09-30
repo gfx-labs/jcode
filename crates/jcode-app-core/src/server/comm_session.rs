@@ -70,6 +70,7 @@ fn create_visible_spawn_session(
     provider_key_override: Option<&str>,
     route_api_method_override: Option<&str>,
     effort_override: Option<&str>,
+    service_tier_override: Option<&str>,
     selfdev_requested: bool,
 ) -> anyhow::Result<(String, PathBuf)> {
     let cwd = working_dir
@@ -81,7 +82,8 @@ fn create_visible_spawn_session(
     let mut session = Session::create(None, Some("Swarm worker".to_string()));
     // The visible client may attach before swarm membership is registered.
     // Persist the policy in the session rather than inferring role on attach.
-    session.spawn_openai_service_tier = Agent::configured_spawn_openai_service_tier()?;
+    session.spawn_openai_service_tier =
+        Agent::spawn_openai_service_tier_with_override(service_tier_override)?;
     session.working_dir = Some(cwd.display().to_string());
     if let Some(model) = model_override {
         session.model = Some(model.to_string());
@@ -446,6 +448,37 @@ fn prepare_visible_spawn_session<F>(
 where
     F: FnOnce(&str, &std::path::Path, bool, Option<&str>) -> anyhow::Result<bool>,
 {
+    prepare_visible_spawn_session_with_tier(
+        working_dir,
+        model_override,
+        provider_key_override,
+        route_api_method_override,
+        effort_override,
+        None,
+        selfdev_requested,
+        startup_message,
+        launch_visible,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "visible spawn preparation carries the full resolved worker identity"
+)]
+fn prepare_visible_spawn_session_with_tier<F>(
+    working_dir: Option<&str>,
+    model_override: Option<&str>,
+    provider_key_override: Option<&str>,
+    route_api_method_override: Option<&str>,
+    effort_override: Option<&str>,
+    service_tier_override: Option<&str>,
+    selfdev_requested: bool,
+    startup_message: Option<&str>,
+    launch_visible: F,
+) -> anyhow::Result<(String, bool)>
+where
+    F: FnOnce(&str, &std::path::Path, bool, Option<&str>) -> anyhow::Result<bool>,
+{
     let provider_key = provider_key_for_spawn_model(model_override, provider_key_override);
     let (new_session_id, cwd) = create_visible_spawn_session(
         working_dir,
@@ -453,6 +486,7 @@ where
         provider_key.as_deref(),
         route_api_method_override,
         effort_override,
+        service_tier_override,
         selfdev_requested,
     )?;
 
@@ -633,13 +667,13 @@ pub(super) async fn spawn_swarm_agent(
     };
     if let Some(routed) = routed.as_ref() {
         crate::logging::info(&format!(
-            "Swarm model router selected {} (effort={:?}, confidence={:.2})",
-            routed.spec, routed.effort, routed.confidence
+            "Swarm model router selected {} (effort={:?}, service_tier={:?}, confidence={:.2})",
+            routed.spec, routed.effort, routed.service_tier, routed.confidence
         ));
     }
-    let (routed_model, routed_effort) = match routed {
-        Some(routed) => (Some(routed.spec), routed.effort),
-        None => (None, None),
+    let (routed_model, routed_effort, routed_service_tier) = match routed {
+        Some(routed) => (Some(routed.spec), routed.effort, routed.service_tier),
+        None => (None, None, None),
     };
     let selection = resolve_swarm_spawn_selection(
         requested_model
@@ -683,12 +717,13 @@ pub(super) async fn spawn_swarm_agent(
         SwarmSpawnMode::Headless | SwarmSpawnMode::Inline => {
             Err(anyhow::anyhow!("headless spawn requested"))
         }
-        SwarmSpawnMode::Visible | SwarmSpawnMode::Auto => prepare_visible_spawn_session(
+        SwarmSpawnMode::Visible | SwarmSpawnMode::Auto => prepare_visible_spawn_session_with_tier(
             resolved_working_dir.as_deref(),
             spawn_model.as_deref(),
             spawn_provider_key.as_deref(),
             spawn_route_api_method.as_deref(),
             spawn_effort.as_deref(),
+            routed_service_tier.as_deref(),
             coordinator_is_canary,
             startup_message.as_deref(),
             |session_id, cwd, selfdev_requested, provider_key| {
@@ -732,6 +767,7 @@ pub(super) async fn spawn_swarm_agent(
                 spawn_provider_key.clone(),
                 spawn_route_api_method.clone(),
                 spawn_effort.clone(),
+                routed_service_tier.clone(),
                 Some(Arc::clone(mcp_pool)),
                 Some(req_session_id.to_string()),
                 super::headless::HeadlessMemoryScope::RealProject,

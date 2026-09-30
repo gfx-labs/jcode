@@ -73,8 +73,32 @@ impl Agent {
         normalize_spawn_openai_service_tier(config.agents.swarm_openai_service_tier.as_deref())
     }
 
+    /// Worker tier with a per-spawn override (from the swarm model router)
+    /// taking precedence over `agents.swarm_openai_service_tier`. An invalid
+    /// override is logged and ignored rather than failing the spawn.
+    pub(crate) fn spawn_openai_service_tier_with_override(
+        tier_override: Option<&str>,
+    ) -> Result<Option<String>> {
+        match normalize_spawn_openai_service_tier(tier_override) {
+            Ok(Some(tier)) => return Ok(Some(tier)),
+            Ok(None) => {}
+            Err(error) => {
+                crate::logging::warn(&format!("Ignoring routed worker service tier: {error}"))
+            }
+        }
+        Self::configured_spawn_openai_service_tier()
+    }
+
     pub(crate) fn initialize_spawn_openai_service_tier(&mut self) -> Result<()> {
-        self.session.spawn_openai_service_tier = Self::configured_spawn_openai_service_tier()?;
+        self.initialize_spawn_openai_service_tier_with_override(None)
+    }
+
+    pub(crate) fn initialize_spawn_openai_service_tier_with_override(
+        &mut self,
+        tier_override: Option<&str>,
+    ) -> Result<()> {
+        self.session.spawn_openai_service_tier =
+            Self::spawn_openai_service_tier_with_override(tier_override)?;
         self.restore_spawn_openai_service_tier()?;
         self.session.save()?;
         Ok(())

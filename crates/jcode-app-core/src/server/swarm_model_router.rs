@@ -108,6 +108,8 @@ pub(super) struct RouterCandidate {
     pub description: String,
     /// Reasoning effort applied to the worker when selected.
     pub effort: Option<String>,
+    /// OpenAI service tier applied to the worker when selected.
+    pub service_tier: Option<String>,
 }
 
 /// The router's pick for one spawn.
@@ -115,6 +117,7 @@ pub(super) struct RouterCandidate {
 pub(super) struct RoutedModel {
     pub spec: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
     pub confidence: f32,
 }
 
@@ -175,14 +178,14 @@ pub(super) fn route_candidates(
                 }
             })
     };
-    let effort = |key: &str| {
-        config
-            .efforts
-            .get(key)
+    let lookup = |map: &std::collections::BTreeMap<String, String>, key: &str| {
+        map.get(key)
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
+    let effort = |key: &str| lookup(&config.efforts, key);
+    let service_tier = |key: &str| lookup(&config.service_tiers, key);
 
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -200,6 +203,7 @@ pub(super) fn route_candidates(
                     spec: spec.clone(),
                     description: describe(spec, route),
                     effort: effort(spec),
+                    service_tier: service_tier(spec),
                 });
             }
         }
@@ -216,6 +220,7 @@ pub(super) fn route_candidates(
                     spec: spec.clone(),
                     description: describe(candidate, route),
                     effort: effort(candidate),
+                    service_tier: service_tier(candidate),
                 });
             }
         }
@@ -252,6 +257,7 @@ pub(super) fn parse_choice(value: Value, candidates: &[RouterCandidate]) -> Opti
     Some(RoutedModel {
         spec: candidate.spec.clone(),
         effort: candidate.effort.clone(),
+        service_tier: candidate.service_tier.clone(),
         confidence: answer.confidence,
     })
 }
@@ -282,6 +288,7 @@ pub(super) async fn select_swarm_model(
             return Some(RoutedModel {
                 spec: only.spec.clone(),
                 effort: only.effort.clone(),
+                service_tier: only.service_tier.clone(),
                 confidence: 1.0,
             });
         }
