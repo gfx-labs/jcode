@@ -452,6 +452,7 @@ wake_mode = "internal"
 # Leave unset (or "inherit"/"coordinator") so workers inherit the model of the
 # session that spawned them. Set a concrete model to change the worker default.
 # An explicit `model` in the swarm tool overrides this default for new workers.
+# With swarm_router enabled, this is the fallback when routing fails.
 # Env override: JCODE_SWARM_MODEL
 # swarm_model = "inherit"
 #
@@ -526,6 +527,21 @@ swarm_max_concurrent_agents = 32
 # memory_model = "gpt-5.6-luna"
 # Legacy memory_rerank_* and memory_embedding_* settings are accepted for
 # backwards compatibility, but have no effect on Jev recall.
+
+# Optional Jev task-aware model selection for newly spawned swarm workers.
+# Sends the assigned task (not the conversation) to the shared Jev client.
+# Provider follows JCODE_SWARM_JEV_PROVIDER (default auto). Explicit spawn
+# `model`/`effort` win. Failures fall back to swarm_model/swarm_effort.
+# See docs/SWARM_MODEL_ROUTER.md.
+# [agents.swarm_router]
+# enabled = false
+# timeout_ms = 5000
+# candidates = ["openai-oauth:gpt-6.1-sol", "zai:glm-5.3"]
+# [agents.swarm_router.efforts]
+# "openai-oauth:gpt-6.1-sol" = "high"
+# [agents.swarm_router.descriptions]
+# "openai-oauth:gpt-6.1-sol" = "Choose for hard debugging and architecture."
+# "zai:glm-5.3" = "Choose for reading, searching, and summarizing."
 
 [terminal]
 # Without a hook, clients inside tmux automatically use a right-side pane.

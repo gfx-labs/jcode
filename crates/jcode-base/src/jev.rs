@@ -12,6 +12,7 @@ use std::time::Duration;
 const PROVIDER_ENV: &str = "JCODE_MEMORY_JEV_PROVIDER";
 const BROWSER_PROVIDER_ENV: &str = "JCODE_BROWSER_JEV_PROVIDER";
 const SKILL_PROVIDER_ENV: &str = "JCODE_SKILL_JEV_PROVIDER";
+const SWARM_PROVIDER_ENV: &str = "JCODE_SWARM_JEV_PROVIDER";
 const VOICE_PROVIDER_ENV: &str = "JCODE_VOICE_JEV_PROVIDER";
 const MAX_REQUEST_BYTES: usize = 80 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
@@ -43,6 +44,7 @@ enum JevPurpose {
     Memory,
     Browser,
     Skill,
+    Swarm,
     Voice,
 }
 
@@ -52,6 +54,7 @@ impl JevPurpose {
             Self::Memory => "memory",
             Self::Browser => "browser",
             Self::Skill => "skill",
+            Self::Swarm => "swarm",
             Self::Voice => "voice",
         }
     }
@@ -61,6 +64,7 @@ impl JevPurpose {
             Self::Memory => "memory_jev",
             Self::Browser => "browser_jev",
             Self::Skill => "skill_jev",
+            Self::Swarm => "swarm_jev",
             // Voice uses the gateway's existing typed noul contract.
             Self::Voice => "memory_jev",
         }
@@ -75,13 +79,14 @@ impl JevPurpose {
             Self::Memory => PROVIDER_ENV,
             Self::Browser => BROWSER_PROVIDER_ENV,
             Self::Skill => SKILL_PROVIDER_ENV,
+            Self::Swarm => SWARM_PROVIDER_ENV,
             Self::Voice => VOICE_PROVIDER_ENV,
         };
         match env(key) {
             Ok(value) => Ok(value),
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
-                Self::Browser | Self::Skill | Self::Voice => "auto".into(),
+                Self::Browser | Self::Skill | Self::Swarm | Self::Voice => "auto".into(),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
         }
@@ -183,6 +188,17 @@ impl JevClient {
     /// A configured credential route exists for skill routing.
     pub fn skill_available() -> bool {
         Self::resolve(JevPurpose::Skill).is_ok()
+    }
+
+    /// Swarm worker model routing. Independent of memory configuration and
+    /// defaults to subscription-first auto selection, like skill routing.
+    pub fn for_swarm() -> Result<Self> {
+        Self::for_purpose(JevPurpose::Swarm)
+    }
+
+    /// A configured credential route exists for swarm model routing.
+    pub fn swarm_available() -> bool {
+        Self::resolve(JevPurpose::Swarm).is_ok()
     }
 
     /// Voice uses included Jcode access, then Typesafe BYOK. Other provider keys
@@ -392,6 +408,7 @@ impl JevClient {
                     JevPurpose::Memory => "Jcode Memory",
                     JevPurpose::Browser => "Jcode Browser",
                     JevPurpose::Skill => "Jcode Skill Router",
+                    JevPurpose::Swarm => "Jcode Swarm Router",
                     JevPurpose::Voice => "Jcode Voice",
                 },
             );
@@ -799,6 +816,27 @@ mod tests {
             assert_eq!(sent["questions"]["skill"]["type"], "choice");
             // `none` must survive serialization so the model can always abstain.
             assert!(sent["questions"]["skill"]["criteria"]["none"].is_string());
+        }
+    }
+
+    /// The swarm router's model choice shape passes validation on every provider.
+    #[test]
+    fn swarm_router_choice_passes_request_validation_for_every_provider() {
+        let questions = json!({"model": {"type": "choice", "instructions": "Choose a model route", "criteria": {"openai-oauth:gpt-6.1-sol": "Hard work", "zai:glm-5.3": "Bulk work"}}})
+            .as_object().unwrap().clone();
+        for provider in [
+            JevProvider::OpenRouter,
+            JevProvider::TypeSafe,
+            JevProvider::Aimlapi,
+            JevProvider::Jcode,
+        ] {
+            request_body_for(
+                JevPurpose::Swarm,
+                provider,
+                json!("Fix the flaky test"),
+                &questions,
+            )
+            .unwrap_or_else(|err| panic!("swarm rejected for {}: {err}", provider.name()));
         }
     }
 

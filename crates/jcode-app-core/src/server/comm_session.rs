@@ -588,6 +588,7 @@ pub(super) async fn spawn_swarm_agent(
     requested_model: Option<String>,
     requested_effort: Option<String>,
     label: Option<String>,
+    routing_context: Option<super::swarm_model_router::RoutingContext>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
@@ -614,8 +615,37 @@ pub(super) async fn spawn_swarm_agent(
     let agents_config = &crate::config::config().agents;
     let configured_swarm_model = agents_config.swarm_model.clone();
     let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
+    let routed = if super::swarm_model_router::should_route(requested_model.as_deref()) {
+        let context = routing_context.unwrap_or_else(|| {
+            let mut context =
+                super::swarm_model_router::RoutingContext::from_task(initial_message.as_deref());
+            context.label = label.clone();
+            context
+        });
+        super::swarm_model_router::select_swarm_model(
+            &agents_config.swarm_router,
+            &context,
+            &provider_template.model_routes(),
+        )
+        .await
+    } else {
+        None
+    };
+    if let Some(routed) = routed.as_ref() {
+        crate::logging::info(&format!(
+            "Swarm model router selected {} (effort={:?}, confidence={:.2})",
+            routed.spec, routed.effort, routed.confidence
+        ));
+    }
+    let (routed_model, routed_effort) = match routed {
+        Some(routed) => (Some(routed.spec), routed.effort),
+        None => (None, None),
+    };
     let selection = resolve_swarm_spawn_selection(
-        requested_model.clone(),
+        requested_model
+            .clone()
+            .filter(|model| !model.trim().is_empty())
+            .or(routed_model),
         configured_swarm_model.clone(),
         &coordinator,
     );
@@ -623,7 +653,10 @@ pub(super) async fn spawn_swarm_agent(
     let spawn_provider_key = selection.provider_key.clone();
     let spawn_route_api_method = selection.route_api_method.clone();
     let spawn_effort = resolve_swarm_spawn_effort(
-        requested_effort.as_deref(),
+        requested_effort
+            .as_deref()
+            .filter(|effort| !effort.trim().is_empty())
+            .or(routed_effort.as_deref()),
         agents_config.swarm_effort.as_deref(),
     );
     crate::logging::info(&format!(
@@ -945,6 +978,7 @@ pub(super) async fn handle_comm_spawn(
         model,
         effort,
         label,
+        None,
         sessions,
         global_session_id,
         provider_template,

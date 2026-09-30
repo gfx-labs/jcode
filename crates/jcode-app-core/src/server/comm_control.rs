@@ -1918,6 +1918,31 @@ pub(super) async fn handle_comm_assign_next(
             if let Ok(unused_target) = &preferred_target {
                 release_auto_assign_claim(&swarm_id, unused_target);
             }
+            // The worker is spawned before the task is delivered, so give the
+            // router the plan item it is about to receive.
+            let routing_context = {
+                let plans = swarm_plans.read().await;
+                plans.get(&swarm_id).and_then(|plan| {
+                    let item = plan.items.iter().find(|item| item.id == selected_task_id)?;
+                    let task = match message.as_deref().map(str::trim) {
+                        Some(extra) if !extra.is_empty() => {
+                            format!("{}\n\n{extra}", item.content)
+                        }
+                        _ => item.content.clone(),
+                    };
+                    Some(super::swarm_model_router::RoutingContext {
+                        task: Some(task),
+                        label: None,
+                        kind: plan
+                            .node_meta
+                            .get(&item.id)
+                            .and_then(|meta| meta.kind.clone()),
+                        subsystem: item.subsystem.clone(),
+                        file_scope: item.file_scope.clone(),
+                        plan_mode: Some(plan.mode.clone()),
+                    })
+                })
+            };
             match super::comm_session::spawn_swarm_agent(
                 &req_session_id,
                 &swarm_id,
@@ -1927,6 +1952,7 @@ pub(super) async fn handle_comm_assign_next(
                 model.clone(),
                 effort.clone(),
                 None,
+                routing_context,
                 sessions,
                 global_session_id,
                 provider_template,

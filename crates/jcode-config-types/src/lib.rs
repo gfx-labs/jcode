@@ -578,6 +578,12 @@ pub struct AgentsConfig {
     /// string to change the worker default. An explicit `model` in the swarm
     /// tool overrides this default for newly spawned workers.
     pub swarm_model: Option<String>,
+    /// Optional Jev task-aware model router for spawned swarm agents.
+    ///
+    /// Disabled by default. When enabled, an omitted per-spawn model is
+    /// selected from the configured candidates before falling back to
+    /// `swarm_model` and then coordinator inheritance.
+    pub swarm_router: SwarmRouterConfig,
     /// Optional default reasoning effort for spawned swarm/subagent sessions
     /// (`"low"`, `"medium"`, `"high"`, ...). Applied when a `swarm spawn`
     /// call does not pass an explicit `effort`. Leave unset to let workers
@@ -711,6 +717,7 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
+            swarm_router: SwarmRouterConfig::default(),
             swarm_effort: None,
             swarm_openai_service_tier: None,
             swarm_root_effort: None,
@@ -751,6 +758,41 @@ impl AgentsConfig {
             .into_iter()
             .find(|level| level.eq_ignore_ascii_case(value))
             .unwrap_or("max")
+    }
+}
+
+/// Jev-backed task-aware model routing for newly spawned swarm agents.
+///
+/// Decisions go through the shared Jev client, so provider and credentials
+/// follow `JCODE_SWARM_JEV_PROVIDER` (default `auto`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct SwarmRouterConfig {
+    /// Opt in to remote task-aware model selection.
+    pub enabled: bool,
+    /// Upper bound on the routing decision in milliseconds.
+    pub timeout_ms: u64,
+    /// Ordered allowlist of models exposed as choices. Each entry is a
+    /// route-pinned spec (`openai-oauth:gpt-6-luna`) or a bare model id
+    /// (`glm-5.3`), matched against available routes.
+    pub candidates: Vec<String>,
+    /// Routing policy text Jev evaluates each candidate against, keyed by the
+    /// candidate string as written in `candidates`.
+    pub descriptions: std::collections::BTreeMap<String, String>,
+    /// Reasoning effort applied when a candidate is selected, keyed like
+    /// `descriptions`. An explicit spawn `effort` still wins.
+    pub efforts: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for SwarmRouterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            timeout_ms: 5_000,
+            candidates: Vec::new(),
+            descriptions: std::collections::BTreeMap::new(),
+            efforts: std::collections::BTreeMap::new(),
+        }
     }
 }
 
