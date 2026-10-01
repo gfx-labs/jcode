@@ -2108,7 +2108,7 @@ impl Tool for CommunicateTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model for newly spawned workers (spawn, assign_task, assign_next, fill_slots, run_plan), e.g. 'gpt-6-astra' or 'openai-api:gpt-5.6-luna'. Explicit values override automatic routing and agents.swarm_model. Prefer omitting model so the configured TypeSafe Jev router can choose using the assigned task. Without routing, or on failure, uses agents.swarm_model or inherits the coordinator if unset. Use 'inherit' to force the coordinator's model and route. Does not change reused workers. See list_models."
+                    "description": "Model for new workers, e.g. 'openai-api:gpt-5.6-luna'. Omit to auto-route. See list_models."
                 },
                 "effort": {
                     "type": "string",
