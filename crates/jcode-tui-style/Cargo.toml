@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 jcode-logging = { path = "../jcode-logging" }
 ratatui = "0.30"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

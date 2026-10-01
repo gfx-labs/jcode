@@ -4316,6 +4316,7 @@ name = "jcode-tui-style"
 version = "0.1.0"
 dependencies = [
  "jcode-logging",
+ "libc",
  "ratatui",
 ]
 

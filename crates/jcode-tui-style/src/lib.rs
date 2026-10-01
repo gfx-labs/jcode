@@ -1,4 +1,5 @@
 pub mod color;
+pub mod cooked_termios;
 pub mod harmony;
 pub mod palette;
 pub mod theme;
@@ -33,4 +34,7 @@ pub fn restore_terminal_quietly() {
     if let Err(error) = ratatui::try_restore() {
         jcode_logging::warn(&format!("failed to restore terminal: {error}"));
     }
+    // ratatui/crossterm restore the termios they saw at enable_raw_mode, which
+    // is already raw after an exec handoff. Reapply the real cooked settings.
+    cooked_termios::restore();
 }

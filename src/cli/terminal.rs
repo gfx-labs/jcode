@@ -12,6 +12,9 @@ pub struct TuiRuntimeState {
 
 const INHERITED_MODES_ENV: &str = "JCODE_TUI_INHERITED_MODES";
 const INHERITED_THEME_ENV: &str = "JCODE_TUI_INHERITED_THEME";
+const INHERITED_TERMIOS_ENV: &str = "JCODE_TUI_INHERITED_TERMIOS";
+
+use jcode_tui_style::cooked_termios;
 
 // Crossterm's Windows implementation enables Win32 console mouse input but does
 // not emit the VT mouse-tracking modes. Windows Terminal and other ConPTY hosts
@@ -372,6 +375,12 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
     // new process still took the resume path, leaving it on the primary screen
     // without mouse capture.
     let inherited_terminal = has_terminal_exec_handoff(is_resuming, inherited_modes);
+    let inherited_termios = std::env::var(INHERITED_TERMIOS_ENV).ok();
+    if inherited_terminal {
+        cooked_termios::adopt_inherited(inherited_termios.as_deref());
+    } else {
+        cooked_termios::capture_current();
+    }
     if inherited_terminal {
         // OSC terminal queries are unsafe here because the previous process
         // deliberately exec'd without leaving raw mode or the alternate screen.
@@ -390,6 +399,7 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
     // leaking them into tools or unrelated child jcode processes.
     crate::env::remove_var(INHERITED_MODES_ENV);
     crate::env::remove_var(INHERITED_THEME_ENV);
+    crate::env::remove_var(INHERITED_TERMIOS_ENV);
 
     let fallback_modes = InheritedTerminalModes {
         mouse_capture: perf_policy.enable_mouse_capture,
@@ -527,6 +537,9 @@ fn export_tui_exec_handoff(state: &TuiRuntimeState) {
         focus_change: state.focus_change,
     };
     crate::env::set_var(INHERITED_MODES_ENV, modes.encode());
+    if let Some(termios) = cooked_termios::encoded() {
+        crate::env::set_var(INHERITED_TERMIOS_ENV, termios);
+    }
     let theme = crate::tui::theme_detect::current_theme_label();
     crate::env::set_var(INHERITED_THEME_ENV, theme);
     crate::logging::info(&format!(
@@ -613,12 +626,21 @@ fn signal_crash_reason(sig: i32) -> String {
 fn handle_termination_signal(sig: i32) -> ! {
     mark_current_session_crashed(signal_crash_reason(sig));
 
+    // Undo every mode the TUI may have enabled. Each of these is harmless when
+    // the mode was never set, and on a dead tty the writes simply fail. Leaving
+    // mouse tracking or Kitty keyboard reporting on makes the shell receive
+    // escape sequences instead of keys (including Ctrl+C) after exit.
+    {
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        let _ = stdout.write_all(TERMINATION_MODE_RESET);
+        if std::env::var_os("TMUX").is_some_and(|value| !value.is_empty()) {
+            let _ = stdout.write_all(b"\x1b[>4;0m");
+        }
+        let _ = stdout.flush();
+    }
     let _ = crossterm::terminal::disable_raw_mode();
-    let _ = crossterm::execute!(
-        std::io::stderr(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::cursor::Show
-    );
+    cooked_termios::restore();
 
     if let Some(session_id) = get_current_session() {
         print_session_resume_hint(&session_id);
@@ -626,6 +648,12 @@ fn handle_termination_signal(sig: i32) -> ! {
 
     std::process::exit(128 + sig);
 }
+
+/// Mode resets written when a termination signal kills the TUI: bracketed
+/// paste, focus reporting, every mouse tracking mode, Kitty keyboard flags
+/// (pop), synchronized output, cursor visible, then leave the alternate screen.
+#[cfg(unix)]
+const TERMINATION_MODE_RESET: &[u8] = b"\x1b[?2004l\x1b[?1004l\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[<1u\x1b[?2026l\x1b[?25h\x1b[?1049l";
 
 #[cfg(unix)]
 pub fn spawn_session_signal_watchers() {
