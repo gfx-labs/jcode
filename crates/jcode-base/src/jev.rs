@@ -531,18 +531,28 @@ fn rate_limited_backoff(attempt: usize) -> Duration {
 
 /// Paces request starts to a minimum interval, caps requests in flight, and
 /// lets a 429 push the next allowed start out for every caller.
+///
+/// Pacing is shared by every jcode process for this user (several daemons,
+/// self-dev servers, `jcode run`), because the provider limit is per key, not
+/// per process. The next allowed start time lives in a small file under the
+/// runtime dir, updated under an exclusive `flock`. If that file cannot be
+/// used, pacing falls back to this process only.
 struct RateLimiter {
     in_flight: tokio::sync::Semaphore,
-    next_start: std::sync::Mutex<tokio::time::Instant>,
+    next_start: std::sync::Mutex<std::time::SystemTime>,
     interval: Duration,
+    shared: Option<std::path::PathBuf>,
 }
 
+type Clock = std::time::SystemTime;
+
 impl RateLimiter {
-    fn new(max_in_flight: usize, interval: Duration) -> Self {
+    fn new(max_in_flight: usize, interval: Duration, shared: Option<std::path::PathBuf>) -> Self {
         Self {
             in_flight: tokio::sync::Semaphore::new(max_in_flight),
-            next_start: std::sync::Mutex::new(tokio::time::Instant::now()),
+            next_start: std::sync::Mutex::new(std::time::UNIX_EPOCH),
             interval,
+            shared,
         }
     }
 
@@ -552,29 +562,113 @@ impl RateLimiter {
             .acquire()
             .await
             .expect("rate limiter semaphore is never closed");
-        let start = {
-            let mut next = self.next_start.lock().unwrap_or_else(|e| e.into_inner());
-            let start = (*next).max(tokio::time::Instant::now());
-            *next = start + self.interval;
-            start
-        };
-        tokio::time::sleep_until(start).await;
+        let interval = self.interval;
+        let wait = self.update(|next, now| {
+            let start = next.max(now);
+            (
+                start + interval,
+                start.duration_since(now).unwrap_or_default(),
+            )
+        });
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         permit
     }
 
     fn cool_down(&self, delay: Duration) {
-        let until = tokio::time::Instant::now() + delay;
-        let mut next = self.next_start.lock().unwrap_or_else(|e| e.into_inner());
-        if *next < until {
-            *next = until;
-        }
+        self.update(|next, now| (next.max(now + delay), ()));
     }
+
+    /// Atomically read-modify-write the next allowed start time, shared across
+    /// processes when possible. `f(next, now)` returns `(new_next, result)`.
+    fn update<T>(&self, f: impl Fn(Clock, Clock) -> (Clock, T)) -> T {
+        // The in-process mutex also serializes this process's file access.
+        let mut local = self.next_start.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Clock::now();
+        if let Some(path) = &self.shared {
+            match shared_update(path, *local, now, &f) {
+                Ok((next, result)) => {
+                    *local = next;
+                    return result;
+                }
+                Err(error) => crate::logging::warn(&format!(
+                    "Jev rate limiter falling back to per-process pacing: {error}"
+                )),
+            }
+        }
+        let (next, result) = f(*local, now);
+        *local = next;
+        result
+    }
+}
+
+/// Read, update, and write the shared next-start time under an exclusive lock.
+/// The file holds Unix epoch milliseconds as ASCII. The local value is a floor,
+/// so a deleted or corrupt file never lets this process exceed its own pacing.
+/// Holders never sleep while locked; the critical section is a few syscalls.
+#[cfg(unix)]
+fn shared_update<T>(
+    path: &std::path::Path,
+    local: Clock,
+    now: Clock,
+    f: &impl Fn(Clock, Clock) -> (Clock, T),
+) -> std::io::Result<(Clock, T)> {
+    use std::io::{Read, Seek, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut text = String::new();
+    let _ = file.read_to_string(&mut text);
+    let stored = text
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|ms| std::time::UNIX_EPOCH + Duration::from_millis(ms))
+        // Ignore values implausibly far ahead (clock jumps, corruption).
+        .filter(|at| *at <= now + Duration::from_secs(60))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let (next, result) = f(stored.max(local), now);
+    let millis = next
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    file.set_len(0)?;
+    file.rewind()?;
+    file.write_all(millis.to_string().as_bytes())?;
+    // Dropping the file closes it and releases the lock.
+    Ok((next, result))
+}
+
+#[cfg(not(unix))]
+fn shared_update<T>(
+    _path: &std::path::Path,
+    _local: Clock,
+    _now: Clock,
+    _f: &impl Fn(Clock, Clock) -> (Clock, T),
+) -> std::io::Result<(Clock, T)> {
+    Err(std::io::Error::other("cross-process pacing is unix-only"))
 }
 
 fn rate_limiter(provider: JevProvider) -> Option<&'static RateLimiter> {
     static OPENJEV: std::sync::OnceLock<RateLimiter> = std::sync::OnceLock::new();
     (provider == JevProvider::OpenJev).then(|| {
-        OPENJEV.get_or_init(|| RateLimiter::new(OPENJEV_MAX_IN_FLIGHT, OPENJEV_MIN_INTERVAL))
+        OPENJEV.get_or_init(|| {
+            // Unit tests never share pacing state with a live jcode.
+            let shared =
+                (!cfg!(test)).then(|| jcode_storage::runtime_dir().join("jcode-openjev-ratelimit"));
+            RateLimiter::new(OPENJEV_MAX_IN_FLIGHT, OPENJEV_MIN_INTERVAL, shared)
+        })
     })
 }
 
@@ -2449,7 +2543,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn rate_limiter_paces_starts_caps_in_flight_and_cools_down() {
-        let limiter = std::sync::Arc::new(RateLimiter::new(2, Duration::from_millis(200)));
+        let limiter = std::sync::Arc::new(RateLimiter::new(2, Duration::from_millis(200), None));
         let origin = tokio::time::Instant::now();
         let starts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2486,6 +2580,57 @@ mod tests {
         limiter.cool_down(Duration::from_secs(1));
         drop(limiter.acquire().await);
         assert!(before.elapsed() >= Duration::from_secs(1));
+    }
+
+    /// Two limiters sharing one state file stand in for two jcode processes:
+    /// their combined request starts must keep the shared spacing, and a 429
+    /// cool-down recorded by one must delay the other.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rate_limiter_pacing_is_shared_through_state_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("ratelimit");
+        let interval = Duration::from_millis(100);
+        let a = std::sync::Arc::new(RateLimiter::new(8, interval, Some(path.clone())));
+        let b = std::sync::Arc::new(RateLimiter::new(8, interval, Some(path.clone())));
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let limiter = if i % 2 == 0 { a.clone() } else { b.clone() };
+                let starts = starts.clone();
+                tokio::spawn(async move {
+                    drop(limiter.acquire().await);
+                    starts.lock().unwrap().push(std::time::Instant::now());
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let mut starts = starts.lock().unwrap().clone();
+        starts.sort();
+        // 8 starts across both "processes" need at least 7 intervals.
+        let span = *starts.last().unwrap() - starts[0];
+        assert!(span >= Duration::from_millis(650), "{span:?}");
+
+        let before = std::time::Instant::now();
+        a.cool_down(Duration::from_millis(400));
+        drop(b.acquire().await);
+        assert!(before.elapsed() >= Duration::from_millis(350));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .trim()
+                .parse::<u64>()
+                .is_ok()
+        );
+
+        // A corrupt state file is ignored rather than wedging pacing.
+        std::fs::write(&path, "not-a-number").unwrap();
+        let c = RateLimiter::new(1, interval, Some(path.clone()));
+        let started = std::time::Instant::now();
+        drop(c.acquire().await);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

@@ -19,10 +19,14 @@ format) with model `openjev` and `OPENJEV_API_KEY` from the daemon environment o
 `memory_jev_provider = "openjev"`. `auto` never picks it.
 
 OpenJev allows roughly 6 requests per second per key. Jcode paces every OpenJev
-request in the process through one limiter: at most 2 in flight and at least
-200 ms between request starts (at most 5 per second). A 429 is retried up to 4
+request through one limiter shared by all jcode processes for your user (several
+daemons, self-dev servers, `jcode run`): at least 200 ms between request starts
+across all of them (at most 5 per second), and at most 2 in flight per process.
+The shared state is a small `flock`-protected file,
+`$XDG_RUNTIME_DIR/jcode-openjev-ratelimit`. If it cannot be used, each process
+falls back to pacing itself. A 429 is retried up to 4
 times with exponential backoff and jitter, never sooner than the server's
-`Retry-After`, and it pauses all other OpenJev callers for that interval too.
+`Retry-After`, and it pauses all other OpenJev callers, in every process, for that interval too.
 Voice is unaffected: it only uses TypeSafe or Jcode.
 
 Add or update this table without duplicating it:
