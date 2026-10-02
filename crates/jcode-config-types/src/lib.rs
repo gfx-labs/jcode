@@ -559,10 +559,10 @@ pub struct AuthConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct JevConfig {
-    /// `typesafe` (default) or `openrouter`, both requiring keys.
-    /// Unsupported values, including local `openjev`, fail closed without hosted fallback.
+    /// `typesafe` (default), `openrouter`, or hosted `openjev`, all requiring keys.
+    /// Unsupported values fail closed without hosted fallback.
     pub provider: String,
-    /// Hosted API base or full `/systemone` (TypeSafe) or `/decisions` (OpenRouter) endpoint.
+    /// Hosted API base or full `/systemone` (TypeSafe, OpenJev) or `/decisions` (OpenRouter) endpoint.
     pub base_url: Option<String>,
     pub model: Option<String>,
     /// Explicit hosted credential variable. A nonempty API key is required.
@@ -1815,7 +1815,14 @@ mod jev_config_tests {
 
     #[test]
     fn hosted_jev_overrides_preserve_independent_memory_selector() {
-        for memory_provider in ["auto", "jcode", "openrouter", "typesafe", "aimlapi"] {
+        for memory_provider in [
+            "auto",
+            "jcode",
+            "openrouter",
+            "typesafe",
+            "openjev",
+            "aimlapi",
+        ] {
             let agents: AgentsConfig = serde_json::from_value(serde_json::json!({
                 "jev": {
                     "provider": "openrouter",

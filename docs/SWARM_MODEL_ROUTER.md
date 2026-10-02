@@ -7,7 +7,7 @@ This is opt-in and does not change the coordinator's model or existing workers.
 ## Configuration
 
 Select hosted TypeSafe (default) or OpenRouter via [Jev providers](JEV_PROVIDERS.md).
-Both require API keys. Local provider `openjev` is rejected, without a silent
+All require API keys (`typesafe`, `openrouter`, or hosted `openjev`), without a silent
 hosted fallback.
 The credential instructions below apply to hosted TypeSafe only.
 

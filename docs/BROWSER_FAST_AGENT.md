@@ -20,10 +20,10 @@ runtime, so Desktop and the TUI use the same controller.
 Check `browser` with `action: "status"` first and run setup only if not ready.
 By default, the browser honors `[agents.jev]`, including the `JCODE_JEV_PROVIDER` override,
 as described in [Jev providers](JEV_PROVIDERS.md). The default provider is TypeSafe
-(`TYPESAFE_API_KEY` or `typesafe.env`). Both shared providers require hosted
-credentials. Endpoint, model, explicit credential variable, and timeout overrides
-remain supported. Local provider `openjev` is rejected without silent hosted
-fallback. Invalid configuration fails closed. Config-file changes hot reload for
+(`TYPESAFE_API_KEY` or `typesafe.env`). All shared providers (`typesafe`,
+`openrouter`, hosted `openjev`) require hosted credentials. Endpoint, model,
+explicit credential variable, and timeout overrides remain supported. No provider
+falls back silently to another. Invalid configuration fails closed. Config-file changes hot reload for
 new decisions through metadata checks roughly every 500 ms, with no restart.
 An in-progress handoff keeps its starting transport.
 

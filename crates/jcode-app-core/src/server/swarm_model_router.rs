@@ -484,9 +484,9 @@ mod tests {
     }
 
     #[test]
-    fn openjev_config_is_rejected() {
+    fn openjev_config_requires_its_own_key() {
         let jev = crate::config::JevConfig {
-            provider: "openjev".into(),
+            provider: "local".into(),
             ..Default::default()
         };
         assert!(resolve_router(&config(), &jev).is_err());

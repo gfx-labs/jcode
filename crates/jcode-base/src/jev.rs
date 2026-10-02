@@ -96,6 +96,9 @@ impl JevPurpose {
 enum JevProvider {
     OpenRouter,
     TypeSafe,
+    /// Hosted OpenJev (api.openjev.sh), wire compatible with TypeSafe's
+    /// `/v1/systemone`. Explicit selection only, never part of `auto`.
+    OpenJev,
     Aimlapi,
     Jcode,
 }
@@ -105,6 +108,7 @@ impl JevProvider {
         match self {
             Self::OpenRouter => "openrouter",
             Self::TypeSafe => "typesafe",
+            Self::OpenJev => "openjev",
             Self::Aimlapi => "aimlapi",
             Self::Jcode => "jcode",
         }
@@ -114,6 +118,7 @@ impl JevProvider {
         match self {
             Self::OpenRouter => ("OPENROUTER_API_KEY", "openrouter.env"),
             Self::TypeSafe => ("TYPESAFE_API_KEY", "typesafe.env"),
+            Self::OpenJev => ("OPENJEV_API_KEY", "openjev.env"),
             Self::Aimlapi => ("AIMLAPI_API_KEY", "aimlapi.env"),
             Self::Jcode => (
                 crate::subscription_catalog::JCODE_API_KEY_ENV,
@@ -124,7 +129,8 @@ impl JevProvider {
 
     fn max_questions(self) -> usize {
         match self {
-            Self::TypeSafe => TYPESAFE_MAX_QUESTIONS,
+            // OpenJev accepted 128 questions per request (verified 2026-10-02).
+            Self::TypeSafe | Self::OpenJev => TYPESAFE_MAX_QUESTIONS,
             _ => MAX_QUESTIONS,
         }
     }
@@ -133,6 +139,7 @@ impl JevProvider {
         match self {
             Self::OpenRouter | Self::Jcode => "typesafe/jev-1.13",
             Self::TypeSafe => "jev-latest",
+            Self::OpenJev => "openjev",
             Self::Aimlapi => "typesafe/jev",
         }
     }
@@ -141,6 +148,7 @@ impl JevProvider {
         Ok(match self {
             Self::OpenRouter => "https://openrouter.ai/api/alpha/decisions".into(),
             Self::TypeSafe => "https://api.typesafe.ai/v1/systemone".into(),
+            Self::OpenJev => "https://api.openjev.sh/v1/systemone".into(),
             Self::Aimlapi => "https://api.aimlapi.com/v1/decisions".into(),
             Self::Jcode => format!("{}/decisions", trusted_gateway_base(gateway_base)?),
         })
@@ -202,6 +210,7 @@ impl JevClient {
         let provider = match provider.trim().to_ascii_lowercase().as_str() {
             "typesafe" => JevProvider::TypeSafe,
             "openrouter" => JevProvider::OpenRouter,
+            "openjev" => JevProvider::OpenJev,
             _ => bail!("Invalid configured Jev provider"),
         };
         let api_key = validated_credential(settings.api_key.as_deref())?;
@@ -412,8 +421,21 @@ impl JevClient {
     /// other failures are never retried and never fall back to another account.
     async fn send_with(&self, client: &Client, endpoint: &str, body: Vec<u8>) -> Result<Value> {
         let mut attempt = 0;
+        let limiter = rate_limiter(self.provider);
+        let max_retries = match limiter {
+            Some(_) => RATE_LIMITED_MAX_RETRIES,
+            None => TRANSIENT_RETRY_DELAYS.len(),
+        };
         loop {
-            let response = self.send_once(client, endpoint, body.clone()).await?;
+            let response = match limiter {
+                Some(limiter) => {
+                    // Hold a concurrency slot only while the request is in flight,
+                    // never during backoff sleeps.
+                    let _permit = limiter.acquire().await;
+                    self.send_once(client, endpoint, body.clone()).await?
+                }
+                None => self.send_once(client, endpoint, body.clone()).await?,
+            };
             let status = response.status().as_u16();
             // A long Retry-After means a plan quota (hours), not overload.
             // Retrying cannot succeed, so surface the upgrade prompt at once.
@@ -423,13 +445,27 @@ impl JevClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .is_some_and(|secs| Duration::from_secs(secs) > MAX_RETRY_AFTER);
-            if attempt < TRANSIENT_RETRY_DELAYS.len() && is_transient_status(status) && !long_wait {
-                let delay = retry_after(&response).unwrap_or(TRANSIENT_RETRY_DELAYS[attempt]);
+            if attempt < max_retries && is_transient_status(status) && !long_wait {
+                let server_delay = retry_after(&response);
+                let delay = match limiter {
+                    Some(limiter) => {
+                        // Retry-After is a floor; exponential backoff with jitter
+                        // spreads concurrent callers so they do not retry in lockstep.
+                        let delay =
+                            rate_limited_backoff(attempt).max(server_delay.unwrap_or_default());
+                        if status == 429 {
+                            // Pause every OpenJev caller in this process, not just this one.
+                            limiter.cool_down(server_delay.unwrap_or(delay));
+                        }
+                        delay
+                    }
+                    None => server_delay.unwrap_or(TRANSIENT_RETRY_DELAYS[attempt]),
+                };
                 attempt += 1;
                 crate::logging::info(&format!(
                     "Jev {} returned HTTP {status}; retry {attempt}/{} in {}ms",
                     self.provider.name(),
-                    TRANSIENT_RETRY_DELAYS.len(),
+                    max_retries,
                     delay.as_millis()
                 ));
                 tokio::time::sleep(delay).await;
@@ -473,6 +509,74 @@ const TRANSIENT_RETRY_DELAYS: [Duration; 2] =
 #[cfg(test)]
 const TRANSIENT_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(1), Duration::from_millis(1)];
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// OpenJev's hosted API allows about 6 requests per second per key (bursts of
+/// 15 parallel requests saw 429s with `Retry-After: 1`, measured 2026-10-02).
+/// Every Jev consumer shares one daemon process, so one process-wide limiter
+/// keeps the whole client under the limit with headroom.
+const OPENJEV_MAX_IN_FLIGHT: usize = 2;
+const OPENJEV_MIN_INTERVAL: Duration = Duration::from_millis(200);
+const RATE_LIMITED_MAX_RETRIES: usize = 4;
+#[cfg(not(test))]
+const RATE_LIMITED_BACKOFF_BASE: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const RATE_LIMITED_BACKOFF_BASE: Duration = Duration::from_millis(1);
+
+/// Exponential backoff (base, 2x, 4x, ...) plus up to 50% random jitter.
+fn rate_limited_backoff(attempt: usize) -> Duration {
+    let base = RATE_LIMITED_BACKOFF_BASE * (1u32 << attempt.min(6));
+    let jitter = rand::random_range(0.0..0.5);
+    base.mul_f64(1.0 + jitter)
+}
+
+/// Paces request starts to a minimum interval, caps requests in flight, and
+/// lets a 429 push the next allowed start out for every caller.
+struct RateLimiter {
+    in_flight: tokio::sync::Semaphore,
+    next_start: std::sync::Mutex<tokio::time::Instant>,
+    interval: Duration,
+}
+
+impl RateLimiter {
+    fn new(max_in_flight: usize, interval: Duration) -> Self {
+        Self {
+            in_flight: tokio::sync::Semaphore::new(max_in_flight),
+            next_start: std::sync::Mutex::new(tokio::time::Instant::now()),
+            interval,
+        }
+    }
+
+    async fn acquire(&self) -> tokio::sync::SemaphorePermit<'_> {
+        let permit = self
+            .in_flight
+            .acquire()
+            .await
+            .expect("rate limiter semaphore is never closed");
+        let start = {
+            let mut next = self.next_start.lock().unwrap_or_else(|e| e.into_inner());
+            let start = (*next).max(tokio::time::Instant::now());
+            *next = start + self.interval;
+            start
+        };
+        tokio::time::sleep_until(start).await;
+        permit
+    }
+
+    fn cool_down(&self, delay: Duration) {
+        let until = tokio::time::Instant::now() + delay;
+        let mut next = self.next_start.lock().unwrap_or_else(|e| e.into_inner());
+        if *next < until {
+            *next = until;
+        }
+    }
+}
+
+fn rate_limiter(provider: JevProvider) -> Option<&'static RateLimiter> {
+    static OPENJEV: std::sync::OnceLock<RateLimiter> = std::sync::OnceLock::new();
+    (provider == JevProvider::OpenJev).then(|| {
+        OPENJEV.get_or_init(|| RateLimiter::new(OPENJEV_MAX_IN_FLIGHT, OPENJEV_MIN_INTERVAL))
+    })
+}
 
 fn is_transient_status(status: u16) -> bool {
     matches!(status, 429 | 502 | 503 | 504 | 529)
@@ -535,9 +639,12 @@ fn resolve_with(
         ],
         "openrouter" => &[JevProvider::OpenRouter],
         "typesafe" => &[JevProvider::TypeSafe],
+        "openjev" => &[JevProvider::OpenJev],
         "aimlapi" => &[JevProvider::Aimlapi],
         "jcode" | "subscription" | "jcode-subscription" => &[JevProvider::Jcode],
-        _ => bail!("Invalid Jev provider. Choose auto, openrouter, typesafe, aimlapi, or jcode"),
+        _ => bail!(
+            "Invalid Jev provider. Choose auto, openrouter, typesafe, openjev, aimlapi, or jcode"
+        ),
     };
     resolve_providers(providers, load)
 }
@@ -1088,14 +1195,7 @@ mod tests {
     #[test]
     fn configured_purposes_require_hosted_provider_and_valid_credentials() {
         for purpose in [JevPurpose::Browser, JevPurpose::Swarm] {
-            for provider in [
-                "openjev",
-                "local",
-                "jcode",
-                "subscription",
-                "auto",
-                "aimlapi",
-            ] {
+            for provider in ["local", "jcode", "subscription", "auto", "aimlapi"] {
                 assert!(
                     configured_client(
                         purpose,
@@ -1105,7 +1205,7 @@ mod tests {
                     .is_err()
                 );
             }
-            for provider in ["typesafe", "openrouter"] {
+            for provider in ["typesafe", "openrouter", "openjev"] {
                 for key in [
                     None,
                     Some(""),
@@ -1122,7 +1222,27 @@ mod tests {
                 }
             }
         }
-        assert!(resolve_with("openjev", |_, _| panic!("no credential lookup")).is_err());
+        // OpenJev is hosted and keyed: it binds only to its own credential and
+        // never borrows another provider's key.
+        let (provider, key) = resolve_with("openjev", |env, file| {
+            assert_eq!((env, file), ("OPENJEV_API_KEY", "openjev.env"));
+            Some("oj-key".into())
+        })
+        .unwrap();
+        assert_eq!(provider, JevProvider::OpenJev);
+        assert_eq!(key, "oj-key");
+        assert_eq!(
+            provider.endpoint("").unwrap(),
+            "https://api.openjev.sh/v1/systemone"
+        );
+        assert_eq!(provider.model(), "openjev");
+        assert!(resolve_with("openjev", |_, _| None).is_err());
+        // `auto` must never select OpenJev implicitly.
+        assert!(
+            resolve_with("auto", |env, _| (env == "OPENJEV_API_KEY")
+                .then(|| "oj-key".into()))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1185,9 +1305,7 @@ mod tests {
 
     #[tokio::test]
     async fn configured_generic_routes_use_shared_transport_and_attribution() {
-        for (purpose, title) in [
-            (JevPurpose::Swarm, "Jcode Swarm"),
-        ] {
+        for (purpose, title) in [(JevPurpose::Swarm, "Jcode Swarm")] {
             for provider in ["typesafe", "openrouter"] {
                 let questions = json!({"route": {"type": "choice", "instructions": "Choose route", "criteria": {"a": "First", "b": "Second"}}}).as_object().unwrap().clone();
                 let answer = json!({"answers": {"route": {"type": "choice", "choice": "a", "confidence": 0.9}}});
@@ -2262,6 +2380,128 @@ mod tests {
         }
     }
 
+    /// Live: `OPENJEV_API_KEY=... cargo test -p jcode-base live_openjev -- --ignored`.
+    /// A burst of 15 concurrent decisions must all succeed within ~6 rps.
+    #[tokio::test]
+    #[ignore = "requires OPENJEV_API_KEY and network"]
+    async fn live_openjev_burst_stays_within_rate_limit() {
+        let key = std::env::var("OPENJEV_API_KEY").expect("OPENJEV_API_KEY");
+        let client = JevClient {
+            client: client_builder().build().unwrap(),
+            hedge_clients: Vec::new(),
+            purpose: JevPurpose::Memory,
+            provider: JevProvider::OpenJev,
+            api_key: key,
+            endpoint: JevProvider::OpenJev.endpoint("").unwrap(),
+            me_endpoint: None,
+            model_override: None,
+        };
+        let started = std::time::Instant::now();
+        let results = futures::future::join_all((0..15).map(|_| {
+            client.evaluate(
+                json!({"task": "fix the tty restore bug"}),
+                json!({"relevant": {"type": "noul", "instructions": "Is this about terminals?"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        }))
+        .await;
+        let elapsed = started.elapsed();
+        for result in &results {
+            let value = result.as_ref().expect("every paced request succeeds");
+            assert!(value["answers"]["relevant"]["noul"].is_number());
+        }
+        // 15 starts at >=200 ms spacing take at least 2.8 s, i.e. <=5 rps.
+        assert!(elapsed >= Duration::from_millis(2800), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn openjev_retries_rate_limits_with_backoff_on_same_route() {
+        // Four 429s fit OpenJev's longer retry budget; the generic budget is two.
+        let mut replies: Vec<MockReply> = (0..RATE_LIMITED_MAX_RETRIES)
+            .map(|_| {
+                (
+                    429,
+                    r#"{"error":"Rate limit exceeded."}"#.into(),
+                    vec![("Retry-After".into(), "1".into())],
+                )
+            })
+            .collect();
+        replies.push((200, response().to_string(), vec![]));
+        let (base, worker) = mock_server(replies);
+        let client = mock_client(&base, JevProvider::OpenJev);
+        let value = client.evaluate(json!("state"), questions()).await.unwrap();
+        assert_eq!(value, response());
+        assert_eq!(worker.join().unwrap().len(), RATE_LIMITED_MAX_RETRIES + 1);
+    }
+
+    #[tokio::test]
+    async fn openjev_rate_limit_gives_up_after_bounded_retries() {
+        let replies: Vec<MockReply> = (0..=RATE_LIMITED_MAX_RETRIES)
+            .map(|_| (429, "{}".into(), vec![]))
+            .collect();
+        let (base, worker) = mock_server(replies);
+        let client = mock_client(&base, JevProvider::OpenJev);
+        assert!(client.evaluate(json!("state"), questions()).await.is_err());
+        assert_eq!(worker.join().unwrap().len(), RATE_LIMITED_MAX_RETRIES + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_paces_starts_caps_in_flight_and_cools_down() {
+        let limiter = std::sync::Arc::new(RateLimiter::new(2, Duration::from_millis(200)));
+        let origin = tokio::time::Instant::now();
+        let starts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tasks: Vec<_> = (0..6)
+            .map(|_| {
+                let (limiter, starts, peak, live) =
+                    (limiter.clone(), starts.clone(), peak.clone(), live.clone());
+                tokio::spawn(async move {
+                    let _permit = limiter.acquire().await;
+                    starts.lock().unwrap().push(origin.elapsed());
+                    let now = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= 2);
+        let mut starts = starts.lock().unwrap().clone();
+        starts.sort();
+        for pair in starts.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= Duration::from_millis(200),
+                "{starts:?}"
+            );
+        }
+
+        // A 429 cool-down delays the next start for every caller.
+        let before = tokio::time::Instant::now();
+        limiter.cool_down(Duration::from_secs(1));
+        drop(limiter.acquire().await);
+        assert!(before.elapsed() >= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn rate_limited_backoff_grows_exponentially_with_bounded_jitter() {
+        for attempt in 0..4 {
+            let base = RATE_LIMITED_BACKOFF_BASE * (1u32 << attempt);
+            let delay = rate_limited_backoff(attempt);
+            assert!(
+                delay >= base && delay <= base.mul_f64(1.5),
+                "{attempt}: {delay:?}"
+            );
+        }
+        assert!(rate_limiter(JevProvider::OpenJev).is_some());
+        assert!(rate_limiter(JevProvider::TypeSafe).is_none());
+    }
+
     #[tokio::test]
     async fn transient_overload_is_retried_on_same_route_then_succeeds() {
         for status in [429, 502, 503, 504, 529] {
@@ -2519,6 +2759,12 @@ fn resolve_with_loader(
             Some("OPENROUTER_API_KEY"),
             Some("openrouter.env"),
         ),
+        "openjev" => (
+            "https://api.openjev.sh/v1/systemone",
+            "openjev",
+            Some("OPENJEV_API_KEY"),
+            Some("openjev.env"),
+        ),
         _ => bail!("unknown Jev provider: {}", config.provider),
     };
     let endpoint = match nonempty(config.base_url.as_deref()) {
@@ -2586,7 +2832,7 @@ mod config_resolution_tests {
         }
     }
     #[test]
-    fn browser_rejects_removed_provider_until_explicit_browser_override() {
+    fn browser_uses_shared_openjev_until_explicit_browser_override() {
         let _guard = crate::storage::lock_test_env();
         struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
         impl Drop for RestoreEnv {
@@ -2605,6 +2851,7 @@ mod config_resolution_tests {
             "JCODE_JEV_PROVIDER",
             BROWSER_PROVIDER_ENV,
             "TYPESAFE_API_KEY",
+            "OPENJEV_API_KEY",
         ];
         let _restore = RestoreEnv(
             keys.into_iter()
@@ -2616,8 +2863,18 @@ mod config_resolution_tests {
         crate::env::set_var("JCODE_JEV_PROVIDER", "openjev");
         crate::env::remove_var(BROWSER_PROVIDER_ENV);
         crate::env::set_var("TYPESAFE_API_KEY", "unused-hosted-test-key");
+        crate::env::remove_var("OPENJEV_API_KEY");
         crate::config::Config::invalidate_cache();
+        // Selected OpenJev without its key fails closed, never using TypeSafe's.
         assert!(JevClient::for_browser().is_err());
+
+        crate::env::set_var("OPENJEV_API_KEY", "unused-openjev-test-key");
+        crate::config::Config::invalidate_cache();
+        let client = JevClient::for_browser().unwrap();
+        assert_eq!(client.provider_name(), "openjev");
+        assert_eq!(client.endpoint, "https://api.openjev.sh/v1/systemone");
+        assert_eq!(client.model_id(), "openjev");
+        assert_eq!(client.api_key, "unused-openjev-test-key");
 
         crate::env::set_var(BROWSER_PROVIDER_ENV, "typesafe");
         let client = JevClient::for_browser().unwrap();
@@ -2635,17 +2892,34 @@ mod config_resolution_tests {
     }
 
     #[test]
-    fn removed_provider_never_loads_credentials() {
+    fn unknown_provider_never_loads_credentials() {
         let config = JevConfig {
-            provider: "openjev".into(),
+            provider: "local".into(),
             ..Default::default()
         };
         assert!(
             resolve_with_loader(&config, Duration::from_secs(1), |_, _| {
-                panic!("removed provider must not load a key")
+                panic!("unknown provider must not load a key")
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn openjev_config_resolves_hosted_defaults_and_own_key() {
+        let config = JevConfig {
+            provider: "openjev".into(),
+            ..Default::default()
+        };
+        let resolved = resolve_with_loader(&config, Duration::from_secs(1), |key, file| {
+            assert_eq!((key, file), ("OPENJEV_API_KEY", Some("openjev.env")));
+            Some("oj-secret".into())
+        })
+        .unwrap();
+        assert_eq!(resolved.endpoint, "https://api.openjev.sh/v1/systemone");
+        assert_eq!(resolved.model, "openjev");
+        assert_eq!(resolved.api_key.as_deref(), Some("oj-secret"));
+        assert!(resolve_with_loader(&config, Duration::from_secs(1), |_, _| None).is_err());
     }
     #[test]
     fn hosted_requires_auth_and_uses_saved_key_loader() {

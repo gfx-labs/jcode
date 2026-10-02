@@ -497,13 +497,14 @@ swarm_max_concurrent_agents = 32
 #
 # Recall uses Jev typed Decisions directly, without embeddings or a sidecar LLM.
 # All four Jev consumers use upstream JevClient; memory selects providers independently.
-# Provider values: auto, jcode, openrouter, typesafe, aimlapi.
+# Provider values: auto, jcode, openrouter, typesafe, openjev, aimlapi.
 # auto prefers Jcode, then OpenRouter, TypeSafe, AI/ML API credentials.
+# openjev (api.openjev.sh) is never chosen by auto; select it explicitly.
 # Env override: JCODE_MEMORY_JEV_PROVIDER
 # memory_jev_provider = "auto"
 # Minimum relevance probability (0.8..=1.0). Invalid values fail closed.
 # memory_jev_threshold = 0.8
-# BYOK: OPENROUTER_API_KEY, TYPESAFE_API_KEY, or AIMLAPI_API_KEY.
+# BYOK: OPENROUTER_API_KEY, TYPESAFE_API_KEY, OPENJEV_API_KEY, or AIMLAPI_API_KEY.
 # Jcode requires an eligible subscription and gateway memory_jev capability.
 # With a Jcode login and an older gateway, explicitly select a BYOK provider.
 # No fallback after entitlement, auth, billing, or network failure; no silent BYOK spend.
@@ -539,10 +540,11 @@ swarm_max_concurrent_agents = 32
 # Shared Jev provider for swarm routing and browser handoff.
 # Config-file changes hot reload for new decisions, with metadata checks about every 500 ms.
 # No restart is needed for config edits. Environment changes need a new server environment.
-# Both supported providers require hosted API keys. Local openjev is rejected,
-# without silent hosted fallback. Memory retains its independent provider selector.
+# All supported providers require hosted API keys, without silent fallback
+# to another provider. Memory retains its independent provider selector.
+# Hosted OpenJev uses OPENJEV_API_KEY or ~/.config/jcode/openjev.env (mode 0600).
 # [agents.jev]
-# provider = "typesafe" # "typesafe" or "openrouter"
+# provider = "typesafe" # "typesafe", "openrouter", or "openjev"
 # Optional hosted overrides:
 # base_url = "https://api.typesafe.ai/v1"
 # model = "jev-latest"

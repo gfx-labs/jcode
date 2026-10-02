@@ -284,7 +284,10 @@ fn legacy_skill_suggestion_settings_still_parse_and_are_dropped() {
         enabled = true\n";
     let cfg: Config = toml::from_str(toml_src).expect("legacy skill router keys must still parse");
     assert_eq!(cfg.agents.swarm_max_concurrent_agents, 7);
-    assert!(cfg.agents.swarm_router.enabled, "other Jev consumers keep their settings");
+    assert!(
+        cfg.agents.swarm_router.enabled,
+        "other Jev consumers keep their settings"
+    );
     let serialized = toml::to_string(&cfg).expect("config should serialize");
     assert!(!serialized.contains("skill_suggestion"), "{serialized}");
 }
@@ -829,9 +832,9 @@ fn test_generated_default_config_has_expected_user_defaults() {
         "generated default config should document Jev recall defaults"
     );
     assert!(
-        content.contains("provider = \"typesafe\" # \"typesafe\" or \"openrouter\"")
-            && content.contains("Both supported providers require hosted API keys")
-            && content.contains("Local openjev is rejected")
+        content.contains("provider = \"typesafe\" # \"typesafe\", \"openrouter\", or \"openjev\"")
+            && content.contains("All supported providers require hosted API keys")
+            && content.contains("OPENJEV_API_KEY")
             && content.contains("memory selects providers independently"),
         "generated default config should document hosted Jev routes and independent memory selection"
     );
@@ -1673,7 +1676,10 @@ fn jev_provider_config_and_env_hot_reload() {
         cfg.agents.jev.base_url.as_deref(),
         Some("https://openrouter.ai/api/alpha/decisions")
     );
-    assert_eq!(cfg.agents.jev.api_key_env.as_deref(), Some("CUSTOM_JEV_KEY"));
+    assert_eq!(
+        cfg.agents.jev.api_key_env.as_deref(),
+        Some("CUSTOM_JEV_KEY")
+    );
     assert_eq!(cfg.agents.jev.timeout_ms, Some(7000));
     crate::env::set_var("JCODE_JEV_PROVIDER", "invalid-provider");
     let cfg = crate::config::config();

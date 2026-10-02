@@ -8,8 +8,22 @@ They do not all expose the same provider-selection knobs.
 
 Swarm routing and browser handoff by default use
 `[agents.jev]` in `~/.jcode/config.toml`. Supported shared providers are
-`typesafe` (default) and `openrouter`. Both require an API key.
-Local provider `openjev` is rejected, with no silent hosted fallback.
+`typesafe` (default), `openrouter`, and hosted `openjev`. All require an API key,
+and none falls back to another provider.
+
+### Hosted OpenJev
+
+`provider = "openjev"` calls `https://api.openjev.sh/v1/systemone` (TypeSafe wire
+format) with model `openjev` and `OPENJEV_API_KEY` from the daemon environment or
+`~/.config/jcode/openjev.env` (mode `0600`). Memory can select it with
+`memory_jev_provider = "openjev"`. `auto` never picks it.
+
+OpenJev allows roughly 6 requests per second per key. Jcode paces every OpenJev
+request in the process through one limiter: at most 2 in flight and at least
+200 ms between request starts (at most 5 per second). A 429 is retried up to 4
+times with exponential backoff and jitter, never sooner than the server's
+`Retry-After`, and it pauses all other OpenJev callers for that interval too.
+Voice is unaffected: it only uses TypeSafe or Jcode.
 
 Add or update this table without duplicating it:
 
