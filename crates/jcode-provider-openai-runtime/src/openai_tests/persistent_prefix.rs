@@ -213,7 +213,6 @@ async fn persistent_prefix_append_only_reuses_socket_and_refreshes_hashes_each_t
         // Exactly one accept: reconnecting cannot satisfy this fixture.
         let (tcp, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        let mut cursor = 0;
         for (i, input) in inputs.iter().enumerate() {
             let request = prefix_test_request(&mut socket).await;
             assert_eq!(request["type"], "response.create");
@@ -225,12 +224,23 @@ async fn persistent_prefix_append_only_reuses_socket_and_refreshes_hashes_each_t
                     format!("resp_append_{}", i - 1)
                 );
             }
-            assert_eq!(
-                request["input"],
-                serde_json::json!(&input[cursor..]),
-                "turn {i}"
-            );
-            cursor = input.len();
+            let expected = if i == 0 {
+                serde_json::json!(input)
+            } else {
+                serde_json::json!([
+                    {
+                        "type": "function_call_output",
+                        "call_id": format!("call_append_{i}"),
+                        "output": format!("result {i}")
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": format!("turn {i}")}]
+                    }
+                ])
+            };
+            assert_eq!(request["input"], expected, "turn {i}");
             prefix_test_response(&mut socket, &format!("resp_append_{i}")).await;
         }
     });

@@ -597,23 +597,21 @@ async fn continue_persistent_ws_locked(
     // Compute incremental items: everything after the last_input_item_count.
     //
     // When continuing with `previous_response_id`, OpenAI already has every
-    // output item produced by that previous response, including native
-    // reasoning store items (`rs_...`). Replaying those items in the next delta
-    // makes the API reject the request with "Duplicate item found with id
-    // rs_...". The full input still needs reasoning items for fresh requests,
-    // but deltas must only contain genuinely new client-side input/tool
-    // callbacks.
-    let (incremental_items, skipped_reasoning_items) = if state.message_count == 0 {
+    // output item produced by that previous response. Replaying assistant text
+    // and tool calls duplicates them in context; native items can also trigger
+    // duplicate-ID errors. Fresh requests still need the full history, but
+    // deltas must only contain new client-side input and tool callbacks.
+    let (incremental_items, skipped_output_items) = if state.message_count == 0 {
         // A generate:false warmup has no model output in its context. Preserve
         // all history (including encrypted reasoning) for its first generation.
         (input.to_vec(), 0)
     } else {
         persistent_ws_incremental_items(input, state.last_input_item_count)
     };
-    if skipped_reasoning_items > 0 {
+    if skipped_output_items > 0 {
         jcode_base::logging::info(&format!(
-            "Skipped {} reasoning item(s) in persistent WS continuation delta to avoid duplicate rs_* replay",
-            skipped_reasoning_items
+            "Skipped {} server-owned output item(s) already retained by previous_response_id in persistent WS continuation delta",
+            skipped_output_items
         ));
     }
     if incremental_items.is_empty() {
