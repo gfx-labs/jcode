@@ -57,6 +57,7 @@ mod catchup;
 mod commands;
 mod commands_cloud;
 mod commands_colors;
+mod commands_desktop;
 mod commands_dispatch;
 mod commands_improve;
 mod commands_mcp;
@@ -971,6 +972,10 @@ pub struct App {
     // while the client was idle. Drives the starvation watchdog that recovers a
     // stranded auto-poke continuation instead of spinning forever.
     queued_followup_starved_since: Option<Instant>,
+    // Esc redirected the turn to a pending follow-up prompt. Remote servers
+    // send Done before Interrupted, so the follow-up waits for Interrupted
+    // (or this deadline) or the late Interrupted would clobber the new turn.
+    remote_interrupt_ack_deadline: Option<Instant>,
     // Reload reconnect is waiting for server history before deciding whether to continue.
     pending_reload_reconnect_status: Option<PendingReloadReconnectStatus>,
     // Current status
@@ -1508,6 +1513,7 @@ pub struct App {
     model_switch_keys: ModelSwitchKeys,
     // Keybindings for effort switching
     effort_switch_keys: super::keybind::EffortSwitchKeys,
+    speed_switch_keys: super::keybind::SpeedSwitchKeys,
     // Keybindings for scrolling
     scroll_keys: ScrollKeys,
     // Keybinding for centered-mode toggle
@@ -1550,6 +1556,7 @@ pub struct App {
     stashed_input: Option<(String, usize)>,
     // Undo history for in-progress input editing (Ctrl+Z)
     input_undo_stack: Vec<(String, usize)>,
+    input_typing_undo: Option<(Instant, usize)>,
     // Draft replaced by an explicit jump into prompt history (Ctrl+Up),
     // restored when Down walks back past the newest entry
     history_draft: Option<(String, usize)>,
