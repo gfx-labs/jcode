@@ -2761,7 +2761,11 @@ async fn legacy_skill_router_config_sends_no_jev_requests_on_either_turn_path() 
     )
     .await
     .unwrap();
-    assert!(loaded.output.contains("DEMO SKILL BODY"), "{}", loaded.output);
+    assert!(
+        loaded.output.contains("DEMO SKILL BODY"),
+        "{}",
+        loaded.output
+    );
 
     match listener.accept() {
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}

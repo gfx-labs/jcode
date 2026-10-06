@@ -81,9 +81,8 @@ pub(super) async fn live_session_snapshots(
                     .filter_map(|message| message.timestamp)
                     .max()
                     .unwrap_or(session.created_at);
-                snapshot.last_activity_age_secs = Some(
-                    (chrono::Utc::now() - last_activity).num_seconds().max(0) as u64,
-                );
+                snapshot.last_activity_age_secs =
+                    Some((chrono::Utc::now() - last_activity).num_seconds().max(0) as u64);
             }
             snapshot.title = session
                 .custom_title
