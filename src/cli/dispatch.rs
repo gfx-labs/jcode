@@ -909,6 +909,7 @@ async fn run_default_command(args: Args) -> Result<()> {
         || args.disabled_tools.is_some()
         || args.disable_base_tools;
     if args.resume.is_none()
+        && args.prompt.is_none()
         && !explicit_provider_or_model
         && !explicit_tool_options
         && commands::maybe_run_pending_restart_restore_on_startup().await?
@@ -1048,6 +1049,8 @@ async fn run_default_command(args: Args) -> Result<()> {
         .await?;
     }
 
+    let initial_prompt = args.prompt.filter(|prompt| !prompt.trim().is_empty());
+
     startup_profile::mark("pre_tui_client");
     if std::env::var("JCODE_RESUMING").is_err() && server_running {
         output::stderr_info("Connecting to server...");
@@ -1060,6 +1063,7 @@ async fn run_default_command(args: Args) -> Result<()> {
         args.remote_working_dir,
         args.onboarding_sim,
         args.update_sim,
+        initial_prompt,
     )
     .await?;
 

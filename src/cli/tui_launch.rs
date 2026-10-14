@@ -89,6 +89,7 @@ pub async fn run_tui_client(
     remote_working_dir: Option<String>,
     onboarding_sim: bool,
     update_sim: bool,
+    initial_prompt: Option<String>,
 ) -> Result<()> {
     startup_profile::mark("tui_client_enter");
     // A TUI reload `exec`s in place with `--resume`, so children of the
@@ -168,6 +169,9 @@ pub async fn run_tui_client(
         && let Some(hints) = startup_hints
     {
         apply_startup_hints(&mut app, hints);
+    }
+    if let Some(prompt) = initial_prompt {
+        app.queue_startup_message(prompt);
     }
 
     startup_profile::mark("pre_run_remote");

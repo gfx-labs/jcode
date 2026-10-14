@@ -73,6 +73,10 @@ pub(crate) struct Args {
     #[arg(long, global = true, num_args = 0..=1, default_missing_value = "")]
     pub(crate) resume: Option<String>,
 
+    /// Start the interactive TUI and immediately send this message as the first prompt
+    #[arg(long, short = 'P', value_name = "MESSAGE")]
+    pub(crate) prompt: Option<String>,
+
     /// Internal: launched as a freshly spawned window, so skip heavy local resume bootstrap.
     #[arg(long, global = true, hide = true)]
     pub(crate) fresh_spawn: bool,
