@@ -1,3 +1,7 @@
+#[path = "ui_messages/gmail_drafts.rs"]
+mod gmail_drafts;
+use gmail_drafts::*;
+
 use super::*;
 #[path = "ui_messages_cache.rs"]
 mod cache_support;
@@ -63,13 +67,41 @@ fn render_single_line_system_notice(
     let is_update_divergence_notice = msg.content.starts_with("Update diverged. Press ")
         || msg.content.starts_with("Local and upstream have diverged");
     let is_cold_cache_notice = msg.content.starts_with("🧊 Prompt cache went cold");
-    if !is_cold_cache_notice && !is_launch_hotkey_notice && !is_update_divergence_notice {
+    let is_status_notice = msg.title.as_deref() == Some("Connection")
+        || msg.content.starts_with("📡 Network appears offline")
+        || msg
+            .content
+            .starts_with("⚡ Server reload in progress - waiting for handoff")
+        || msg.content.starts_with("⚡ Connection lost - retrying")
+        || msg.content.starts_with("[auto] ")
+        || (!msg.content.contains('\n') && !content_has_markdown_formatting(&msg.content));
+    if !is_cold_cache_notice
+        && !is_launch_hotkey_notice
+        && !is_update_divergence_notice
+        && !is_status_notice
+    {
         return None;
     }
 
     let centered = markdown::center_code_blocks();
     let line_width = centered_wrap_width(width.saturating_sub(4), centered, 96);
-    let display_content = normalize_system_content_for_display(&msg.content);
+    // Summarize internal recovery directives only for display. The stored
+    // message and the model's instructions must retain their full semantics.
+    let content = if msg
+        .content
+        .starts_with("[auto] Your session was interrupted by a server reload")
+    {
+        "Server reloaded; resuming interrupted work."
+    } else if msg.content.starts_with("Reload complete - continuing") {
+        "Reload complete - continuing."
+    } else if msg.content.starts_with("📡 Network appears offline") {
+        "📡 Network appears offline - waiting to retry automatically."
+    } else if msg.content.starts_with("✓ Retrying continuation...") {
+        "✓ Retrying continuation..."
+    } else {
+        &msg.content
+    };
+    let display_content = normalize_system_content_for_display(content);
     let compact = display_content
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -801,6 +833,14 @@ pub(crate) fn render_system_message(
     width: u16,
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
+    if let Some(lines) = render_scheduled_session_message(msg, width) {
+        return lines;
+    }
+    // Routine status messages occupy one row, including connection notices.
+    // Authored multiline help and structured reports keep their full layout.
+    if let Some(lines) = render_single_line_system_notice(msg, width) {
+        return lines;
+    }
     if let Some(title) = msg.title.as_deref()
         && title == "Connection"
     {
@@ -813,16 +853,6 @@ pub(crate) fn render_system_message(
         || msg.content.starts_with("⚡ Connection lost - retrying")
     {
         return render_connection_system_message(msg, width);
-    }
-
-    // Compact notices are transient status summaries. Keep them scannable and
-    // prevent a narrow viewport from turning one notice into a paragraph.
-    if let Some(lines) = render_single_line_system_notice(msg, width) {
-        return lines;
-    }
-
-    if let Some(lines) = render_scheduled_session_message(msg, width) {
-        return lines;
     }
 
     let centered = markdown::center_code_blocks();
@@ -3201,7 +3231,7 @@ struct CompactSwarmNotification<'a> {
 fn compact_swarm_notification(title: &str) -> Option<CompactSwarmNotification<'_>> {
     let (sender, marker, marker_before_icon, text_color, file_activity) =
         if let Some(sender) = title.strip_prefix("DM from ") {
-            (sender, String::new(), false, rgb(214, 232, 255), false)
+            (sender, String::new(), false, rgb(130, 130, 140), false)
         } else if let Some(sender) = title.strip_prefix("Task · ") {
             (sender, String::new(), false, rgb(220, 236, 255), false)
         } else if let Some((channel, sender)) = title
@@ -3655,144 +3685,6 @@ pub(super) fn edit_tool_inline_diff_is_expandable(
         max_content_width > 1
             && unicode_width::UnicodeWidthStr::width(line.content.as_str()) > max_content_width
     })
-}
-
-fn gmail_draft_id(tool_output: &str) -> Option<&str> {
-    tool_output.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("Draft ID:")
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-    })
-}
-
-fn render_gmail_draft_card(
-    tool: &ToolCall,
-    tool_output: &str,
-    is_error: bool,
-    available_width: usize,
-) -> Option<Vec<Line<'static>>> {
-    if tools_ui::canonical_tool_name(&tool.name) != "gmail"
-        || tool.input.get("action").and_then(|value| value.as_str()) != Some("draft")
-    {
-        return None;
-    }
-
-    let max_box_width = available_width.min(88);
-    if max_box_width < 10 {
-        return None;
-    }
-    let inner_width = max_box_width.saturating_sub(4).max(1);
-    let label_style = Style::default()
-        .fg(tool_color())
-        .add_modifier(Modifier::BOLD);
-    let metadata_style = Style::default().fg(dim_color());
-    let body_style = Style::default();
-    let border_style = if is_error {
-        Style::default().fg(rgb(220, 100, 100))
-    } else {
-        Style::default().fg(rgb(210, 105, 95))
-    };
-
-    let to = tool
-        .input
-        .get("to")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("(recipient missing)");
-    let subject = tool
-        .input
-        .get("subject")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("(no subject)");
-
-    let mut content: Vec<Line<'static>> = Vec::new();
-    push_wrapped_kv_line(
-        &mut content,
-        "To",
-        to,
-        inner_width,
-        label_style,
-        metadata_style,
-    );
-    push_wrapped_kv_line(
-        &mut content,
-        "Subject",
-        subject,
-        inner_width,
-        label_style,
-        metadata_style,
-    );
-
-    if let Some(attachments) = tool
-        .input
-        .get("attachments")
-        .and_then(|value| value.as_array())
-    {
-        let attachments = attachments
-            .iter()
-            .filter_map(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        if !attachments.is_empty() {
-            push_wrapped_kv_line(
-                &mut content,
-                "Attachments",
-                &attachments.join(", "),
-                inner_width,
-                label_style,
-                metadata_style,
-            );
-        }
-    }
-
-    content.push(Line::from(""));
-    content.push(Line::from(Span::styled("Body", label_style)));
-
-    let body = tool
-        .input
-        .get("body")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let body = strip_ansi_escape_sequences(body)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    let body = if body.trim().is_empty() {
-        "(empty body)".to_string()
-    } else {
-        body
-    };
-    for mut line in render_plaintext_lines(&body, inner_width) {
-        for span in &mut line.spans {
-            span.style = body_style;
-        }
-        content.push(line);
-    }
-
-    let title = if is_error {
-        "Gmail draft failed".to_string()
-    } else if tool_output
-        .lines()
-        .any(|line| line.trim() == "Draft created successfully.")
-    {
-        match gmail_draft_id(tool_output) {
-            Some(id) => format!("Gmail draft created · {}", id),
-            None => "Gmail draft created".to_string(),
-        }
-    } else {
-        "Gmail draft".to_string()
-    };
-
-    Some(render_rounded_box(
-        &title,
-        content,
-        max_box_width,
-        border_style,
-    ))
 }
 
 fn split_discovery_blurb_url(value: &str) -> (String, Option<String>) {

@@ -71,7 +71,10 @@ fn unicode_display_math_copy_target_yields_latex_source() {
     let lines = math_display_lines(r"\frac{\partial L}{\partial \theta_{17}}");
     let targets = crate::extract_copy_targets_from_rendered_lines(&lines);
     assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].kind, crate::CopyTargetKind::Math { display: true });
+    assert_eq!(
+        targets[0].kind,
+        crate::CopyTargetKind::Math { display: true }
+    );
     assert_eq!(
         targets[0].content,
         "$$\n\\frac{\\partial L}{\\partial \\theta_{17}}\n$$"
@@ -103,13 +106,21 @@ fn missing_tex_toolchain_shows_install_hint_once_in_image_mode() {
         })
     };
     let missing = render(true);
-    assert_eq!(missing.matches(crate::LATEX_INSTALL_HINT_TEXT).count(), 1, "{missing}");
+    assert_eq!(
+        missing.matches(crate::LATEX_INSTALL_HINT_TEXT).count(),
+        1,
+        "{missing}"
+    );
     let lazy = crate::latex_image::with_toolchain_missing_override(true, || {
         mermaid::with_image_protocol_override(Some(true), || {
             lines_to_string(&render_markdown_lazy(md, Some(80), 0..100))
         })
     });
-    assert_eq!(lazy.matches(crate::LATEX_INSTALL_HINT_TEXT).count(), 1, "{lazy}");
+    assert_eq!(
+        lazy.matches(crate::LATEX_INSTALL_HINT_TEXT).count(),
+        1,
+        "{lazy}"
+    );
     // Without an image-capable terminal the hint would be misleading.
     let no_protocol = crate::latex_image::with_toolchain_missing_override(true, || {
         mermaid::with_image_protocol_override(Some(false), || {
@@ -192,7 +203,10 @@ fn test_blockquote_blank_lines_keep_continuous_gutters() {
             "> Outer\n>\n>> Inner one\n>>\n>> Inner two\n>\n> Outer again",
             "│ Outer\n│ \n│ │ Inner one\n│ │ \n│ │ Inner two\n│ \n│ Outer again",
         ),
-        ("> First quote\n\n> Separate quote", "│ First quote\n\n│ Separate quote"),
+        (
+            "> First quote\n\n> Separate quote",
+            "│ First quote\n\n│ Separate quote",
+        ),
         ("> Single paragraph\n>\n", "│ Single paragraph"),
     ];
     for mode in [MarkdownSpacingMode::Compact, MarkdownSpacingMode::Document] {
@@ -203,7 +217,10 @@ fn test_blockquote_blank_lines_keep_continuous_gutters() {
                 let lazy = render_markdown_lazy(markdown, None, 0..100);
                 assert_eq!(lazy, full);
                 assert_eq!(lines_to_string(&wrap_lines(full.clone(), 80)), expected);
-                for line in full.iter().filter(|line| line_to_string(line).trim() == "│") {
+                for line in full
+                    .iter()
+                    .filter(|line| line_to_string(line).trim() == "│")
+                {
                     assert_eq!(line.spans[0].style.fg, Some(md_dim_color()));
                     assert_eq!(line.alignment, Some(Alignment::Left));
                 }
@@ -222,7 +239,8 @@ fn test_blockquote_copy_preserves_paragraph_breaks() {
 
 #[test]
 fn test_blockquote_streaming_and_narrow_wrapping_keep_gutters() {
-    let markdown = "> A long opening paragraph with several words.\n>\n> A second paragraph.\n>\n> Thanks";
+    let markdown =
+        "> A long opening paragraph with several words.\n>\n> A second paragraph.\n>\n> Thanks";
     let mut incremental = IncrementalMarkdownRenderer::new(Some(16));
     for end in 1..=markdown.len() {
         let prefix = &markdown[..end];
@@ -390,8 +408,14 @@ fn test_math_in_table_stays_within_constrained_width() {
         .map(line_to_string)
         .collect();
 
-    assert!(rendered.iter().any(|line| line.contains("x+1")), "{rendered:?}");
-    assert!(rendered.iter().any(|line| line.contains("α₂")), "{rendered:?}");
+    assert!(
+        rendered.iter().any(|line| line.contains("x+1")),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| line.contains("α₂")),
+        "{rendered:?}"
+    );
     assert!(
         rendered.iter().map(|line| line.width()).max().unwrap_or(0) <= 24,
         "table math exceeded width: {rendered:?}"
@@ -407,8 +431,14 @@ fn test_math_in_list_and_blockquote_wraps_without_losing_gutter() {
         .filter(|line| !line.is_empty())
         .collect();
 
-    assert!(rendered.iter().any(|line| line.contains("x+1")), "{rendered:?}");
-    assert!(rendered.iter().any(|line| line.contains("α₂")), "{rendered:?}");
+    assert!(
+        rendered.iter().any(|line| line.contains("x+1")),
+        "{rendered:?}"
+    );
+    assert!(
+        rendered.iter().any(|line| line.contains("α₂")),
+        "{rendered:?}"
+    );
     assert!(
         rendered.iter().any(|line| line.starts_with("│ ")),
         "blockquote gutter was not preserved: {rendered:?}"
@@ -641,6 +671,22 @@ fn test_link_strike_and_image_render() {
     assert!(rendered.contains("old"));
     assert!(rendered.contains("docs (https://example.com)"));
     assert!(rendered.contains("[image: chart] (https://img.example/chart.png)"));
+}
+
+#[test]
+fn native_search_source_links_render_in_full_and_lazy_paths() {
+    let markdown =
+        "许可 🦀. [macOS license](<https://www.apple.com/legal/sla/docs/macOSTahoe.pdf>)";
+    let expected = "许可 🦀. macOS license (https://www.apple.com/legal/sla/docs/macOSTahoe.pdf)";
+    for lines in [
+        render_markdown_with_width(markdown, Some(120)),
+        render_markdown_lazy(markdown, Some(120), 0..100),
+    ] {
+        let text = lines_to_string(&lines);
+        assert_eq!(text.trim(), expected);
+        assert!(!text.contains('\u{e200}'));
+        assert!(!text.contains("turn0search"));
+    }
 }
 
 #[test]
@@ -1169,95 +1215,7 @@ fn test_multiline_reasoning_renders_one_visual_line_per_thought() {
     }
 }
 
-#[test]
-fn test_reasoning_emphasis_does_not_leak_into_following_text() {
-    // After the reasoning emphasis closes, normal paragraph text must not be
-    // styled as reasoning (dim/italic).
-    let md = format!(
-        "{}\n{}",
-        crate::reasoning_line_markup("it's **thinking** with `code`."),
-        "Normal answer text."
-    );
-    let lines = render_markdown(&md);
-
-    let dim = md_dim_color();
-    let answer_line = lines
-        .iter()
-        .find(|l| line_to_string(l).contains("Normal answer text."))
-        .expect("answer line present");
-    for span in &answer_line.spans {
-        if span.content.trim().is_empty() {
-            continue;
-        }
-        assert_ne!(
-            span.style.fg,
-            Some(dim),
-            "answer span must not be dim: {:?}",
-            span.content
-        );
-        assert!(
-            !span.style.add_modifier.contains(Modifier::ITALIC),
-            "answer span must not be italic: {:?}",
-            span.content
-        );
-    }
-}
-
-#[test]
-fn test_reasoning_summary_line_markup_folds_to_single_dim_italic_trace() {
-    let sentinel = crate::REASONING_SENTINEL;
-
-    // Pluralized count for multi-line blocks.
-    let many = crate::reasoning_summary_line_markup(3);
-    assert!(
-        many.contains(&format!("*{0}▸ thought (3 lines){0}*", sentinel)),
-        "expected pluralized summary markup, got: {many:?}"
-    );
-
-    // Single/zero-line blocks omit the count.
-    let one = crate::reasoning_summary_line_markup(1);
-    assert!(
-        one.contains(&format!("*{0}▸ thought{0}*", sentinel)) && !one.contains("lines"),
-        "expected bare summary markup, got: {one:?}"
-    );
-    let none = crate::reasoning_summary_line_markup(0);
-    assert!(
-        none.contains(&format!("*{0}▸ thought{0}*", sentinel)),
-        "{none:?}"
-    );
-
-    // The summary line renders dim + italic with no sentinel leaking into text.
-    let lines = render_markdown(&many);
-    let dim = md_dim_color();
-    let mut saw_marker = false;
-    for rendered in &lines {
-        for span in &rendered.spans {
-            assert!(
-                !span.content.contains(sentinel),
-                "sentinel leaked into visible summary: {:?}",
-                span.content
-            );
-            if span.content.trim().is_empty() {
-                continue;
-            }
-            if span.content.contains('▸') {
-                saw_marker = true;
-            }
-            assert_eq!(
-                span.style.fg,
-                Some(dim),
-                "summary span not dim: {:?}",
-                span.content
-            );
-            assert!(
-                span.style.add_modifier.contains(Modifier::ITALIC),
-                "summary span not italic: {:?}",
-                span.content
-            );
-        }
-    }
-    assert!(saw_marker, "summary marker '▸' must be visible: {lines:?}");
-}
+include!("rendering_reasoning_tests.rs");
 
 #[test]
 fn streaming_copy_requires_explicit_fence_close() {

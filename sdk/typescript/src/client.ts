@@ -30,6 +30,7 @@ import {
   type ModelRouteInfo,
   type PermissionDecision,
   type RenderedImage,
+  type RuntimeCommand,
   type ServerFrame,
   type SessionInfo,
   type SessionToolDefinition,
@@ -145,6 +146,8 @@ export interface ConnectOptions {
   socketPath?: string;
   /** Client identity sent in the handshake, e.g. "my-app/1.0". */
   clientName?: string;
+  /** Enable only when this client renders user_response tool calls inline. */
+  supportsUserResponse?: boolean;
   /** Supply a custom transport instead of dialing a Unix socket. */
   transport?: Transport;
   /** Milliseconds before a request without a reply rejects. 0 disables. */
@@ -326,6 +329,7 @@ export class JcodeClient extends EventEmitter {
       min_version: API_VERSION_MAJOR,
       max_version: API_VERSION_MAJOR,
       client: clientName,
+      supports_user_response: options.supportsUserResponse ?? false,
     });
     if (frame.ev !== "hello_ok") {
       client.close();
@@ -780,6 +784,23 @@ export class JcodeClient extends EventEmitter {
   }
 
   /** Runtime identity, route catalog, protocol metadata, and a live health check. */
+  async runtimeCommand(sessionId: string, command: RuntimeCommand, args: string[] = []): Promise<{
+    session_id: string; command: RuntimeCommand; data: unknown; message: string;
+  }> {
+    if (!this.capabilities.includes("runtime_commands")) {
+      throw new HarnessError("unknown_request", "This runtime does not support structured commands. Update and restart the daemon and bridge.");
+    }
+    const frame = await this.expectReply(
+      { req: "runtime_command", session_id: sessionId, command, args }, "runtime_command_result",
+    );
+    return { session_id: frame.session_id, command: frame.command, data: frame.data, message: frame.message };
+  }
+
+  async transferSession(sessionId: string): Promise<SessionInfo> {
+    const frame = await this.expectReply({ req: "transfer_session", session_id: sessionId }, "session_forked");
+    return frame.session;
+  }
+
   async getRuntimeInfo(sessionId: string): Promise<RuntimeInfo> {
     await this.ping();
     const frame = await this.expectReply(
