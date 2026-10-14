@@ -1,76 +1,7 @@
 use super::response_recovery::{MalformedToolCallInfo, TextToolRecovery};
 use super::*;
 
-/// Largest byte index `<= index` that is a UTF-8 char boundary in `text`.
-/// Equivalent to the unstable `str::floor_char_boundary`, reimplemented so the
-/// incremental marker scan can clamp its scan-window start onto a valid
-/// boundary without re-scanning the whole accumulated response.
-fn floor_char_boundary(text: &str, index: usize) -> usize {
-    if index >= text.len() {
-        return text.len();
-    }
-    let mut boundary = index;
-    while boundary > 0 && !text.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    boundary
-}
-
-/// The wrapped-tool-call markers emitted by some models inside plain text.
-const WRAP_TOOL_MARKERS: [&str; 2] = ["to=functions.", "+#+#"];
-
-/// Report whatever usage a provider stream reported before it failed.
-///
-/// The normal `usage_report` is emitted after the stream completes. A stream
-/// that errors (or is retried after compaction) still consumed the tokens the
-/// provider already reported, so count them. `[input, output, cache_read,
-/// cache_creation]`; a no-op when nothing was reported.
-fn record_partial_stream_usage(
-    session_id: &str,
-    provider: &str,
-    model: &str,
-    [input, output, cache_read, cache_creation]: [Option<u64>; 4],
-) {
-    if input.is_none() && output.is_none() && cache_read.is_none() && cache_creation.is_none() {
-        return;
-    }
-    crate::telemetry::record_provider_usage(
-        Some(session_id),
-        provider,
-        model,
-        crate::telemetry::UsageSource::Agent,
-        crate::telemetry::ProviderUsage {
-            input_tokens: input.unwrap_or(0),
-            output_tokens: output.unwrap_or(0),
-            cache_read_input_tokens: cache_read,
-            cache_creation_input_tokens: cache_creation,
-        },
-    );
-}
-
-/// Find the first wrapped-tool-call marker in `accumulated`, scanning only the
-/// newly appended `delta` plus a short overlap from the previous tail (so a
-/// marker straddling the append boundary is still found).
-///
-/// This avoids re-scanning the entire accumulated response on every streamed
-/// delta, which was O(response) per token and O(response^2) over a full answer.
-fn find_wrap_marker_incremental(accumulated: &str, appended_len: usize) -> Option<usize> {
-    let max_marker_len = WRAP_TOOL_MARKERS
-        .iter()
-        .map(|marker| marker.len())
-        .max()
-        .unwrap_or(0);
-    let scan_start = accumulated
-        .len()
-        .saturating_sub(appended_len + max_marker_len.saturating_sub(1));
-    let scan_start = floor_char_boundary(accumulated, scan_start);
-    let window = &accumulated[scan_start..];
-    WRAP_TOOL_MARKERS
-        .iter()
-        .filter_map(|marker| window.find(marker))
-        .min()
-        .map(|rel_idx| scan_start + rel_idx)
-}
+use super::streaming::{find_wrap_marker_incremental, record_partial_stream_usage};
 
 fn reload_interrupted_tool_result(tc: &ToolCall, elapsed_secs: f64) -> (String, bool) {
     if tc.name == "selfdev" {
@@ -306,6 +237,9 @@ impl Agent {
             // model. Compare against this after the stream so we can emit a
             // `ModelChanged` and resync the UI/context-limit.
             let model_at_request_start = provider.model().to_string();
+            let credential_at_request_start = provider.active_resolved_credential();
+            let oauth_email_at_request_start =
+                crate::server::provider_oauth_email(provider.as_ref());
             let resume_session_id = self.provider_session_id.clone();
             self.last_status_detail = None;
             let kv_request = kv_cache_request_event(
@@ -637,6 +571,20 @@ impl Agent {
                     }
                     StreamEvent::TextDone => {
                         let _ = event_tx.send(ServerEvent::TextDone);
+                    }
+                    StreamEvent::TextSuffixReplace { old_text, new_text } => {
+                        if provider_native_items.replace_text_suffix(
+                            &mut text_content,
+                            &old_text,
+                            &new_text,
+                        ) {
+                            if inline_output_tap {
+                                self.inline_tail.set_live(&text_content);
+                                self.publish_inline_tail();
+                            }
+                            let _ = event_tx
+                                .send(ServerEvent::TextSuffixReplace { old_text, new_text });
+                        }
                     }
                     StreamEvent::ProviderNative { provider, item } => {
                         if reasoning_open {
@@ -1086,7 +1034,13 @@ impl Agent {
                             Err(e) => NativeToolResult::error(request_id, e.to_string()),
                         };
                         if let Some(sender) = self.provider.native_result_sender() {
-                            let _ = sender.send(native_result).await;
+                            // The provider can end its stream before the tool completes.
+                            // Keep the completed tool result in history, but expose the delivery failure.
+                            if let Err(error) = sender.send(native_result).await {
+                                logging::warn(&format!(
+                                    "Could not deliver native tool result to provider: {error}"
+                                ));
+                            }
                         }
                     }
                     StreamEvent::UpstreamProvider { provider } => {
@@ -1288,7 +1242,6 @@ impl Agent {
             // context budget all reflect the model that actually served.
             let model_after_stream = self.provider.model();
             if model_after_stream != model_at_request_start {
-                let provider_name = self.provider.display_name();
                 logging::warn(&format!(
                     "Provider switched model mid-request: '{}' -> '{}' (resyncing session/UI)",
                     model_at_request_start, model_after_stream
@@ -1300,13 +1253,24 @@ impl Agent {
                     },
                 );
                 self.persist_session_best_effort("model fallback");
+            }
+            // Refresh authoritative credential identity after every upstream
+            // request, including auto credential resolution and OAuth failover.
+            let oauth_email_after_stream =
+                crate::server::provider_oauth_email(self.provider.as_ref());
+            let credential_after_stream = self.provider.active_resolved_credential();
+            if model_after_stream != model_at_request_start
+                || credential_after_stream != credential_at_request_start
+                || oauth_email_after_stream != oauth_email_at_request_start
+            {
                 let _ = event_tx.send(ServerEvent::ModelChanged {
                     id: 0,
                     model: model_after_stream,
-                    provider_name: Some(provider_name),
+                    provider_name: Some(self.provider.display_name()),
                     context_window: Some(self.provider.context_window() as u64),
                     error: None,
-                    resolved_credential: self.provider.active_resolved_credential(),
+                    resolved_credential: credential_after_stream,
+                    provider_oauth_email: oauth_email_after_stream,
                     reasoning_effort: self.provider.reasoning_effort(),
                 });
             }

@@ -52,6 +52,7 @@ jcode-applet-types = { path = "../jcode-applet-types" }
 # Embeddings (local inference) live in jcode-base; this crate forwards the
 # `embeddings` feature to jcode-base rather than depending on jcode-embedding.
 jcode-harness-api = { path = "../jcode-harness-api" }
+jcode-productivity-core = { path = "../jcode-productivity-core" }
 jcode-import-core = { path = "../jcode-import-core" }
 
 # OAuth
@@ -126,6 +127,9 @@ pdf = ["dep:jcode-pdf"]
 test-support = ["jcode-base/test-support"]
 
 [dev-dependencies]
+# Paused-time browser tests must compile when this package is tested alone,
+# without inheriting test-util from another workspace package's dev-dependencies.
+tokio = { version = "1", features = ["test-util"] }
 # Used by async streaming tests (ambient/runner_tests, server/client_actions_tests).
 async-stream = "0.3"
 # Enables jcode-base's test-support helpers (storage::lock_test_env,

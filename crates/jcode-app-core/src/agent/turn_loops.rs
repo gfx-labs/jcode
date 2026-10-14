@@ -376,6 +376,19 @@ impl Agent {
                         }
                         text_content.push_str(&text);
                     }
+                    StreamEvent::TextSuffixReplace { old_text, new_text } => {
+                        if provider_native_items.replace_text_suffix(
+                            &mut text_content,
+                            &old_text,
+                            &new_text,
+                        ) && print_output
+                        {
+                            // Plain stdout cannot retract already printed deltas.
+                            // Still surface the real source links to CLI users.
+                            crate::terminal_print!("\n{}", new_text);
+                            io::stdout().flush()?;
+                        }
+                    }
                     StreamEvent::ToolUseStart { id, name } => {
                         if streaming_tools.contains_key(&id)
                             || tool_calls.iter().any(|tool: &ToolCall| tool.id == id)
@@ -1323,37 +1336,6 @@ impl Agent {
         }
 
         Ok(final_text)
-    }
-
-    pub(super) fn messages_end_with_tool_result(messages: &[Message]) -> bool {
-        messages.iter().rev().any(|message| {
-            if !matches!(message.role, Role::User) {
-                return false;
-            }
-            if message
-                .content
-                .iter()
-                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
-            {
-                return true;
-            }
-            message.content.iter().any(|block| match block {
-                ContentBlock::Text { text, .. } => {
-                    let trimmed = text.trim();
-                    trimmed.starts_with("<system-reminder>")
-                        // The empty-post-tool continuation is itself a
-                        // User-role `<system-reminder>`. Counting it would let the
-                        // injected instruction keep this predicate true on its own,
-                        // so every later whitespace-only response appends another
-                        // continuation and spends another call, with no tool result
-                        // anywhere near.
-                        && !trimmed.starts_with(
-                            Self::EMPTY_POST_TOOL_CONTINUATION_PREFIX
-                        )
-                }
-                _ => false,
-            })
-        })
     }
 }
 

@@ -7,6 +7,8 @@ const BASE_URL_ENV: &str = "JCODE_TELEMETRY_BASE_URL";
 pub struct TelemetryEndpoints {
     pub event: reqwest::Url,
     pub transcript: reqwest::Url,
+    pub oauth_account: reqwest::Url,
+    pub oauth_account_check: reqwest::Url,
 }
 
 /// Resolve reporting destinations without sending traffic or creating an identity.
@@ -43,9 +45,15 @@ fn parse_base_url(value: &str) -> Result<TelemetryEndpoints, &'static str> {
     base.set_path(&format!("{prefix}/v1/event"));
     let event = base.clone();
     base.set_path(&format!("{prefix}/v1/transcript"));
+    let transcript = base.clone();
+    base.set_path(&format!("{prefix}/v1/oauth-account"));
+    let oauth_account = base.clone();
+    base.set_path(&format!("{prefix}/v1/oauth-account/check"));
     Ok(TelemetryEndpoints {
         event,
-        transcript: base,
+        transcript,
+        oauth_account,
+        oauth_account_check: base,
     })
 }
 
