@@ -254,6 +254,52 @@ impl App {
         self.toggle_transcript_message_expand(idx)
     }
 
+    /// Ctrl+wheel (also how terminals report a trackpad pinch) over an inline
+    /// image steps its size one level without wrapping. Returns `false` when
+    /// the pointer is not over an image so the wheel scrolls the chat instead.
+    pub(super) fn try_zoom_inline_image_at(
+        &mut self,
+        column: u16,
+        row: u16,
+        direction: i8,
+    ) -> bool {
+        use crate::tui::ui::inline_image_ui::ImageExpandLevel;
+        let centered = self.centered;
+        let Some(image_id) =
+            super::super::ui::inline_image_body_target_from_screen(column, row, centered)
+                .or_else(|| super::super::ui::inline_image_expand_target_from_screen(column, row))
+        else {
+            return false;
+        };
+        let current = self
+            .expanded_images
+            .get(&image_id)
+            .copied()
+            .unwrap_or_default();
+        let next =
+            ImageExpandLevel::from_index(crate::tui::mermaid::step_distinct_mermaid_inline_level(
+                image_id,
+                current as u8,
+                direction,
+            ));
+        if next == current {
+            return true;
+        }
+        if matches!(next, ImageExpandLevel::Fit) {
+            self.expanded_images.remove(&image_id);
+        } else {
+            self.expanded_images.insert(image_id, next);
+        }
+        self.expanded_images_version = self.expanded_images_version.wrapping_add(1);
+        crate::tui::mermaid::set_mermaid_inline_expand_level(image_id, next as u8);
+        self.set_status_notice(match next {
+            ImageExpandLevel::Fit => "Image size: fit",
+            ImageExpandLevel::Large => "Image size: large",
+            ImageExpandLevel::Full => "Image size: full",
+        });
+        true
+    }
+
     /// If a left-click landed on a swarm notification's `▸ expand` /
     /// `▾ collapse` badge, toggle that notification between its tldr line and
     /// its full body. Returns `false` when the click was elsewhere.
@@ -274,7 +320,8 @@ impl App {
         if message.role != "swarm" {
             return false;
         }
-        let Some(toggled) = jcode_tui_messages::toggle_collapsible_swarm_content(&message.content)
+        let normalized = jcode_tui_messages::collapse_long_swarm_content(&message.content);
+        let Some(toggled) = jcode_tui_messages::toggle_collapsible_swarm_content(&normalized)
         else {
             return false;
         };
@@ -967,6 +1014,7 @@ impl App {
                 });
                 true
             }
+            MouseScrollTarget::CommitLogOverlay => self.scroll_commit_log_overlay(direction),
             MouseScrollTarget::ModelStatusOverlay => {
                 let Some(current) = self.model_status_scroll else {
                     return false;
@@ -1432,6 +1480,20 @@ impl App {
             finish_mouse_event!(false, "panel_image_preview");
         }
 
+        if self.commit_log_overlay.is_some() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.enqueue_mouse_scroll(MouseScrollTarget::CommitLogOverlay, -1);
+                    finish_mouse_event!(true, "commit_log_overlay_scroll_up");
+                }
+                MouseEventKind::ScrollDown => {
+                    self.enqueue_mouse_scroll(MouseScrollTarget::CommitLogOverlay, 1);
+                    finish_mouse_event!(true, "commit_log_overlay_scroll_down");
+                }
+                _ => finish_mouse_event!(false, "commit_log_overlay_non_scroll"),
+            }
+        }
+
         if self.changelog_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
@@ -1796,6 +1858,17 @@ impl App {
             && self.try_open_link_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "open_link");
+        }
+
+        if mouse.modifiers.contains(KeyModifiers::CONTROL)
+            && let Some(direction) = match mouse.kind {
+                MouseEventKind::ScrollUp => Some(1),
+                MouseEventKind::ScrollDown => Some(-1),
+                _ => None,
+            }
+            && self.try_zoom_inline_image_at(mouse.column, mouse.row, direction)
+        {
+            finish_mouse_event!(false, "inline_image_zoom");
         }
 
         match mouse.kind {

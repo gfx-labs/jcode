@@ -1,3 +1,51 @@
+/// Regression: the completion-gate circuit breaker clears
+/// `auto_poke_incomplete_todos`, and the only restore used to live in the
+/// all-complete branch. Since the breaker can only trip while every todo is
+/// complete, an agent that added open work immediately afterwards left
+/// auto-poke disarmed for the rest of the session, and the guard at the top
+/// of `schedule_auto_poke_followup_if_needed` returned false immediately.
+#[test]
+fn test_open_work_rearms_auto_poke_after_completion_gate_breaker() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                group: None,
+                id: "open".to_string(),
+                content: "Still open".to_string(),
+                status: "in_progress".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+                confidence: None,
+                completion_confidence: None,
+                confidence_history: Vec::new(),
+            }],
+        )
+        .expect("save todos");
+
+        // The exact state the circuit breaker leaves behind: flag cleared,
+        // configured default still on, nothing else touched.
+        app.auto_poke_default_on = true;
+        app.auto_poke_incomplete_todos = false;
+        app.last_auto_poke_fingerprint = None;
+        app.final_response_todo_fingerprint = None;
+        app.todo_final_response_requested = false;
+        app.pending_queued_dispatch = false;
+        app.pending_turn = false;
+
+        let poked = app.schedule_auto_poke_followup_if_needed();
+
+        assert!(
+            app.auto_poke_incomplete_todos,
+            "open work must re-arm auto-poke after the completion-gate breaker"
+        );
+        assert!(poked, "open work must still produce a poke");
+    });
+}
+
 #[test]
 fn test_model_picker_preview_arrow_keys_navigate() {
     let mut app = create_test_app();
@@ -89,12 +137,8 @@ fn test_remote_model_command_opens_picker_without_catalog_request() {
     let mut remote = crate::tui::backend::RemoteConnection::dummy();
     let request_id_before = remote.next_request_id_for_test();
 
-    rt.block_on(app.handle_remote_key(
-        KeyCode::Enter,
-        KeyModifiers::empty(),
-        &mut remote,
-    ))
-    .unwrap();
+    rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .unwrap();
 
     assert!(app.inline_interactive_state.is_some());
     assert_eq!(
@@ -545,17 +589,25 @@ fn test_subagent_model_large_catalog_uses_cached_searchable_picker() {
     app.handle_key(KeyCode::Char('3'), KeyModifiers::empty())
         .unwrap();
     let picker = app.inline_interactive_state.as_ref().unwrap();
-    assert!(!picker.filtered.is_empty(), "typed input should filter models");
+    assert!(
+        !picker.filtered.is_empty(),
+        "typed input should filter models"
+    );
     assert!(picker.filtered.len() < picker.entries.len());
 
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+        .unwrap();
     assert!(app.session.subagent_model.is_some());
     assert_eq!(app.provider.model(), "counting-a");
 }
 
 #[test]
 fn test_model_picker_reuses_cached_entries_until_invalidated() {
+    // The cache key includes account/config paths. Keep them stable while
+    // account-selection regressions scope their own temporary homes.
+    let _env_lock = crate::storage::lock_test_env();
     ensure_test_jcode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::tui::ui::clear_test_render_state_for_tests();

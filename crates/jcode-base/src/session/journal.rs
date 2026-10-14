@@ -26,6 +26,8 @@ pub(super) struct SessionJournalMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) spawn_openai_service_tier: Option<String>,
     pub(super) subagent_model: Option<String>,
+    #[serde(default)]
+    pub(super) agent_model_overrides: super::AgentModelOverrides,
     pub(super) improve_mode: Option<SessionImproveMode>,
     pub(super) autoreview_enabled: Option<bool>,
     pub(super) autojudge_enabled: Option<bool>,
@@ -74,6 +76,10 @@ pub(super) struct SessionPersistState {
     pub(super) memory_injections_mode: PersistVectorMode,
     pub(super) replay_events_mode: PersistVectorMode,
     pub(super) last_meta: Option<SessionJournalMeta>,
+    /// Set on remote-client stubs whose transcript was never loaded or was
+    /// stripped. The server owns that transcript, so a snapshot written from
+    /// the stub would replace it with nothing. Survives `reset_persist_state`.
+    pub(super) transcript_stripped: bool,
 }
 
 pub(super) fn metadata_requires_snapshot(
@@ -88,6 +94,7 @@ pub(super) fn metadata_requires_snapshot(
         || prev.reasoning_effort != current.reasoning_effort
         || prev.spawn_openai_service_tier != current.spawn_openai_service_tier
         || prev.subagent_model != current.subagent_model
+        || prev.agent_model_overrides != current.agent_model_overrides
         || prev.improve_mode != current.improve_mode
         || prev.autoreview_enabled != current.autoreview_enabled
         || prev.autojudge_enabled != current.autojudge_enabled

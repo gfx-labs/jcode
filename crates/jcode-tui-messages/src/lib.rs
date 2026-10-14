@@ -24,7 +24,8 @@ pub use prepared::{
     PreparedMessages, PreparedSection, PreparedSectionKind,
 };
 pub use swarm_collapse::{
-    CollapsibleSwarmContent, encode_collapsible_swarm_content, parse_collapsible_swarm_content,
+    CollapsibleSwarmContent, SWARM_INLINE_BODY_MAX_CHARS, collapse_long_swarm_content,
+    encode_collapsible_swarm_content, parse_collapsible_swarm_content, swarm_preview_line,
     toggle_collapsible_swarm_content,
 };
 pub use transcript_collapse::{
