@@ -601,6 +601,45 @@ pub fn parse_openai_response_event(
             return pending.pop_front();
         }
         "response.completed" => {
+            let response = event.response.as_ref();
+            let model = response
+                .and_then(|r| r.get("model"))
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() <= 96
+                        && value.chars().all(|ch| {
+                            ch.is_ascii_alphanumeric()
+                                || matches!(ch, '-' | '_' | '.' | '/' | '[' | ']' | ':')
+                        })
+                })
+                .unwrap_or("absent");
+            let service_tier = response
+                .and_then(|r| r.get("service_tier"))
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() <= 48
+                        && value
+                            .chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+                })
+                .unwrap_or("absent");
+            let usage = response.and_then(|r| r.get("usage"));
+            let output_tokens = usage
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(Value::as_u64)
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "absent".to_string());
+            let reasoning_tokens = usage
+                .and_then(|usage| usage.get("output_tokens_details"))
+                .and_then(|details| details.get("reasoning_tokens"))
+                .and_then(Value::as_u64)
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "absent".to_string());
+            jcode_logging::info(&format!(
+                "OpenAI response_completed_metadata model={} returned_service_tier={} output_tokens={} reasoning_tokens={}",
+                model, service_tier, output_tokens, reasoning_tokens
+            ));
+
             let stop_reason = event
                 .response
                 .as_ref()
