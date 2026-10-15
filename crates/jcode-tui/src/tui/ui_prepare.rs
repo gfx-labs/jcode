@@ -2365,7 +2365,16 @@ fn prepare_streaming_cached(
     }
 
     let mut prepared = wrap_lines_with_map(
-        lines, &[], &[], &[], &[], &[], width, &[], &copy_targets, &[],
+        lines,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        width,
+        &[],
+        &copy_targets,
+        &[],
     );
     stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
     prepared

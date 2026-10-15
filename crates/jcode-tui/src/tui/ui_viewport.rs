@@ -903,8 +903,7 @@ pub(super) fn draw_messages(
             } else {
                 Style::default().fg(dim_color())
             };
-            line.spans
-                .push(Span::styled(COPY_BADGE_LABEL, label_style));
+            line.spans.push(Span::styled(COPY_BADGE_LABEL, label_style));
             line.spans.push(Span::raw(" "));
 
             line.spans
