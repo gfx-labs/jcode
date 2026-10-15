@@ -895,7 +895,6 @@ impl App {
                                     }
                                     StreamEvent::ThinkingStart => {
                                         let start = Instant::now();
-                                        self.resume_streaming_tps();
                                         self.thinking_start = Some(start);
                                         self.thinking_buffer.clear();
                                         self.thinking_prefix_emitted = false;

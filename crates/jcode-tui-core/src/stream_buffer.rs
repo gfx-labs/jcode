@@ -29,21 +29,20 @@ use std::time::{Duration, Instant};
 
 /// Steady-state reveal rate (chars/sec) when the backlog is empty. This sets the
 /// floor cadence and how the trailing characters of a burst drain out.
-const BASE_REVEAL_CPS: f32 = 180.0;
+const BASE_REVEAL_CPS: f32 = 300.0;
 
 /// Additional reveal rate per buffered character. The controller speeds up as the
 /// backlog grows so we track fast models with bounded latency: at steady incoming
 /// rate `R`, the backlog settles near `(R - BASE_REVEAL_CPS) / REVEAL_BACKLOG_GAIN`.
-const REVEAL_BACKLOG_GAIN: f32 = 3.0;
+const REVEAL_BACKLOG_GAIN: f32 = 8.0;
 
 /// Hard ceiling for paced output, in characters per second. The proportional
 /// controller above may ask to catch up much faster when a provider delivers a
-/// whole response in one burst. Without a ceiling, a 3k-character backlog at a
-/// 50ms redraw cadence reveals more than 500 characters in one frame, which is
-/// several terminal rows appearing at once. Capping by elapsed time (rather
-/// than by a fixed chars-per-frame value) keeps 16ms and 50ms redraw loops at
-/// the same visual rate while still draining a large burst in a few seconds.
-const MAX_REVEAL_CPS: f32 = 960.0;
+/// whole response in one burst. Without a ceiling, a large backlog can produce a
+/// wall of text in one frame. Capping by elapsed time (rather than by a fixed
+/// chars-per-frame value) keeps different redraw cadences at the same visual rate
+/// while draining Ultrafast bursts substantially faster than the previous cap.
+const MAX_REVEAL_CPS: f32 = 3_600.0;
 
 /// Maximum elapsed time credited to a single reveal step. Without this, a long
 /// idle gap before the first/next burst would bank a huge budget and dump the
@@ -636,12 +635,12 @@ mod tests {
         let sizes = drain_frames(&mut buf, start, Duration::from_millis(50));
         assert_eq!(sizes.iter().sum::<usize>(), 3_356);
         assert!(
-            sizes.iter().all(|&n| n <= 48),
-            "a 50ms paced frame must reveal at most 48 chars: {sizes:?}"
+            sizes.iter().all(|&n| n <= 180),
+            "a 50ms paced frame must reveal at most 180 chars: {sizes:?}"
         );
         assert!(
-            sizes.len() >= 70,
-            "the burst should drain smoothly over several seconds: {} frames",
+            sizes.len() >= 15 && sizes.len() <= 30,
+            "the burst should drain within the faster pacing window: {} frames",
             sizes.len()
         );
     }
@@ -656,8 +655,8 @@ mod tests {
         let sizes = drain_frames(&mut buf, start, Duration::from_millis(16));
         assert_eq!(sizes.iter().sum::<usize>(), 1_000);
         assert!(
-            sizes.iter().all(|&n| n <= 16),
-            "a 16ms paced frame must reveal at most 16 chars: {sizes:?}"
+            sizes.iter().all(|&n| n <= 58),
+            "a 16ms paced frame must reveal at most 58 chars: {sizes:?}"
         );
     }
 
@@ -675,10 +674,10 @@ mod tests {
             // next redraw frame. They must not each receive a free character.
             revealed += op_chars(&buf.reveal_now(first_at));
         }
-        assert_eq!(revealed, 48);
+        assert_eq!(revealed, 180);
 
         let second = op_chars(&buf.reveal_now(first_at + Duration::from_millis(50)));
-        assert_eq!(second, 48);
+        assert_eq!(second, 180);
     }
 
     #[test]
