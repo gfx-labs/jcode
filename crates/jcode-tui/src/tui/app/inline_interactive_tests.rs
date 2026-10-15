@@ -571,6 +571,35 @@ fn model_picker_recommended_route_is_provider_aware() {
 }
 
 #[test]
+fn empty_remote_catalog_keeps_routes_when_provider_metadata_changes() {
+    let mut app = crate::tui::app::tests::create_test_app();
+    app.remote_provider_name = Some("OpenAI".to_string());
+    app.remote_provider_model = Some("gpt-6.1-sol".to_string());
+    app.remote_available_entries = vec!["gpt-6.1-sol".to_string(), "gpt-6.1".to_string()];
+    app.remote_model_options = vec![model_route(
+        "gpt-6.1-sol",
+        "OpenAI",
+        "openai-oauth",
+    )];
+
+    let outcome = app.replace_remote_model_catalog_snapshot(
+        jcode_provider_core::ModelCatalogSnapshot::new(
+            Some("openai-oauth".to_string()),
+            Some("gpt-6.1-sol".to_string()),
+            Vec::new(),
+            Vec::new(),
+        ),
+    );
+
+    assert!(outcome.provider_meta_changed);
+    assert!(outcome.catalog_changed);
+    assert_eq!(app.remote_provider_name.as_deref(), Some("openai-oauth"));
+    assert_eq!(app.remote_available_entries, ["gpt-6.1-sol", "gpt-6.1"]);
+    assert_eq!(app.remote_model_options.len(), 1);
+    assert_eq!(app.remote_model_options[0].api_method, "openai-oauth");
+}
+
+#[test]
 fn remote_model_catalog_cache_keeps_flattened_legacy_schema() {
     let cache: RemoteModelCatalogCache = serde_json::from_value(serde_json::json!({
         "version": 1,

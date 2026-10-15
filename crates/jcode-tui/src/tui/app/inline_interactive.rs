@@ -719,11 +719,13 @@ impl App {
         //
         // A snapshot with neither names nor routes means "catalog not ready"
         // (History ships without names when the server's catalog build would
-        // delay first paint; `GetModelCatalog` fills it in right after). It
-        // must not wipe the catalog this client already knows.
+        // delay first paint; `GetModelCatalog` fills it in right after). Keep
+        // the known catalog regardless of provider metadata changes: display
+        // names can differ between the live and persisted-history paths, and an
+        // empty catalog is not evidence that the routes should be cleared.
         let catalog_absent =
             snapshot.model_routes.is_empty() && snapshot.available_models.is_empty();
-        if catalog_absent && !provider_name_changed {
+        if catalog_absent {
             if provider_meta_changed {
                 self.invalidate_model_picker_cache();
             }
