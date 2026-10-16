@@ -593,8 +593,8 @@ pub struct AgentsConfig {
     pub swarm_effort: Option<String>,
     /// Optional OpenAI service tier for spawned swarm/subagent sessions.
     ///
-    /// Supported values are provider-specific (`"priority"`, `"flex"`, or
-    /// `"off"`). Leave unset to preserve the worker's existing behavior. This
+    /// Supported values are provider-specific (`"priority"`, `"ultrafast"`,
+    /// `"flex"`, or `"off"`). Leave unset to preserve the worker's existing behavior. This
     /// only affects OpenAI sessions spawned as swarm workers or subagents, not
     /// the main provider setting, other providers, or memory sidecars.
     pub swarm_openai_service_tier: Option<String>,
@@ -802,7 +802,7 @@ pub struct SwarmRouterConfig {
     /// Reasoning effort applied when a candidate is selected, keyed like
     /// `descriptions`. An explicit spawn `effort` still wins.
     pub efforts: std::collections::BTreeMap<String, String>,
-    /// OpenAI service tier (`priority`/`fast`, `flex`, `off`) applied when a
+    /// OpenAI service tier (`priority`/`fast`, `ultrafast`, `flex`, `off`) applied when a
     /// candidate is selected, keyed like `descriptions`. Overrides
     /// `swarm_openai_service_tier` for that worker. Ignored by non-OpenAI routes.
     pub service_tiers: std::collections::BTreeMap<String, String>,
@@ -1375,7 +1375,7 @@ pub struct ProviderConfig {
     pub anthropic_cache_ttl_1h: bool,
     /// OpenAI transport mode (auto|websocket|https)
     pub openai_transport: Option<String>,
-    /// OpenAI service tier override (priority|flex)
+    /// OpenAI service tier override (priority|ultrafast|flex|off)
     pub openai_service_tier: Option<String>,
     /// OpenAI native compaction mode: "auto", "explicit", or "off".
     pub openai_native_compaction_mode: String,

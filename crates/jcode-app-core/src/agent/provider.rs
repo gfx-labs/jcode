@@ -595,10 +595,11 @@ fn normalize_spawn_openai_service_tier(raw: Option<&str>) -> Result<Option<Strin
     match value.to_ascii_lowercase().as_str() {
         "inherit" => Ok(None),
         "priority" | "fast" => Ok(Some("priority".to_string())),
+        "ultrafast" | "ultra" | "ultra-fast" => Ok(Some("ultrafast".to_string())),
         "flex" => Ok(Some("flex".to_string())),
         "off" | "standard" | "default" | "auto" | "none" => Ok(Some("off".to_string())),
         _ => anyhow::bail!(
-            "Invalid agents.swarm_openai_service_tier '{value}': use priority, flex, off, or inherit"
+            "Invalid agents.swarm_openai_service_tier '{value}': use priority, ultrafast, flex, off, or inherit"
         ),
     }
 }

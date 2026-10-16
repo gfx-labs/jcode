@@ -44,13 +44,28 @@ candidates = [
   assignment policy, not benchmark claims. Missing entries fall back to catalog
   text, so write one for every candidate.
 - `efforts` sets the worker's reasoning effort when that candidate wins.
-- `service_tiers` sets the OpenAI service tier (`priority`/`fast`, `flex`,
-  `off`) when that candidate wins. It overrides
+- `service_tiers` sets the OpenAI service tier (`priority`/`fast`, `ultrafast`,
+  `flex`, `off`) when that candidate wins. It overrides
   `agents.swarm_openai_service_tier` for that worker and has no effect on
   non-OpenAI routes.
 - Keys in `descriptions` and `efforts` match the candidate as written.
 
 Config changes apply to the next spawn without a restart.
+
+For example, select Ultrafast for Sol while keeping Priority for Luna:
+
+```toml
+[agents.swarm_router.service_tiers]
+"openai-oauth:gpt-6.1-sol" = "ultrafast"
+"openai-oauth:gpt-6-luna" = "priority"
+```
+
+To opt into Ultrafast as the default for new OpenAI sessions, set
+`openai_service_tier = "ultrafast"` under `[provider]`. The shipped default
+remains `"priority"`. For workers only, set
+`swarm_openai_service_tier = "ultrafast"` under `[agents]`; a router candidate's
+tier takes precedence.
+Ultrafast requires a supported model. These examples do not change your config.
 
 ## Precedence and fallback
 

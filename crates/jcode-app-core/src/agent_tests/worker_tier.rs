@@ -46,7 +46,7 @@ impl Provider for TierProvider {
         );
         *self.tier.lock().unwrap() = match tier {
             "off" => None,
-            "priority" | "flex" => Some(tier.to_string()),
+            "priority" | "ultrafast" | "flex" => Some(tier.to_string()),
             _ => anyhow::bail!("invalid test tier"),
         };
         Ok(())
@@ -132,6 +132,18 @@ fn worker_openai_tier_is_independent_in_both_directions() {
             "session override leaked to parent"
         );
     }
+
+    let _env = PolicyEnv::new(Some("priority"), "off");
+    let provider: Arc<dyn Provider> = Arc::new(TierProvider::new("OpenAI", None));
+    let mut child = agent(provider.clone(), Some("parent".into()));
+    child
+        .initialize_spawn_openai_service_tier_with_override(Some(" ultra-fast "))
+        .unwrap();
+    assert_eq!(provider.service_tier().as_deref(), Some("ultrafast"));
+    assert_eq!(
+        child.session.spawn_openai_service_tier.as_deref(),
+        Some("ultrafast")
+    );
 }
 
 #[test]
@@ -169,6 +181,9 @@ fn worker_openai_tier_normalizes_aliases_and_rejects_invalid_policy() {
     let _lock = crate::storage::lock_test_env();
     for (raw, expected) in [
         (" FAST ", "priority"),
+        ("ultrafast", "ultrafast"),
+        ("ultra", "ultrafast"),
+        ("ultra-fast", "ultrafast"),
         ("standard", "off"),
         ("flex", "flex"),
     ] {
@@ -187,21 +202,22 @@ fn worker_openai_tier_normalizes_aliases_and_rejects_invalid_policy() {
             .to_string()
             .contains("agents.swarm_openai_service_tier")
     );
+    assert!(error.to_string().contains("ultrafast"));
 }
 
 #[test]
 fn worker_openai_tier_survives_resume_without_leaking_into_main_session() {
     let _lock = crate::storage::lock_test_env();
-    let _env = PolicyEnv::new(Some("priority"), "off");
+    let _env = PolicyEnv::new(Some("ultra"), "off");
     let mut worker_session = Session::create(Some("parent".into()), None);
-    worker_session.spawn_openai_service_tier = Some("priority".into());
+    worker_session.spawn_openai_service_tier = Some("ultrafast".into());
     worker_session.save().unwrap();
     assert_eq!(
         Session::load(&worker_session.id)
             .unwrap()
             .spawn_openai_service_tier
             .as_deref(),
-        Some("priority"),
+        Some("ultrafast"),
         "a marker-only worker session must be persisted"
     );
     let mut main_session = Session::create(None, None);
@@ -214,7 +230,7 @@ fn worker_openai_tier_survives_resume_without_leaking_into_main_session() {
         worker_session,
         Some(HashSet::new()),
     );
-    assert_eq!(provider.service_tier().as_deref(), Some("priority"));
+    assert_eq!(provider.service_tier().as_deref(), Some("ultrafast"));
     attached.restore_session(&main_session.id).unwrap();
     assert!(
         provider.service_tier().is_none(),
@@ -290,7 +306,7 @@ impl Provider for SwitchableTierProvider {
         }
         *self.tier.lock().unwrap() = match tier {
             "off" => None,
-            "priority" | "flex" => Some(tier.to_string()),
+            "priority" | "ultrafast" | "flex" => Some(tier.to_string()),
             _ => anyhow::bail!("invalid test tier"),
         };
         Ok(())
@@ -371,16 +387,18 @@ fn worker_openai_tier_restoring_non_openai_main_clears_marker_and_prevents_relea
 #[test]
 fn worker_openai_tier_clearing_session_resets_to_main_default() {
     let _lock = crate::storage::lock_test_env();
-    let _env = PolicyEnv::new(Some("priority"), "off");
-    let provider = Arc::new(SwitchableTierProvider::new(true, "gpt-5.6-luna", None));
-    let mut worker = agent(provider.clone(), Some("parent".into()));
-    worker.session.spawn_openai_service_tier = Some("priority".into());
-    worker.restore_spawn_openai_service_tier().unwrap();
-    assert_eq!(provider.service_tier().as_deref(), Some("priority"));
+    for (main_default, expected) in [("off", None), ("ultrafast", Some("ultrafast"))] {
+        let _env = PolicyEnv::new(Some("priority"), main_default);
+        let provider = Arc::new(SwitchableTierProvider::new(true, "gpt-6.1-sol", None));
+        let mut worker = agent(provider.clone(), Some("parent".into()));
+        worker.session.spawn_openai_service_tier = Some("priority".into());
+        worker.restore_spawn_openai_service_tier().unwrap();
+        assert_eq!(provider.service_tier().as_deref(), Some("priority"));
 
-    worker.clear();
-    assert!(worker.session.spawn_openai_service_tier.is_none());
-    assert!(provider.service_tier().is_none());
+        worker.clear();
+        assert!(worker.session.spawn_openai_service_tier.is_none());
+        assert_eq!(provider.service_tier().as_deref(), expected);
+    }
 }
 
 #[test]

@@ -456,7 +456,7 @@ openai_reasoning_effort = "low"
 # anthropic_reasoning_effort = "medium"
 # OpenAI transport mode (auto|websocket|https)
 # openai_transport = "auto"
-# OpenAI service tier override (priority|flex|off)
+# OpenAI service tier override (priority|ultrafast|flex|off)
 # Defaults to `priority` to match Codex /fast behavior for OpenAI OAuth
 # (higher speed, higher usage). Set to "off" (or "standard") to disable.
 openai_service_tier = "priority"
@@ -522,7 +522,7 @@ wake_mode = "internal"
 # swarm_effort = "medium"
 #
 # OpenAI service tier for spawned swarm/subagent sessions. Supported values are
-# "priority", "flex", and "off". Leave unset to preserve existing behavior.
+# "priority", "ultrafast", "flex", and "off". Leave unset to preserve existing behavior.
 # This is independent of provider.openai_service_tier and does not affect other
 # providers or memory sidecars.
 # Env override: JCODE_SWARM_OPENAI_SERVICE_TIER
@@ -608,7 +608,7 @@ swarm_stall_after_secs = 600
 # [agents.swarm_router.efforts]
 # "openai-oauth:gpt-6.1-sol" = "high"
 # [agents.swarm_router.service_tiers]
-# "openai-oauth:gpt-6.1-sol" = "priority"
+# "openai-oauth:gpt-6.1-sol" = "ultrafast"
 # [agents.swarm_router.descriptions]
 # "openai-oauth:gpt-6.1-sol" = "Choose for hard debugging and architecture."
 # "zai:glm-5.3" = "Choose for reading, searching, and summarizing."

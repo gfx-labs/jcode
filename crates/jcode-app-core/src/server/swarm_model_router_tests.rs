@@ -42,7 +42,10 @@ fn config() -> SwarmRouterConfig {
             ("openai-oauth:gpt-6.1-sol".into(), "high".into()),
             ("claude-oauth:claude-opus-5-5".into(), "medium".into()),
         ]),
-        service_tiers: BTreeMap::from([("openai-oauth:gpt-6-luna".into(), "priority".into())]),
+        service_tiers: BTreeMap::from([
+            ("openai-oauth:gpt-6.1-sol".into(), "ultrafast".into()),
+            ("openai-oauth:gpt-6-luna".into(), "priority".into()),
+        ]),
         ..SwarmRouterConfig::default()
     }
 }
@@ -64,7 +67,7 @@ fn candidates_resolve_to_available_route_specs_in_config_order() {
     assert_eq!(candidates[0].effort.as_deref(), Some("high"));
     assert_eq!(candidates[1].effort.as_deref(), Some("medium"));
     assert_eq!(candidates[2].service_tier.as_deref(), Some("priority"));
-    assert_eq!(candidates[0].service_tier, None);
+    assert_eq!(candidates[0].service_tier.as_deref(), Some("ultrafast"));
     // Bare ids pick up descriptions keyed as written in config.
     assert_eq!(candidates[3].description, "Cheap bulk work");
     // Undescribed candidates fall back to catalog text.
@@ -100,6 +103,10 @@ fn parse_choice_accepts_only_offered_candidates() {
     let routed = parse_choice(answer("claude-oauth:claude-opus-5-5"), &candidates).unwrap();
     assert_eq!(routed.spec, "claude-oauth:claude-opus-5-5");
     assert_eq!(routed.effort.as_deref(), Some("medium"));
+    let routed = parse_choice(answer("openai-oauth:gpt-6.1-sol"), &candidates).unwrap();
+    assert_eq!(routed.service_tier.as_deref(), Some("ultrafast"));
+    let routed = parse_choice(answer("openai-oauth:gpt-6-luna"), &candidates).unwrap();
+    assert_eq!(routed.service_tier.as_deref(), Some("priority"));
     assert!(parse_choice(answer("openai-oauth:gpt-6-astra"), &candidates).is_none());
     assert!(parse_choice(json!({"answers": {}}), &candidates).is_none());
 }
