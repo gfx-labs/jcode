@@ -1386,7 +1386,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
 
         if matches!(trimmed, "/fast default" | "/fast default status") {
             let default_tier = crate::config::Config::load().provider.openai_service_tier;
-            let default_enabled = default_tier.as_deref() == Some("priority");
+            let default_enabled = app_mod::service_tier_is_fast(default_tier.as_deref());
             let default_label = default_tier
                 .as_deref()
                 .map(app_mod::service_tier_display_label)
@@ -1405,13 +1405,17 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                     app_mod::auth::save_openai_fast_setting_local(app, true);
                     remote.set_service_tier("priority").await?;
                 }
+                "ultrafast" | "ultra" | "ultra-fast" => {
+                    app_mod::auth::save_openai_service_tier_setting_local(app, "ultrafast");
+                    remote.set_service_tier("ultrafast").await?;
+                }
                 "off" => {
                     app_mod::auth::save_openai_fast_setting_local(app, false);
                     remote.set_service_tier("off").await?;
                 }
                 "status" => {
                     let default_tier = crate::config::Config::load().provider.openai_service_tier;
-                    let default_enabled = default_tier.as_deref() == Some("priority");
+                    let default_enabled = app_mod::service_tier_is_fast(default_tier.as_deref());
                     let default_label = default_tier
                         .as_deref()
                         .map(app_mod::service_tier_display_label)
@@ -1422,7 +1426,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                 }
                 _ => {
                     app.push_display_message(DisplayMessage::error(
-                        "Usage: /fast default [on|off|status]",
+                        "Usage: /fast default [on|ultrafast|off|status]",
                     ));
                 }
             }
@@ -1436,7 +1440,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                 .map(app_mod::service_tier_display_label)
                 .unwrap_or("Standard");
             let default_tier = crate::config::Config::load().provider.openai_service_tier;
-            let default_enabled = default_tier.as_deref() == Some("priority");
+            let default_enabled = app_mod::service_tier_is_fast(default_tier.as_deref());
             let default_label = default_tier
                 .as_deref()
                 .map(app_mod::service_tier_display_label)
@@ -1463,7 +1467,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                         .map(app_mod::service_tier_display_label)
                         .unwrap_or("Standard");
                     let default_tier = crate::config::Config::load().provider.openai_service_tier;
-                    let default_enabled = default_tier.as_deref() == Some("priority");
+                    let default_enabled = app_mod::service_tier_is_fast(default_tier.as_deref());
                     let default_label = default_tier
                         .as_deref()
                         .map(app_mod::service_tier_display_label)

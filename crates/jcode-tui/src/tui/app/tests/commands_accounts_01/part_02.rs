@@ -28,6 +28,88 @@ fn test_fast_default_on_saves_config_and_updates_session() {
 }
 
 #[test]
+fn test_fast_default_ultrafast_saves_config_and_reports_status() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let mut app = create_fast_test_app();
+    app.input = "/fast default ultrafast".to_string();
+    app.submit_input();
+
+    let cfg = crate::config::Config::load();
+    assert_eq!(cfg.provider.openai_service_tier.as_deref(), Some("ultrafast"));
+    assert_eq!(app.provider.service_tier().as_deref(), Some("ultrafast"));
+    assert_eq!(app.status_notice(), Some("Fast mode: ultrafast".to_string()));
+    let saved = app.display_messages().last().expect("missing response");
+    assert_eq!(saved.content, "Saved OpenAI fast mode: ultrafast.");
+
+    app.input = "/fast status".to_string();
+    app.submit_input();
+
+    let status = app.display_messages().last().expect("missing status response");
+    assert!(status.content.contains("Saved default: on (Ultrafast)"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
+fn test_remote_fast_default_ultrafast_persists_and_sends_tier() {
+    use tokio::io::AsyncBufReadExt;
+
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("OpenAI".to_string());
+    app.remote_provider_model = Some("gpt-6.1-sol".to_string());
+    app.input = "/fast default ultrafast".to_string();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let peer = remote.take_dummy_peer().unwrap();
+        let mut reader = tokio::io::BufReader::new(peer);
+        app.handle_remote_key(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+            &mut remote,
+        )
+        .await
+        .unwrap();
+
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.read_line(&mut line),
+        )
+        .await
+        .expect("ultrafast default must send a wire request")
+        .unwrap();
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["type"], "set_service_tier", "request: {line}");
+        assert_eq!(request["service_tier"], "ultrafast", "request: {line}");
+    });
+
+    let cfg = crate::config::Config::load();
+    assert_eq!(cfg.provider.openai_service_tier.as_deref(), Some("ultrafast"));
+
+    if let Some(prev_home) = prev_home {
+        crate::env::set_var("JCODE_HOME", prev_home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[test]
 fn test_fast_default_off_persists_explicit_off() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::tempdir().expect("tempdir");
@@ -71,7 +153,7 @@ fn test_fast_status_shows_saved_default() {
     let last = app.display_messages().last().expect("missing response");
     assert_eq!(
         last.content,
-        "Fast mode is off.\nCurrent tier: Standard\nSaved default: on (Fast)\nUse /fast on, /fast off, or /fast default on|off."
+        "Fast mode is off.\nCurrent tier: Standard\nSaved default: on (Fast)\nUse /fast on, /fast off, or /fast default on|ultrafast|off."
     );
 
     if let Some(prev_home) = prev_home {

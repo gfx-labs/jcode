@@ -870,6 +870,7 @@ impl App {
                 "off",
                 "status",
                 "default on",
+                "default ultrafast",
                 "default off",
                 "default status",
             ];

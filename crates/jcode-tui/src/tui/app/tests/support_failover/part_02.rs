@@ -163,6 +163,7 @@ impl Provider for FastMockProvider {
     fn set_service_tier(&self, service_tier: &str) -> anyhow::Result<()> {
         let normalized = match service_tier.trim().to_ascii_lowercase().as_str() {
             "priority" | "fast" => Some("priority".to_string()),
+            "ultrafast" => Some("ultrafast".to_string()),
             "off" | "default" | "auto" | "none" => None,
             other => anyhow::bail!("unsupported service tier {other}"),
         };

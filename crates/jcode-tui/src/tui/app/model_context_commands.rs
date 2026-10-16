@@ -151,7 +151,7 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
 
     if matches!(trimmed, "/fast default" | "/fast default status") {
         let default_tier = crate::config::Config::load().provider.openai_service_tier;
-        let default_enabled = default_tier.as_deref() == Some("priority");
+        let default_enabled = service_tier_is_fast(default_tier.as_deref());
         let default_label = default_tier
             .as_deref()
             .map(service_tier_display_label)
@@ -167,10 +167,13 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
         let mode = mode.trim().to_ascii_lowercase();
         match mode.as_str() {
             "on" => super::auth::save_openai_fast_setting_local(app, true),
+            "ultrafast" | "ultra" | "ultra-fast" => {
+                super::auth::save_openai_service_tier_setting_local(app, "ultrafast");
+            }
             "off" => super::auth::save_openai_fast_setting_local(app, false),
             "status" => {
                 let default_tier = crate::config::Config::load().provider.openai_service_tier;
-                let default_enabled = default_tier.as_deref() == Some("priority");
+                let default_enabled = service_tier_is_fast(default_tier.as_deref());
                 let default_label = default_tier
                     .as_deref()
                     .map(service_tier_display_label)
@@ -182,7 +185,7 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
             }
             _ => {
                 app.push_display_message(DisplayMessage::error(
-                    "Usage: /fast default [on|off|status]".to_string(),
+                    "Usage: /fast default [on|ultrafast|off|status]".to_string(),
                 ));
             }
         }
@@ -201,7 +204,7 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
             .map(service_tier_display_label)
             .unwrap_or("Standard");
         let default_tier = crate::config::Config::load().provider.openai_service_tier;
-        let default_enabled = default_tier.as_deref() == Some("priority");
+        let default_enabled = service_tier_is_fast(default_tier.as_deref());
         let default_label = default_tier
             .as_deref()
             .map(service_tier_display_label)
@@ -229,7 +232,7 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
                     .map(service_tier_display_label)
                     .unwrap_or("Standard");
                 let default_tier = crate::config::Config::load().provider.openai_service_tier;
-                let default_enabled = default_tier.as_deref() == Some("priority");
+                let default_enabled = service_tier_is_fast(default_tier.as_deref());
                 let default_label = default_tier
                     .as_deref()
                     .map(service_tier_display_label)
