@@ -1857,7 +1857,7 @@ impl Tool for CommunicateTool {
                 "action": {
                     "type": "string",
                     "enum": ADVERTISED_SWARM_ACTIONS,
-                    "description": "Action. launch runs lanes; spawn starts workers; message sends messages; list_models shows routes."
+                    "description": "Action. spawn requires label. launch runs lanes. message sends. list_models shows routes."
                 },
                 "message": {
                     "type": "string",

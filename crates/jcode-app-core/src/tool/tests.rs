@@ -718,6 +718,8 @@ async fn tool_descriptions_stay_under_token_cap() {
     // applet carries the whole view-node vocabulary inline, since the model has
     // no other way to learn which node types and props the host renders.
     // codemode documents its sandbox API; compile_remote a credit/consent notice.
+    // bash carries upstream's rg hidden/ignored-file search guidance, pinned by
+    // bash_tests::bash_definition_prefers_repository_search_tools.
     const EXEMPT: &[&str] = &[
         "integration_tools",
         "swarm",
@@ -727,6 +729,7 @@ async fn tool_descriptions_stay_under_token_cap() {
         "applet",
         "codemode",
         "compile_remote",
+        "bash",
     ];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
