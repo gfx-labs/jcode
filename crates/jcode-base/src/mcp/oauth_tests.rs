@@ -1167,3 +1167,71 @@ async fn cross_process_lock_contends_and_releases_without_blocking_runtime() {
     drop(acquired);
     second.try_lock().unwrap();
 }
+
+#[test]
+fn pre_merge_fork_store_migrates_default_entries_and_keeps_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp-oauth.json");
+    let url = "https://mcp.example.com/mcp";
+    let custom_url = "https://custom.example.com/mcp";
+    let fork = json!({
+        fork_store_key(url): {
+            "server_url": url,
+            "client_id": "cid",
+            "client_secret": "sec",
+            "token_endpoint": "https://mcp.example.com/token",
+            "token_endpoint_auth_method": "client_secret_post",
+            "resource": url,
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_at": 1_900_000_000u64,
+            "scope": "read"
+        },
+        // Non-default client options: old hash can't be re-keyed, so it is dropped.
+        "deadbeef": {
+            "server_url": custom_url,
+            "client_id": "x",
+            "token_endpoint": "https://custom.example.com/token",
+            "token_endpoint_auth_method": "none",
+            "access_token": "at2"
+        }
+    });
+    let bytes = serde_json::to_vec(&fork).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let store = load_store_at(&path).expect("fork store should migrate");
+    assert_eq!(store.version, STORE_VERSION);
+    assert_eq!(store.servers.len(), 1);
+    let entry = &store.servers[&credential_key(url, None)];
+    assert_eq!(entry.client_id, "cid");
+    assert_eq!(entry.client_secret.as_deref(), Some("sec"));
+    assert_eq!(entry.access_token.as_deref(), Some("at"));
+    assert_eq!(entry.refresh_token.as_deref(), Some("rt"));
+    assert_eq!(entry.expires_at, Some(1_900_000_000));
+    assert_eq!(entry.scope.as_deref(), Some("read"));
+
+    let backup = path.with_extension("json.fork-premerge.bak");
+    assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+}
+
+#[test]
+fn garbage_store_is_still_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp-oauth.json");
+    std::fs::write(&path, b"{not json").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let err = match load_store_at(&path) {
+        Ok(_) => panic!("garbage store must be rejected"),
+        Err(err) => err.to_string(),
+    };
+    assert!(err.contains("invalid"), "{err}");
+}

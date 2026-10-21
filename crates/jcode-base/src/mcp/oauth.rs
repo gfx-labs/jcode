@@ -326,6 +326,78 @@ fn secret_options() -> OpenOptions {
     options
 }
 
+/// Pre-merge fork store: unversioned map of hex(sha256(url, client_id, name,
+/// scopes)) to a credential record that also carries its `server_url`.
+#[derive(Deserialize)]
+struct ForkStoredCredentials {
+    server_url: String,
+    client_id: String,
+    #[serde(default)]
+    client_secret: Option<String>,
+    token_endpoint: String,
+    #[serde(default)]
+    resource: Option<String>,
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_at: Option<u64>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Fork key for default client options: sha256(url, client_id="", name, scopes="").
+fn fork_store_key(server_url: &str) -> String {
+    let name = effective_client_name(server_url, None);
+    let mut hash = Sha256::new();
+    for part in [server_url, "", name.as_str(), ""] {
+        hash.update(part.as_bytes());
+        hash.update([0]);
+    }
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Convert a pre-merge fork store. Only entries created with default client
+/// options (no configured client_id/name/scopes) can be re-keyed safely, since
+/// the old key is a one-way hash. Others are dropped and need a fresh login;
+/// the original file is kept as a backup.
+fn migrate_fork_store(bytes: &[u8]) -> Option<Store> {
+    let entries: BTreeMap<String, ForkStoredCredentials> = serde_json::from_slice(bytes).ok()?;
+    let mut store = Store {
+        version: STORE_VERSION,
+        ..Default::default()
+    };
+    for (old_key, entry) in entries {
+        if old_key != fork_store_key(&entry.server_url) {
+            continue;
+        }
+        store.servers.insert(
+            credential_key(&entry.server_url, None),
+            StoredOAuth {
+                client_id: entry.client_id,
+                client_secret: entry.client_secret,
+                token_endpoint: entry.token_endpoint,
+                access_token: Some(entry.access_token),
+                refresh_token: entry.refresh_token,
+                expires_at: entry.expires_at.and_then(|v| i64::try_from(v).ok()),
+                scope: entry.scope,
+                resource: entry.resource,
+            },
+        );
+    }
+    Some(store)
+}
+
+fn backup_fork_store(path: &Path, bytes: &[u8]) {
+    let backup = path.with_extension("json.fork-premerge.bak");
+    if backup.exists() {
+        return;
+    }
+    if let Ok(mut file) = secret_options().write(true).create_new(true).open(&backup) {
+        let _ = file.write_all(bytes);
+    }
+}
+
 fn load_store_at(path: &Path) -> Result<Store> {
     // Windows has no O_NOFOLLOW. Reject obvious symlinks before opening there.
     #[cfg(not(unix))]
@@ -355,9 +427,18 @@ fn load_store_at(path: &Path) -> Result<Store> {
     if bytes.len() > MAX_JSON_BYTES {
         bail!("OAuth credential store is too large");
     }
-    let store: Store = serde_json::from_slice(&bytes).map_err(|_| {
-        anyhow::anyhow!("OAuth credential store is invalid; refusing to overwrite it")
-    })?;
+    let store: Store = match serde_json::from_slice(&bytes) {
+        Ok(store) => store,
+        Err(_) => match migrate_fork_store(&bytes) {
+            Some(store) => {
+                backup_fork_store(path, &bytes);
+                store
+            }
+            None => {
+                bail!("OAuth credential store is invalid; refusing to overwrite it")
+            }
+        },
+    };
     if store.version != STORE_VERSION {
         bail!("unsupported OAuth credential store version");
     }
