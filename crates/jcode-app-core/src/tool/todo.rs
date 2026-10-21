@@ -888,7 +888,7 @@ impl Tool for TodoTool {
                 "intent": super::intent_schema_property(),
                 "update": {
                     "type": "array",
-                    "description": "Edit existing todos by id: each entry is {id, ...fields to change}; other fields and todos are untouched. Prefer this for status changes instead of resending the list.",
+                    "description": "Patch existing todos by id; other fields and todos stay unchanged. Prefer for status updates.",
                     "items": {
                         "type": "object",
                         "required": ["id"],
@@ -912,7 +912,7 @@ impl Tool for TodoTool {
                 },
                 "todos": {
                     "type": "array",
-                    "description": "Full todo list; replaces the whole list. Use for the initial plan or a real restructure, otherwise prefer update/add/remove.",
+                    "description": "Full replacement todo list; otherwise prefer update/add/remove.",
                     "items": {
                         "type": "object",
                         "required": ["content", "status", "priority", "id", "confidence"],
@@ -923,7 +923,7 @@ impl Tool for TodoTool {
                             },
                             "details": {
                                 "type": "string",
-                                "description": "Optional longer brief: files, acceptance criteria, context. Not shown on the card; given to a swarm worker that takes this todo."
+                                "description": "Optional worker brief with files, context, and acceptance criteria; hidden from the card."
                             },
                             "status": {
                                 "type": "string",
@@ -940,12 +940,12 @@ impl Tool for TodoTool {
                             },
                             "lane": {
                                 "type": "string",
-                                "description": "Optional lane name: one lane per coherent goal; todos in a lane run in order and one swarm agent owns a lane. Omit for flat list."
+                                "description": "Optional goal lane; tasks run in order under one worker. Omit for flat list."
                             },
                             "phase": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "description": "Optional phase (1, 2, 3...). Phase 2 starts after phase 1 is done. Inside a phase, lanes (todos sharing a lane) run in parallel. Omit when steps must happen in list order."
+                                "description": "Optional phase; later phases wait, while lanes within a phase run in parallel."
                             },
                             "confidence": {
                                 "type": "string",

@@ -286,6 +286,18 @@ async fn remote_management_connect_discover_call_disconnect_over_real_http() {
                 .await
                 .is_empty()
         );
+        if configured {
+            // A disabled saved server may be used through an explicit live
+            // connection, but must never reconnect on the next tool call.
+            let error = tool
+                .manager
+                .read()
+                .await
+                .call_tool("remote", "echo", json!({"text": "blocked"}))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("disabled"), "{error}");
+        }
         let requests = server.requests.lock().await;
         assert!(
             requests

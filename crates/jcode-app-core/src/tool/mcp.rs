@@ -699,6 +699,9 @@ impl Tool for McpManagementTool {
         let result = match params.action.as_str() {
             "list" => self.list_servers(ctx.working_dir.clone()).await,
             "status" => self.oauth_status(&params).await,
+            "login" => anyhow::bail!(
+                "Run `jcode mcp login <server>` for interactive sign-in. No browser was opened."
+            ),
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
@@ -794,7 +797,7 @@ impl McpManagementTool {
         {
             "OAuth credentials stored (not a connection or token-validity check)"
         } else {
-            "No OAuth credentials stored. Run /mcp auth <server> to sign in."
+            "No OAuth credentials stored. Run `jcode mcp login <server>` to sign in."
         };
         Ok(ToolOutput::new(output).with_title("MCP: OAuth status"))
     }
@@ -891,7 +894,11 @@ impl McpManagementTool {
             .servers
             .get(&server_name)
             .cloned();
-        let config = connection_config(&params, configured)?;
+        let mut config = connection_config(&params, configured)?;
+        // An explicit connect is allowed to activate a disabled configured
+        // server without changing its persisted enabled state.
+        config.enabled = Some(true);
+        config.disabled = None;
 
         let manager = self.manager.read().await;
 
@@ -1417,41 +1424,42 @@ impl McpManagementTool {
     }
 
     async fn logout(&self, params: McpToolInput, ctx: &ToolContext) -> Result<ToolOutput> {
-        let name = params
-            .server
-            .ok_or_else(|| anyhow::anyhow!("'server' is required for logout"))?;
-        let config = self
-            .configured_server(&name, ctx)
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{name}' is not configured"))?;
-        let cancelled = cancel_pending_auth(&pending_auth_key(&config));
-        let url = config
+        let name = params.server.as_deref().unwrap_or("remote");
+        let config = if let Some(name) = params.server.as_deref() {
+            self.manager
+                .read()
+                .await
+                .config()
+                .servers
+                .get(name)
+                .cloned()
+                .or_else(|| self.configured_server(name, ctx))
+        } else {
+            None
+        };
+        let url = params
             .url
             .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("MCP server has no URL"))?;
-        let removed = crate::mcp::oauth::logout_for_config(url, config.oauth.as_ref())?;
-        let connected = self.manager.read().await.connected_servers().await;
-        if connected.contains(&name) {
-            let _ = self
-                .disconnect_server(McpToolInput {
-                    action: "disconnect".into(),
-                    server: Some(name.clone()),
-                    command: None,
-                    args: None,
-                    env: None,
-                    url: None,
-                    headers: None,
-                    transport: None,
-                    scope: None,
-                    replace: None,
-                })
-                .await;
-        }
+            .or_else(|| config.as_ref().and_then(|cfg| cfg.url.as_deref()))
+            .ok_or_else(|| {
+                anyhow::anyhow!("Supply a configured remote server or URL for OAuth logout")
+            })?;
+        crate::mcp::oauth::validate_mcp_url(url)?;
+        let cancelled = config
+            .as_ref()
+            .is_some_and(|cfg| cancel_pending_auth(&pending_auth_key(cfg)));
+        let removed = crate::mcp::oauth::logout_for_config(
+            url,
+            config.as_ref().and_then(|cfg| cfg.oauth.as_ref()),
+        )?;
         let msg = if cancelled && !removed {
             format!("Cancelled pending OAuth sign-in for MCP server '{name}'.")
         } else if removed {
-            format!("Removed stored OAuth credentials for MCP server '{name}' and disconnected it.")
+            format!(
+                "Removed local OAuth credentials for MCP server '{name}'; existing connections are unchanged."
+            )
         } else {
-            format!("No stored OAuth credentials for MCP server '{name}'.")
+            format!("No local OAuth credentials stored for MCP server '{name}'.")
         };
         Ok(ToolOutput::new(msg).with_title(format!("MCP: logout {name}")))
     }

@@ -664,7 +664,10 @@ fn service_tier_capability_refresh_only_for_unknown_oauth_metadata() {
         (oauth_creds(), true),
         (api_key_creds("sk-refresh-probe"), false),
     ] {
-        let provider = OpenAIProvider::new(credentials);
+        let provider = OpenAIProvider::new(credentials.clone());
+        // Constructor honors explicit runtime credential-mode overrides;
+        // this probe concerns the loaded credential shape, not that setting.
+        *provider.credentials.try_write().unwrap() = credentials;
         provider.model_service_tiers.write().unwrap().clear();
         *provider.model.try_write().unwrap() = "gpt-6-astra[1m]".into();
         assert_eq!(provider.model_capabilities_need_refresh(), expected);

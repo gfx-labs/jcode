@@ -534,14 +534,9 @@ impl McpManager {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolCallResult> {
-        if self
-            .config
-            .servers
-            .get(server)
-            .is_some_and(|config| !config.is_enabled())
-        {
-            anyhow::bail!("MCP server '{server}' is disabled");
-        }
+        // Explicitly connected servers remain usable even when their saved
+        // configuration disables automatic connections. The disabled check
+        // below still prevents connecting on the first tool call.
         // Fast path: already connected via pool handle.
         {
             let handles = self.pool_handles.read().await;

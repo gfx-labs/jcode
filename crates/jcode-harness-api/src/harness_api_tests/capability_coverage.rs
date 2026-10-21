@@ -38,6 +38,12 @@ use Disposition::{ClientInternal, Covered, Gap};
 ///
 /// Sorted by name so additions produce clean diffs.
 const LEDGER: &[(&str, Disposition)] = &[
+    (
+        "AccountUsage",
+        Gap(
+            "A client cannot display cross-account usage snapshots without a dedicated API endpoint.",
+        ),
+    ),
     ("BackgroundTool", Covered),
     ("Cancel", Covered),
     ("CancelSoftInterrupts", Covered),
@@ -53,6 +59,12 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("InputShell", ClientInternal),
     ("InvalidateAnthropicUsage", Covered),
     ("Message", Covered),
+    (
+        "McpCommand",
+        Gap(
+            "A client cannot manage MCP servers through the daemon without a management API endpoint.",
+        ),
+    ),
     ("NotifyAuthChanged", Covered),
     ("RefreshModels", ClientInternal),
     ("Reload", ClientInternal),
