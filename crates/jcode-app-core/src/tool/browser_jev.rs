@@ -33,7 +33,7 @@ impl JevTransport {
     }
 }
 
-fn request_body(request: &DecisionRequest, model: &str) -> Result<Value> {
+fn request_body_for_model(request: &DecisionRequest, model: &str) -> Result<Value> {
     ensure!(
         !request.goal.trim().is_empty(),
         "Browser handoff goal is empty"
@@ -256,7 +256,7 @@ impl DecisionTransport for JevTransport {
     }
 
     async fn decide(&self, request: &DecisionRequest) -> Result<Decision> {
-        let body = request_body(request, self.model())?;
+        let body = request_body_for_model(request, self.client.model_id())?;
         let questions = body["questions"]
             .as_object()
             .context("Browser decision questions are missing")?
@@ -310,8 +310,8 @@ mod tests {
 
     #[test]
     fn uses_decisions_protocol_not_chat_completions() {
-        let body = request_body(&request(), "jev-latest").unwrap();
-        assert_eq!(body["model"], "jev-latest");
+        let body = request_body_for_model(&request(), "typesafe/jev-1.13").unwrap();
+        assert_eq!(body["model"], "typesafe/jev-1.13");
         assert_eq!(body["questions"]["action"]["type"], "choice");
         assert!(body["state"].is_string());
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
@@ -399,6 +399,12 @@ mod tests {
     }
 
     #[test]
+    fn configured_model_is_used_in_browser_decision_body() {
+        let body = request_body_for_model(&request(), "typesafe/jev-1.14").unwrap();
+        assert_eq!(body["model"], "typesafe/jev-1.14");
+    }
+
+    #[test]
     fn action_menu_is_not_duplicated_in_bounded_task_requests() {
         let mut req = request();
         req.observation = json!({
@@ -411,7 +417,7 @@ mod tests {
             id: format!("a{index}"),
             label: "x".repeat(160),
         }));
-        let body = request_body(&req, "jev-latest").unwrap();
+        let body = request_body_for_model(&req, "jev-latest").unwrap();
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
         assert!(state.get("available_actions").is_none());
         let criteria = body["questions"]["action"]["criteria"].as_object().unwrap();
@@ -458,7 +464,7 @@ mod tests {
             "action_history":history
         });
         let original = req.observation.clone();
-        let body = request_body(&req, "jev-latest").unwrap();
+        let body = request_body_for_model(&req, "jev-latest").unwrap();
         assert!(serde_json::to_vec(&body).unwrap().len() <= MAX_REQUEST_BYTES);
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
         let compacted = state["action_history"].as_array().unwrap();
@@ -501,7 +507,7 @@ mod tests {
                 "result":{"confirmation":"Newest result must survive"}
             }]
         });
-        let body = request_body(&req, "jev-latest").unwrap();
+        let body = request_body_for_model(&req, "jev-latest").unwrap();
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
         let latest = &state["action_history"][0];
         assert_eq!(
@@ -522,7 +528,7 @@ mod tests {
             "action_history":[{"result":"r".repeat(MAX_REQUEST_BYTES)}]
         });
         assert!(
-            request_body(&req, "jev-latest")
+            request_body_for_model(&req, "jev-latest")
                 .unwrap_err()
                 .to_string()
                 .contains("context budget")
@@ -538,7 +544,7 @@ mod tests {
             "action_results":[{"result":"Navigation completed"}],
             "action_history":[{"action":"a0"}]
         });
-        let body = request_body(&req, "jev-latest").unwrap();
+        let body = request_body_for_model(&req, "jev-latest").unwrap();
         let state: Value = serde_json::from_str(body["state"].as_str().unwrap()).unwrap();
         for key in ["task_context", "page", "action_results", "action_history"] {
             assert_eq!(state[key], req.observation[key]);
@@ -602,16 +608,16 @@ mod tests {
     fn request_bounds_and_mandatory_handback_are_enforced() {
         let mut req = request();
         req.options.pop();
-        assert!(request_body(&req, "jev-latest").is_err());
+        assert!(request_body_for_model(&req, "jev-latest").is_err());
         let mut req = request();
         req.options.push(DecisionOption {
             id: "a0".into(),
             label: "duplicate".into(),
         });
-        assert!(request_body(&req, "jev-latest").is_err());
+        assert!(request_body_for_model(&req, "jev-latest").is_err());
         let mut req = request();
         req.observation = json!({"text":"x".repeat(MAX_REQUEST_BYTES)});
-        assert!(request_body(&req, "jev-latest").is_err());
+        assert!(request_body_for_model(&req, "jev-latest").is_err());
     }
 
     #[tokio::test]

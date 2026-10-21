@@ -7,27 +7,6 @@ fn default_true() -> bool {
     true
 }
 
-/// Wire spec for a task-DAG node submitted by an agent (seed/expand/inject).
-/// Mirrors `jcode_plan::dag::NodeSpec` but kept as an explicit wire type so the
-/// protocol stays self-describing and serde-stable.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TaskGraphNodeSpec {
-    pub id: String,
-    pub content: String,
-    /// "explore" | "implement" | "verify" | "fix" | "synthesize". Defaults to
-    /// "explore" when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
-    #[serde(default, skip_serializing_if = "is_zero_u8")]
-    pub priority: u8,
-}
-
-fn is_zero_u8(value: &u8) -> bool {
-    *value == 0
-}
-
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -120,11 +99,23 @@ pub enum Request {
         /// If true, can skip remaining tools at injection point C
         #[serde(default)]
         urgent: bool,
+        /// Opaque caller id, echoed in `soft_interrupt_injected` and accepted
+        /// by a filtered `cancel_soft_interrupts`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_id: Option<String>,
     },
 
-    /// Cancel all pending soft interrupts (remove from server queue before injection)
+    /// Cancel pending soft interrupts (remove from server queue before injection).
+    ///
+    /// Without `client_ids` every queued interrupt is dropped and the request
+    /// is acknowledged. With `client_ids` only the matching ones are dropped,
+    /// and the daemon answers with `soft_interrupts_cancelled`.
     #[serde(rename = "cancel_soft_interrupts")]
-    CancelSoftInterrupts { id: u64 },
+    CancelSoftInterrupts {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_ids: Option<Vec<String>>,
+    },
 
     /// Clear conversation history
     #[serde(rename = "clear")]
@@ -173,6 +164,14 @@ pub enum Request {
         /// Opt in to PDF panel payloads. Older clients only accept Markdown.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_pdf_panels: bool,
+        /// Desktop can render user_response tool calls as inline answers.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_user_response: bool,
+        /// The client has no account-router countdown of its own (Desktop,
+        /// SDK). On a usage/rate-limit failure the server switches to the next
+        /// pool-approved account and retries the turn itself.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_server_failover: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +182,11 @@ pub enum Request {
         client_instance_id: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         client_has_local_history: bool,
+        /// Prefix of the transcript the client already rendered locally. When
+        /// it matches the server's view, History carries only the messages
+        /// after it (`messages_base_count`), instead of the full transcript.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history_base: Option<crate::HistoryBase>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         allow_session_takeover: bool,
         /// Legacy ownership hint, retained for wire compatibility. Disconnects
@@ -243,6 +247,13 @@ pub enum Request {
         #[serde(default = "default_true")]
         force: bool,
     },
+
+    /// Optional local packaged-runtime upgrade. Distinct from `reload` so old
+    /// daemons reject it without invoking the legacy interrupting reload path.
+    /// The server validates this explicit executable and only replaces itself
+    /// if it is strictly newer and an atomic idle reservation succeeds.
+    #[serde(rename = "upgrade_runtime")]
+    UpgradeRuntime { id: u64, candidate: String },
 
     /// Resume a specific session by ID
     #[serde(rename = "resume_session")]
@@ -338,6 +349,9 @@ pub enum Request {
     SetRoute {
         id: u64,
         selection: jcode_provider_core::RouteSelection,
+        /// Automatic retries must revalidate the server's current account pool.
+        #[serde(default, skip_serializing_if = "is_false")]
+        automatic_failover: bool,
     },
 
     /// Set or clear the session-scoped subagent model preference.
@@ -346,6 +360,19 @@ pub enum Request {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+    },
+
+    /// Set routing for a worker role. None clears to the global default.
+    /// With `global`, the server updates its own configuration instead of the
+    /// session, so remote clients never write a default only they can see.
+    #[serde(rename = "set_agent_model")]
+    SetAgentModel {
+        id: u64,
+        target: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        global: bool,
     },
 
     /// Launch a subagent immediately in the active session.
@@ -381,6 +408,15 @@ pub enum Request {
     /// Set connection transport for OpenAI models (auto|https|websocket)
     #[serde(rename = "set_transport")]
     SetTransport { id: u64, transport: String },
+
+    /// Non-presentation command executed against the attached live runtime.
+    #[serde(rename = "runtime_command")]
+    RuntimeCommand {
+        id: u64,
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
 
     /// Set Copilot premium request conservation mode (0=normal, 1=one-per-session, 2=zero)
     #[serde(rename = "set_premium_mode")]
@@ -420,6 +456,12 @@ pub enum Request {
         label: Option<String>,
     },
 
+    /// Write the active session to disk now, even before its first message.
+    /// Out-of-process tools such as `jcode cloud move` read the session file,
+    /// so a fresh session must exist on disk with its model and account.
+    #[serde(rename = "persist_session")]
+    PersistSession { id: u64 },
+
     /// Split the current session — clone conversation into a new session
     #[serde(rename = "split")]
     Split { id: u64 },
@@ -456,6 +498,10 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "is_false")]
         prefer_strongest: bool,
     },
+
+    /// Fetch daemon-owned OAuth account usage without acquiring the agent lock.
+    #[serde(rename = "account_usage")]
+    AccountUsage { id: u64 },
 
     /// Switch active Anthropic account label on the server session.
     /// This keeps account overrides and provider credential caches in sync.
@@ -570,6 +616,11 @@ pub enum Request {
         /// `to_session` is omitted. Channels and broadcasts never cross swarms.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_swarm: Option<String>,
+        /// Refuse an untargeted send (no `to_session`, `channel`, or
+        /// `to_swarm`) unless the sender is the swarm coordinator, so a worker
+        /// that forgets `to_session` gets an error instead of broadcasting.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        require_target: bool,
     },
 
     /// List every live swarm (id, label, coordinator, member count) so agents
@@ -626,49 +677,6 @@ pub enum Request {
         proposer_session: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
-    },
-
-    /// Seed the swarm task DAG in one call (the first agent's draft). Replaces or
-    /// initializes the shared plan with a validated graph of nodes + edges.
-    #[serde(rename = "comm_seed_graph")]
-    CommSeedGraph {
-        id: u64,
-        session_id: String,
-        /// "deep" (comprehensive, gated) or "light" (fan-out).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        mode: Option<String>,
-        nodes: Vec<TaskGraphNodeSpec>,
-    },
-
-    /// Decompose a node the caller owns into a child sub-DAG (composite path). In
-    /// deep mode a critique/verify gate is auto-inserted.
-    #[serde(rename = "comm_expand_node")]
-    CommExpandNode {
-        id: u64,
-        session_id: String,
-        node_id: String,
-        children: Vec<TaskGraphNodeSpec>,
-    },
-
-    /// Complete a node the caller owns with a typed handoff artifact. In deep mode
-    /// the artifact is validated for thinness.
-    #[serde(rename = "comm_complete_node")]
-    CommCompleteNode {
-        id: u64,
-        session_id: String,
-        node_id: String,
-        /// Handoff artifact as a JSON object string.
-        artifact_json: String,
-    },
-
-    /// Inject gap/fix nodes from a gate that found a problem, re-blocking the gate
-    /// (and its composite parent) until the new nodes drain.
-    #[serde(rename = "comm_inject_gap")]
-    CommInjectGap {
-        id: u64,
-        session_id: String,
-        gate_id: String,
-        nodes: Vec<TaskGraphNodeSpec>,
     },
 
     /// Spawn a new agent session (coordinator only)
@@ -877,6 +885,20 @@ pub enum Request {
     },
 }
 
+/// Credential-free usage attributed to an OAuth account on the daemon host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountUsageSnapshot {
+    pub label: String,
+    pub email: Option<String>,
+    pub exhausted: bool,
+    pub primary_label: Option<String>,
+    pub five_hour_ratio: Option<f32>,
+    pub secondary_label: Option<String>,
+    pub seven_day_ratio: Option<f32>,
+    pub resets_at: Option<String>,
+    pub error: Option<String>,
+}
+
 /// Server event sent to client
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -885,6 +907,55 @@ pub enum Request {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    #[serde(rename = "account_usage")]
+    AccountUsage {
+        id: u64,
+        anthropic: Vec<AccountUsageSnapshot>,
+        openai: Vec<AccountUsageSnapshot>,
+    },
+    #[serde(rename = "runtime_command_result")]
+    RuntimeCommandResult {
+        id: u64,
+        command: String,
+        data: serde_json::Value,
+        message: String,
+    },
+    #[serde(rename = "agent_models_changed")]
+    AgentModelsChanged {
+        id: u64,
+        session_id: String,
+        #[serde(default)]
+        overrides: std::collections::BTreeMap<String, String>,
+    },
+    #[serde(rename = "text_suffix_replace")]
+    TextSuffixReplace {
+        old_text: String,
+        new_text: String,
+    },
+    #[serde(rename = "service_tier_reported")]
+    ServiceTierReported {
+        requested: Option<String>,
+        tier: String,
+    },
+    #[serde(rename = "soft_interrupts_cancelled")]
+    SoftInterruptsCancelled {
+        id: u64,
+        cancelled: Vec<String>,
+        not_queued: Vec<String>,
+    },
+    #[serde(rename = "background_tool_result")]
+    BackgroundToolResult {
+        id: u64,
+        moved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
+    },
+    #[serde(rename = "soft_interrupt_queue")]
+    SoftInterruptQueue { pending: usize },
+    #[serde(rename = "peer_user_message")]
+    PeerUserMessage { content: String },
     #[serde(rename = "mobile_usage")]
     MobileUsage {
         id: u64,
@@ -1160,6 +1231,8 @@ pub enum ServerEvent {
         /// Number of tools skipped (only for urgent interrupt at point C)
         #[serde(skip_serializing_if = "Option::is_none")]
         tools_skipped: Option<usize>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        client_ids: Vec<String>,
     },
 
     /// Structured abnormal turn outcome, emitted before the terminal Done/Error.
@@ -1275,6 +1348,8 @@ pub enum ServerEvent {
         native_ssh_protocol: Option<u32>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         capabilities: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_connected_session_ids: Option<Vec<String>>,
     },
 
     /// Current state (debug)
@@ -1284,6 +1359,8 @@ pub enum ServerEvent {
         session_id: String,
         message_count: usize,
         is_processing: bool,
+        #[serde(default)]
+        pending_soft_interrupts: Option<usize>,
     },
 
     /// Response for debug command
@@ -1324,6 +1401,10 @@ pub enum ServerEvent {
         id: u64,
         session_id: String,
         messages: Vec<HistoryMessage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        messages_base_count: Option<usize>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        images_unchanged: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<jcode_session_types::RenderedImage>,
         /// Provider name (e.g. "anthropic", "openai")
@@ -1338,6 +1419,8 @@ pub enum ServerEvent {
         /// Route metadata for available models
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         available_model_routes: Vec<jcode_provider_core::ModelRoute>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        available_service_tiers: Option<Vec<String>>,
         /// Connected MCP server names
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         mcp_servers: Vec<String>,
@@ -1392,6 +1475,10 @@ pub enum ServerEvent {
         /// render usage/billing without re-deriving it from the provider name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_credential: Option<jcode_provider_core::ResolvedCredential>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_oauth_email: Option<ProviderOAuthEmail>,
+        #[serde(default)]
+        provider_oauth_account_label: Option<String>,
         /// Reasoning effort for providers that expose it
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_effort: Option<String>,
@@ -1401,6 +1488,8 @@ pub enum ServerEvent {
         /// Session-scoped preferred model for subagents.
         #[serde(skip_serializing_if = "Option::is_none")]
         subagent_model: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        agent_model_overrides: std::collections::BTreeMap<String, String>,
         /// Session-scoped automatic review toggle.
         #[serde(skip_serializing_if = "Option::is_none")]
         autoreview_enabled: Option<bool>,
@@ -1495,6 +1584,10 @@ pub enum ServerEvent {
         /// key). Lets clients update the auth badge on an OAuth<->API switch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_credential: Option<jcode_provider_core::ResolvedCredential>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_oauth_email: Option<ProviderOAuthEmail>,
+        #[serde(default)]
+        provider_oauth_account_label: Option<String>,
         /// Effort the switched-to model runs with. A switch can clear an
         /// effort the new model does not advertise, so clients must not keep
         /// showing the old one. Always serialized (`null` = no effort) so a
@@ -1517,6 +1610,8 @@ pub enum ServerEvent {
     #[serde(rename = "service_tier_changed")]
     ServiceTierChanged {
         id: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pending: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         service_tier: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]

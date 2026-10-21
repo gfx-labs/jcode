@@ -10,9 +10,15 @@ use reqwest::{Client, Response, Url};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
 
+mod laya;
+use laya::{configured_laya_base, laya_endpoint, resolve_laya_with, should_bypass_proxy};
+
 const PROVIDER_ENV: &str = "JCODE_MEMORY_JEV_PROVIDER";
 const BROWSER_PROVIDER_ENV: &str = "JCODE_BROWSER_JEV_PROVIDER";
 const VOICE_PROVIDER_ENV: &str = "JCODE_VOICE_JEV_PROVIDER";
+const LAYA_BASE_URL_ENV: &str = "JCODE_LAYA_BASE_URL";
+const LAYA_DEFAULT_BASE: &str = "http://127.0.0.1:8080";
+pub const DEFAULT_MEMORY_JEV_MODEL: &str = "typesafe/jev-1.13";
 const MAX_REQUEST_BYTES: usize = 80 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const MAX_ME_BYTES: usize = 16 * 1024;
@@ -99,6 +105,7 @@ enum JevProvider {
     /// Hosted OpenJev (api.openjev.sh), wire compatible with TypeSafe's
     /// `/v1/systemone`. Explicit selection only, never part of `auto`.
     OpenJev,
+    Laya,
     Aimlapi,
     Jcode,
 }
@@ -109,6 +116,7 @@ impl JevProvider {
             Self::OpenRouter => "openrouter",
             Self::TypeSafe => "typesafe",
             Self::OpenJev => "openjev",
+            Self::Laya => "laya",
             Self::Aimlapi => "aimlapi",
             Self::Jcode => "jcode",
         }
@@ -119,6 +127,7 @@ impl JevProvider {
             Self::OpenRouter => ("OPENROUTER_API_KEY", "openrouter.env"),
             Self::TypeSafe => ("TYPESAFE_API_KEY", "typesafe.env"),
             Self::OpenJev => ("OPENJEV_API_KEY", "openjev.env"),
+            Self::Laya => ("LAYA_API_KEY", "laya.env"),
             Self::Aimlapi => ("AIMLAPI_API_KEY", "aimlapi.env"),
             Self::Jcode => (
                 crate::subscription_catalog::JCODE_API_KEY_ENV,
@@ -130,16 +139,17 @@ impl JevProvider {
     fn max_questions(self) -> usize {
         match self {
             // OpenJev accepted 128 questions per request (verified 2026-10-02).
-            Self::TypeSafe | Self::OpenJev => TYPESAFE_MAX_QUESTIONS,
+            Self::TypeSafe | Self::OpenJev | Self::Laya => TYPESAFE_MAX_QUESTIONS,
             _ => MAX_QUESTIONS,
         }
     }
 
     fn model(self) -> &'static str {
         match self {
-            Self::OpenRouter | Self::Jcode => "typesafe/jev-1.13",
+            Self::OpenRouter | Self::Jcode => DEFAULT_MEMORY_JEV_MODEL,
             Self::TypeSafe => "jev-latest",
             Self::OpenJev => "openjev",
+            Self::Laya => "laya-latest",
             Self::Aimlapi => "typesafe/jev",
         }
     }
@@ -149,10 +159,49 @@ impl JevProvider {
             Self::OpenRouter => "https://openrouter.ai/api/alpha/decisions".into(),
             Self::TypeSafe => "https://api.typesafe.ai/v1/systemone".into(),
             Self::OpenJev => "https://api.openjev.sh/v1/systemone".into(),
+            Self::Laya => laya_endpoint(gateway_base)?,
             Self::Aimlapi => "https://api.aimlapi.com/v1/decisions".into(),
             Self::Jcode => format!("{}/decisions", trusted_gateway_base(gateway_base)?),
         })
     }
+}
+
+fn configured_model_override(purpose: JevPurpose) -> Option<String> {
+    let (env, configured) = match purpose {
+        JevPurpose::Memory => (
+            "JCODE_MEMORY_JEV_MODEL",
+            crate::config::config().agents.memory_jev_model.clone(),
+        ),
+        JevPurpose::Browser => (
+            "JCODE_BROWSER_JEV_MODEL",
+            crate::config::config().agents.browser_jev_model.clone(),
+        ),
+        JevPurpose::Voice => (
+            "JCODE_VOICE_JEV_MODEL",
+            crate::config::config().agents.voice_jev_model.clone(),
+        ),
+        JevPurpose::Swarm => return None,
+    };
+    resolve_model_override(std::env::var(env).ok(), configured)
+}
+
+fn resolve_model_override(
+    environment: Option<String>,
+    configured: Option<String>,
+) -> Option<String> {
+    environment
+        .or(configured)
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+}
+
+fn resolve_jev_model(purpose: JevPurpose, provider: JevProvider) -> String {
+    configured_model_override(purpose).unwrap_or_else(|| provider.model().to_string())
+}
+
+/// The browser fallback label is shown when no decision request can be created.
+pub fn browser_jev_model_label() -> String {
+    resolve_jev_model(JevPurpose::Browser, JevProvider::OpenRouter)
 }
 
 /// Do not derive Debug: this contains a provider secret.
@@ -164,10 +213,10 @@ pub struct JevClient {
     hedge_clients: Vec<Client>,
     purpose: JevPurpose,
     provider: JevProvider,
+    model_id: String,
     api_key: String,
     endpoint: String,
     me_endpoint: Option<String>,
-    model_override: Option<String>,
 }
 
 impl JevClient {
@@ -214,7 +263,7 @@ impl JevClient {
             _ => bail!("Invalid configured Jev provider"),
         };
         let api_key = validated_credential(settings.api_key.as_deref())?;
-        let client = client_builder()
+        let client = client_builder_for(should_bypass_proxy(provider, &settings.endpoint))
             .timeout(settings.timeout)
             .build()
             .map_err(|_| anyhow!("Could not initialize the Jev decision client"))?;
@@ -225,7 +274,7 @@ impl JevClient {
             api_key,
             endpoint: settings.endpoint,
             me_endpoint: None,
-            model_override: Some(settings.model),
+            model_id: settings.model,
             hedge_clients: Vec::new(),
         })
     }
@@ -240,8 +289,9 @@ impl JevClient {
 
     fn for_purpose(purpose: JevPurpose) -> Result<Self> {
         let (provider, api_key, endpoint, me_endpoint) = Self::resolve(purpose)?;
+        let bypass_proxy = should_bypass_proxy(provider, &endpoint);
         let build = || {
-            client_builder()
+            client_builder_for(bypass_proxy)
                 .build()
                 .map_err(|_| anyhow!("Could not initialize the Jev decision client"))
         };
@@ -259,10 +309,10 @@ impl JevClient {
             hedge_clients,
             purpose,
             provider,
+            model_id: resolve_jev_model(purpose, provider),
             api_key,
             endpoint,
             me_endpoint,
-            model_override: None,
         })
     }
 
@@ -281,10 +331,10 @@ impl JevClient {
         } else {
             resolve_with(&selector, load)?
         };
-        let base = if provider == JevProvider::Jcode {
-            crate::subscription_api::configured_api_base()
-        } else {
-            String::new()
+        let base = match provider {
+            JevProvider::Jcode => crate::subscription_api::configured_api_base(),
+            JevProvider::Laya => configured_laya_base(),
+            _ => String::new(),
         };
         let endpoint = provider.endpoint(&base)?;
         let me_endpoint = if provider == JevProvider::Jcode {
@@ -300,9 +350,7 @@ impl JevClient {
     }
 
     pub fn model_id(&self) -> &str {
-        self.model_override
-            .as_deref()
-            .unwrap_or_else(|| self.provider.model())
+        &self.model_id
     }
 
     /// Largest question batch this route accepts in one request.
@@ -314,10 +362,10 @@ impl JevClient {
     /// Never retries using another provider or account after an auth/billing
     /// failure. Callers own the relevance threshold and uncertainty policy.
     pub async fn evaluate(&self, state: Value, questions: Map<String, Value>) -> Result<Value> {
-        let body = request_body_for_model(
+        let body = request_body_with_model(
             self.purpose,
             self.provider,
-            self.model_id(),
+            &self.model_id,
             state,
             &questions,
         )?;
@@ -354,7 +402,12 @@ impl JevClient {
         }
         let request_bytes = body.len();
         let value = self.send(&self.endpoint, body).await?;
-        validate_answers(&value, &questions)?;
+        validate_answers(&value, &questions).with_context(|| {
+            format!(
+                "Jev model '{}' returned an incompatible Decisions response",
+                self.model_id
+            )
+        })?;
         self.log_usage(questions.len(), request_bytes, &value);
         Ok(value)
     }
@@ -388,7 +441,12 @@ impl JevClient {
                 }
                 let result = async {
                     let value = self.send_with(&client, &self.endpoint, body).await?;
-                    validate_answers(&value, questions)?;
+                    validate_answers(&value, questions).with_context(|| {
+                        format!(
+                            "Jev model '{}' returned an incompatible Decisions response",
+                            self.model_id
+                        )
+                    })?;
                     Ok::<_, anyhow::Error>(value)
                 }
                 .await;
@@ -471,6 +529,12 @@ impl JevClient {
                 tokio::time::sleep(delay).await;
                 continue;
             }
+            if status == 400 || status == 404 {
+                bail!(
+                    "Jev request for model '{}' returned HTTP {status}; verify the model supports the selected Decisions endpoint",
+                    self.model_id
+                );
+            }
             return read_response(response, MAX_RESPONSE_BYTES, self.provider).await;
         }
     }
@@ -480,7 +544,9 @@ impl JevClient {
             .post(endpoint)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body);
-        request = request.bearer_auth(&self.api_key);
+        if !self.api_key.is_empty() {
+            request = request.bearer_auth(&self.api_key);
+        }
         if self.provider == JevProvider::Jcode && self.purpose == JevPurpose::Browser {
             // The gateway budgets browser handoffs separately so background
             // memory recall cannot exhaust interactive browsing.
@@ -694,11 +760,21 @@ fn retry_after(response: &Response) -> Option<Duration> {
     (delay <= MAX_RETRY_AFTER).then_some(delay)
 }
 
+#[cfg(test)]
 fn client_builder() -> reqwest::ClientBuilder {
-    Client::builder()
+    client_builder_for(false)
+}
+
+fn client_builder_for(bypass_proxy: bool) -> reqwest::ClientBuilder {
+    let builder = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(25))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    if bypass_proxy {
+        builder.no_proxy()
+    } else {
+        builder
+    }
 }
 
 fn resolve_voice_with(
@@ -707,18 +783,18 @@ fn resolve_voice_with(
 ) -> Result<(JevProvider, String)> {
     match selector.trim().to_ascii_lowercase().as_str() {
         "auto" => resolve_providers(&[JevProvider::Jcode, JevProvider::TypeSafe], load),
-        "typesafe" | "jcode" | "subscription" | "jcode-subscription" => {
+        "typesafe" | "laya" | "jcode" | "subscription" | "jcode-subscription" => {
             resolve_with(selector, load)
         }
         _ => bail!(
-            "Invalid voice Jev provider. Choose auto, typesafe, or jcode; voice never uses OpenRouter or AIMLAPI"
+            "Invalid voice Jev provider. Choose auto, typesafe, laya, or jcode; voice never uses OpenRouter or AIMLAPI"
         ),
     }
 }
 
 fn resolve_with(
     selector: &str,
-    load: impl FnMut(&str, &str) -> Option<String>,
+    mut load: impl FnMut(&str, &str) -> Option<String>,
 ) -> Result<(JevProvider, String)> {
     let providers: &[JevProvider] = match selector.trim().to_ascii_lowercase().as_str() {
         "auto" => &[
@@ -734,10 +810,11 @@ fn resolve_with(
         "openrouter" => &[JevProvider::OpenRouter],
         "typesafe" => &[JevProvider::TypeSafe],
         "openjev" => &[JevProvider::OpenJev],
+        "laya" => return resolve_laya_with(&mut load),
         "aimlapi" => &[JevProvider::Aimlapi],
         "jcode" | "subscription" | "jcode-subscription" => &[JevProvider::Jcode],
         _ => bail!(
-            "Invalid Jev provider. Choose auto, openrouter, typesafe, openjev, aimlapi, or jcode"
+            "Invalid Jev provider. Choose auto, laya, openrouter, typesafe, openjev, aimlapi, or jcode"
         ),
     };
     resolve_providers(providers, load)
@@ -820,7 +897,7 @@ fn request_body_for(
     state: Value,
     questions: &Map<String, Value>,
 ) -> Result<Vec<u8>> {
-    request_body_for_model(purpose, provider, provider.model(), state, questions)
+    request_body_with_model(purpose, provider, provider.model(), state, questions)
 }
 
 /// Build the per-request usage line. Only an allowlist of non-negative integer
@@ -849,7 +926,7 @@ fn usage_log_line(
     )
 }
 
-fn request_body_for_model(
+fn request_body_with_model(
     purpose: JevPurpose,
     provider: JevProvider,
     model: &str,
@@ -864,6 +941,7 @@ fn request_body_for_model(
             ),
         "Jcode subscription does not support this Jev purpose"
     );
+
     if purpose == JevPurpose::Browser {
         ensure!(
             questions.len() == 1
@@ -1070,16 +1148,16 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    fn questions() -> Map<String, Value> {
+    pub(super) fn questions() -> Map<String, Value> {
         json!({"m0": {"type": "noul", "instructions": "Is this memory relevant?", "criteria": {"true": "Useful", "false": "Irrelevant"}}})
             .as_object().unwrap().clone()
     }
 
-    fn response() -> Value {
+    pub(super) fn response() -> Value {
         json!({"answers": {"m0": {"type": "noul", "noul": 0.91}}, "usage": {"input_tokens": 123, "output_tokens": 4}})
     }
 
-    fn browser_questions() -> Map<String, Value> {
+    pub(super) fn browser_questions() -> Map<String, Value> {
         json!({"action": {"type": "choice", "instructions": "Choose the next browser action", "criteria": {"click": "Click the button", "stop": "Return control"}}})
             .as_object().unwrap().clone()
     }
@@ -1135,6 +1213,13 @@ mod tests {
         assert_eq!(
             provider.endpoint("").unwrap(),
             "https://api.typesafe.ai/v1/systemone"
+        );
+        let (provider, _) = resolve_voice_with("laya", |_, _| None).unwrap();
+        assert_eq!(provider, JevProvider::Laya);
+        assert_eq!(provider.model(), "laya-latest");
+        assert_eq!(
+            provider.endpoint("").unwrap(),
+            "http://127.0.0.1:8080/v1/systemone"
         );
         for selector in ["auto", "typesafe", "jcode"] {
             let error = resolve_voice_with(selector, |env, _| {
@@ -1526,6 +1611,14 @@ mod tests {
                 "jev-latest",
             ),
             (
+                "laya",
+                JevProvider::Laya,
+                "LAYA_API_KEY",
+                "laya.env",
+                "http://127.0.0.1:8080/v1/systemone",
+                "laya-latest",
+            ),
+            (
                 "aimlapi",
                 JevProvider::Aimlapi,
                 "AIMLAPI_API_KEY",
@@ -1550,10 +1643,50 @@ mod tests {
             assert_eq!(provider, expected);
             assert_eq!(secret, format!("test-{selector}"));
             assert_eq!(
-                provider.endpoint("https://api.jcode.sh/v1/").unwrap(),
+                provider
+                    .endpoint(if provider == JevProvider::Laya {
+                        ""
+                    } else {
+                        "https://api.jcode.sh/v1/"
+                    })
+                    .unwrap(),
                 endpoint
             );
             assert_eq!(provider.model(), model);
+        }
+        // Laya works without an API key on loopback and normalizes custom base URLs.
+        let (provider, secret) = resolve_with("laya", |_, _| None).unwrap();
+        assert_eq!(provider, JevProvider::Laya);
+        assert!(secret.is_empty());
+        assert_eq!(
+            JevProvider::Laya.endpoint("http://127.0.0.1:8000").unwrap(),
+            "http://127.0.0.1:8000/v1/systemone"
+        );
+        assert_eq!(
+            JevProvider::Laya
+                .endpoint("http://localhost:8080/v1")
+                .unwrap(),
+            "http://localhost:8080/v1/systemone"
+        );
+        assert_eq!(
+            JevProvider::Laya
+                .endpoint("http://100.87.178.69:8000")
+                .unwrap(),
+            "http://100.87.178.69:8000/v1/systemone"
+        );
+        assert_eq!(
+            JevProvider::Laya
+                .endpoint("http://node.tailnet.ts.net:8000/v1/decisions")
+                .unwrap(),
+            "http://node.tailnet.ts.net:8000/v1/systemone"
+        );
+        for invalid in [
+            "http://public.example.com:8080",
+            "http://user:secret@127.0.0.1:8080",
+            "http://127.0.0.1:8080?token=secret",
+            "http://127.0.0.1:8080#frag",
+        ] {
+            assert!(JevProvider::Laya.endpoint(invalid).is_err(), "{invalid}");
         }
     }
 
@@ -1783,9 +1916,11 @@ mod tests {
 
     // One listener can serve preflight + decision, and captures the exact wire
     // requests without touching credentials, process environment, or real APIs.
-    type MockReply = (u16, String, Vec<(String, String)>);
+    pub(super) type MockReply = (u16, String, Vec<(String, String)>);
 
-    fn mock_server(replies: Vec<MockReply>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    pub(super) fn mock_server(
+        replies: Vec<MockReply>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let count = replies.len();
         let mut replies = replies.into_iter();
         mock_server_with(count, move |_| replies.next().unwrap())
@@ -1793,7 +1928,7 @@ mod tests {
 
     /// Serve `count` requests, choosing each reply from the request itself, so
     /// concurrent requests get correct replies whatever order they connect in.
-    fn mock_server_with(
+    pub(super) fn mock_server_with(
         count: usize,
         mut respond: impl FnMut(&str) -> MockReply + Send + 'static,
     ) -> (String, std::thread::JoinHandle<Vec<String>>) {
@@ -1874,7 +2009,7 @@ mod tests {
         (base, worker)
     }
 
-    fn mock_client(base: &str, provider: JevProvider) -> JevClient {
+    pub(super) fn mock_client(base: &str, provider: JevProvider) -> JevClient {
         JevClient {
             client: client_builder().no_proxy().build().unwrap(),
             hedge_clients: VOICE_HEDGE_DELAYS
@@ -1883,10 +2018,10 @@ mod tests {
                 .collect(),
             purpose: JevPurpose::Memory,
             provider,
+            model_id: provider.model().to_string(),
             api_key: "test-route-secret".into(),
             endpoint: format!("{base}/v1/decisions"),
             me_endpoint: (provider == JevProvider::Jcode).then(|| format!("{base}/v1/me")),
-            model_override: None,
         }
     }
 
@@ -1937,6 +2072,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn model_override_precedence_and_provider_defaults() {
+        assert_eq!(
+            resolve_model_override(Some(" custom/model ".into()), Some("config/model".into())),
+            Some("custom/model".into())
+        );
+        assert_eq!(
+            resolve_model_override(None, Some(" config/model ".into())),
+            Some("config/model".into())
+        );
+        assert_eq!(resolve_model_override(None, None), None);
+        assert_eq!(
+            resolve_model_override(Some(" ".into()), Some("config/model".into())),
+            None
+        );
+        assert_eq!(JevProvider::OpenRouter.model(), "typesafe/jev-1.13");
+        assert_eq!(JevProvider::Jcode.model(), "typesafe/jev-1.13");
+        assert_eq!(JevProvider::TypeSafe.model(), "jev-latest");
+        assert_eq!(JevProvider::Aimlapi.model(), "typesafe/jev");
+    }
+
+    #[test]
+    fn request_body_uses_explicit_model_override() {
+        let body = request_body_with_model(
+            JevPurpose::Memory,
+            JevProvider::OpenRouter,
+            "typesafe/jev-1.14",
+            json!("query"),
+            &questions(),
+        )
+        .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["model"], "typesafe/jev-1.14");
+    }
+
+    #[tokio::test]
+    async fn client_reports_and_sends_the_same_configured_model() {
+        let (base, worker) = mock_server(vec![(200, response().to_string(), vec![])]);
+        let mut client = mock_client(&base, JevProvider::OpenRouter);
+        client.model_id = "typesafe/jev-1.14".into();
+        assert_eq!(client.model_id(), "typesafe/jev-1.14");
+        client.evaluate(json!("query"), questions()).await.unwrap();
+        let requests = worker.join().unwrap();
+        let body: Value =
+            serde_json::from_str(requests[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["model"], client.model_id());
+    }
+
+    #[tokio::test]
+    async fn rejected_model_returns_bounded_error_without_fallback() {
+        let (base, worker) = mock_server(vec![(400, "unsupported model".into(), vec![])]);
+        let mut client = mock_client(&base, JevProvider::OpenRouter);
+        client.model_id = "typesafe/jev-1.14".into();
+        let error = client
+            .evaluate(json!("query"), questions())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("typesafe/jev-1.14"));
+        assert!(error.contains("HTTP 400"));
+        assert!(error.contains("Decisions endpoint"));
+        assert_eq!(worker.join().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn voice_subscription_uses_existing_noul_entitlement_without_bypassing_it() {
         for entitled in [false, true] {
@@ -1984,7 +2183,7 @@ mod tests {
 
     /// Serve every connection on its own thread. Connection `n` waits
     /// `delays[n]` before replying, so a slow primary can overlap a hedge.
-    fn concurrent_mock(
+    pub(super) fn concurrent_mock(
         delays: Vec<(Duration, u16)>,
     ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2485,10 +2684,10 @@ mod tests {
             hedge_clients: Vec::new(),
             purpose: JevPurpose::Memory,
             provider: JevProvider::OpenJev,
+            model_id: JevProvider::OpenJev.model().to_string(),
             api_key: key,
             endpoint: JevProvider::OpenJev.endpoint("").unwrap(),
             me_endpoint: None,
-            model_override: None,
         };
         let started = std::time::Instant::now();
         let results = futures::future::join_all((0..15).map(|_| {
@@ -2842,6 +3041,9 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod transport_tests;
 
 pub use crate::config::JevConfig;
 pub const MAX_TIMEOUT_MS: u64 = 30_000;

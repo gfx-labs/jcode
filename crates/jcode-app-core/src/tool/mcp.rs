@@ -1,4 +1,8 @@
-//! MCP management tool - connect, disconnect, list, reload MCP servers
+//! MCP management tool - stdio/remote connections and noninteractive OAuth management
+
+#[cfg(test)]
+#[path = "mcp_remote_management_tests.rs"]
+mod remote_management_tests;
 
 use crate::mcp::{ContentBlock, McpManager, McpServerConfig, dispatch_name};
 use crate::tool::{Tool, ToolContext, ToolOutput};
@@ -46,7 +50,7 @@ fn clip_description(text: &str, max: usize) -> String {
         return text.to_string();
     }
     let mut out: String = text.chars().take(max).collect();
-    out.push_str("…");
+    out.push('…');
     out
 }
 
@@ -84,9 +88,9 @@ fn match_rank(
 /// first: every match in full, then shorter descriptions, then full detail for
 /// only the leading matches with the rest listed by name. The first rendering
 /// that fits wins, so small results are never trimmed.
-fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, usize) {
+fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> Result<(String, usize)> {
     use jcode_core::util::estimate_tokens;
-    let render = |detailed: usize, description_chars: Option<usize>| {
+    let render = |detailed: usize, description_chars: Option<usize>| -> Result<String> {
         let head: Vec<McpSearchResult> = matches[..detailed]
             .iter()
             .map(|m| McpSearchResult {
@@ -100,7 +104,7 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
                 input_schema: m.input_schema.clone(),
             })
             .collect();
-        let mut out = serde_json::to_string(&head).unwrap_or_default();
+        let mut out = serde_json::to_string(&head)?;
         if detailed < matches.len() {
             let rest: Vec<&str> = matches[detailed..]
                 .iter()
@@ -112,13 +116,13 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
                 rest.join(", ")
             ));
         }
-        out
+        Ok(out)
     };
     let fits = |out: &String| estimate_tokens(out) <= budget;
 
-    let full = render(matches.len(), None);
+    let full = render(matches.len(), None)?;
     if fits(&full) {
-        return (full, matches.len());
+        return Ok((full, matches.len()));
     }
     // Shorten descriptions progressively, keeping every schema.
     let longest = matches
@@ -128,9 +132,9 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
         .unwrap_or(0);
     let mut chars = longest / 2;
     while chars >= MIN_SEARCH_DESCRIPTION_CHARS {
-        let out = render(matches.len(), Some(chars));
+        let out = render(matches.len(), Some(chars))?;
         if fits(&out) {
-            return (out, matches.len());
+            return Ok((out, matches.len()));
         }
         chars /= 2;
     }
@@ -138,13 +142,13 @@ fn fit_search_results(matches: &[McpSearchResult], budget: usize) -> (String, us
     let (mut lo, mut hi) = (0usize, matches.len());
     while lo < hi {
         let mid = (lo + hi).div_ceil(2);
-        if fits(&render(mid, Some(MIN_SEARCH_DESCRIPTION_CHARS))) {
+        if fits(&render(mid, Some(MIN_SEARCH_DESCRIPTION_CHARS))?) {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    (render(lo, Some(MIN_SEARCH_DESCRIPTION_CHARS)), lo)
+    Ok((render(lo, Some(MIN_SEARCH_DESCRIPTION_CHARS))?, lo))
 }
 
 /// Fixed MCP discovery surface used when individual server definitions are deferred.
@@ -169,6 +173,10 @@ impl McpSearchTool {
 
 #[async_trait]
 impl Tool for McpSearchTool {
+    fn model_visible(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &str {
         "mcp_search"
     }
@@ -201,16 +209,13 @@ impl Tool for McpSearchTool {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let query = params
+        // Tokenize the optional query directly, avoiding a lowercased copy of
+        // the entire query and an artificial empty-query sentinel.
+        let query_terms: Vec<String> = params
             .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase);
-        let query_terms: Vec<String> = query
-            .as_deref()
-            .map(|q| q.split_whitespace().map(str::to_string).collect())
-            .unwrap_or_default();
+            .iter()
+            .flat_map(|query| query.split_whitespace().map(str::to_ascii_lowercase))
+            .collect();
         let manager = self.manager.read().await;
         let catalog = manager.searchable_tools().await;
         drop(manager);
@@ -283,12 +288,12 @@ impl Tool for McpSearchTool {
         } else {
             SEARCH_TOKEN_BUDGET
         };
-        let (output, detailed) = fit_search_results(&matches, budget);
+        let (output, detailed) = fit_search_results(&matches, budget)?;
 
         // Ask the agent to load the matched definitions natively. With
         // provider-native deferred loading these become directly callable
         // tools without changing the cached prompt prefix; other providers
-        // ignore the references and use `mcp_call` with the schemas above.
+        // ignore the references and use `mcp action=call` with these schemas.
         let references: Vec<&str> = matches[..detailed]
             .iter()
             .take(MAX_SEARCH_TOOL_REFERENCES)
@@ -330,12 +335,16 @@ impl McpCallTool {
 
 #[async_trait]
 impl Tool for McpCallTool {
+    fn model_visible(&self) -> bool {
+        false
+    }
+
     fn name(&self) -> &str {
         "mcp_call"
     }
 
     fn description(&self) -> &str {
-        "Call an MCP server tool discovered with mcp_search."
+        "Internal compatibility alias for mcp action=call."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -347,7 +356,7 @@ impl Tool for McpCallTool {
                 "arguments": {
                     "type": "object",
                     "additionalProperties": true,
-                    "description": "Arguments matching the input schema returned by mcp_search."
+                    "description": "Arguments matching the input schema returned by MCP search."
                 }
             },
             "required": ["server", "tool", "arguments"]
@@ -485,6 +494,10 @@ struct McpToolInput {
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    transport: Option<String>,
+    #[serde(default)]
     scope: Option<String>,
     #[serde(default)]
     replace: Option<bool>,
@@ -496,6 +509,62 @@ fn parse_scope(scope: Option<&str>) -> Result<crate::mcp::McpConfigScope> {
         Some("project") | Some("local") => Ok(crate::mcp::McpConfigScope::Project),
         Some(other) => anyhow::bail!("unknown scope '{other}' (use global or project)"),
     }
+}
+
+fn connection_config(
+    params: &McpToolInput,
+    configured: Option<McpServerConfig>,
+) -> Result<McpServerConfig> {
+    if params.command.is_some() && params.url.is_some() {
+        anyhow::bail!("Supply either 'command' or 'url', not both");
+    }
+    if params.command.is_none() && params.url.is_none() {
+        if params.args.is_some()
+            || params.env.is_some()
+            || params.headers.is_some()
+            || params.transport.is_some()
+        {
+            anyhow::bail!("Connection overrides require an explicit 'command' or 'url'");
+        }
+        return configured.ok_or_else(|| {
+            anyhow::anyhow!(
+                "'command' or 'url' is required for connect action (server is not configured)"
+            )
+        });
+    }
+    if let Some(url) = params.url.as_deref() {
+        crate::mcp::oauth::validate_mcp_url(url)?;
+        if params.args.is_some() || params.env.is_some() {
+            anyhow::bail!("'args' and 'env' require a stdio command");
+        }
+        if !matches!(
+            params.transport.as_deref().unwrap_or("http"),
+            "http" | "streamable-http" | "sse"
+        ) {
+            anyhow::bail!("Remote transport must be 'http', 'streamable-http', or 'sse'");
+        }
+    } else if params
+        .command
+        .as_deref()
+        .is_none_or(|s| s.trim().is_empty())
+        || params.headers.is_some()
+        || params.transport.as_deref().is_some_and(|s| s != "stdio")
+    {
+        anyhow::bail!("Stdio requires a nonempty command and no remote headers or transport");
+    }
+    Ok(McpServerConfig {
+        command: params.command.clone().unwrap_or_default(),
+        args: params.args.clone().unwrap_or_default(),
+        env: params.env.clone().unwrap_or_default(),
+        shared: true,
+        transport: params.transport.clone(),
+        url: params.url.clone(),
+        headers: params.headers.clone().unwrap_or_default(),
+        enabled: None,
+        disabled: None,
+        timeout_secs: None,
+        oauth: None,
+    })
 }
 
 pub struct McpManagementTool {
@@ -524,7 +593,7 @@ impl Tool for McpManagementTool {
     }
 
     fn description(&self) -> &str {
-        "Manage MCP (Model Context Protocol) servers."
+        "Search and call MCP (Model Context Protocol) tools, or manage servers. Search returns tool names and input schemas. The auth action starts explicit OAuth login for a configured server."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -534,16 +603,19 @@ impl Tool for McpManagementTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["list", "connect", "disconnect", "reload", "enable", "disable", "add", "auth", "logout"],
+                    "enum": ["search", "call", "list", "connect", "disconnect", "reload", "enable", "disable", "add", "auth", "logout", "status"],
                     "description": "Action."
                 },
                 "server": {
                     "type": "string",
-                    "description": "Server name."
+                    "description": "Server name. Optional exact filter for search, required for call."
                 },
+                "query": {"type": "string", "description": "Search: optional name or description keywords."},
+                "tool": {"type": "string", "description": "Call: required raw tool name returned by search."},
+                "arguments": {"type": "object", "additionalProperties": true, "description": "Call: arguments matching the discovered input schema."},
                 "command": {
                     "type": "string",
-                    "description": "Server command."
+                    "description": "Stdio server command. Mutually exclusive with url."
                 },
                 "args": {
                     "type": "array",
@@ -567,6 +639,14 @@ impl Tool for McpManagementTool {
                     "type": "string",
                     "enum": ["global", "project"],
                     "description": "Config scope for enable/disable/add. Default global."
+                },
+                "headers": {
+                    "type": "object", "additionalProperties": {"type": "string"},
+                    "description": "Static headers for an ad hoc remote connection."
+                },
+                "transport": {
+                    "type": "string", "enum": ["stdio", "http", "streamable-http", "sse"],
+                    "description": "Transport for an ad hoc connection."
                 }
             },
             "required": ["action"]
@@ -574,6 +654,33 @@ impl Tool for McpManagementTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        // Reuse the internal surfaces, including their identity, SDK override,
+        // output-budget and per-tool policy checks. Do not route back through
+        // Registry::execute: this call already owns the in-flight marker.
+        let surface = match input.get("action").and_then(Value::as_str) {
+            Some("search") => Some("mcp_search"),
+            Some("call") => Some("mcp_call"),
+            _ => None,
+        };
+        if let Some(surface) = surface {
+            super::ensure_mcp_action_allowed(&ctx.session_id, surface)?;
+            return if surface == "mcp_search" {
+                McpSearchTool {
+                    manager: self.manager.clone(),
+                    registry: self.registry.clone(),
+                }
+                .execute(input, ctx)
+                .await
+            } else {
+                McpCallTool {
+                    manager: self.manager.clone(),
+                    registry: self.registry.clone(),
+                }
+                .execute(input, ctx)
+                .await
+            };
+        }
+        super::ensure_mcp_action_allowed(&ctx.session_id, "mcp")?;
         let params: McpToolInput = serde_json::from_value(input)?;
         let started = std::time::Instant::now();
         let action = params.action.clone();
@@ -590,7 +697,8 @@ impl Tool for McpManagementTool {
         );
 
         let result = match params.action.as_str() {
-            "list" | "status" => self.list_servers(ctx.working_dir.clone()).await,
+            "list" => self.list_servers(ctx.working_dir.clone()).await,
+            "status" => self.oauth_status(&params).await,
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
@@ -602,7 +710,7 @@ impl Tool for McpManagementTool {
             "auth" => self.authenticate(params, &ctx).await,
             "logout" => self.logout(params, &ctx).await,
             _ => Ok(ToolOutput::new(format!(
-                "Unknown action: {}. Use 'list', 'connect', 'disconnect', 'reload', 'enable', 'disable', 'add', 'auth', or 'logout'.",
+                "Unknown action: {}. Use 'search', 'call', 'list', 'status', 'connect', 'disconnect', 'reload', 'enable', 'disable', 'add', 'auth', or 'logout'.",
                 params.action
             ))),
         };
@@ -647,6 +755,50 @@ impl McpManagementTool {
 }
 
 impl McpManagementTool {
+    async fn oauth_status(&self, params: &McpToolInput) -> Result<ToolOutput> {
+        let configured = if let Some(name) = params.server.as_deref() {
+            self.manager
+                .read()
+                .await
+                .config()
+                .servers
+                .get(name)
+                .cloned()
+        } else {
+            None
+        };
+        let url = params
+            .url
+            .as_deref()
+            .or_else(|| configured.as_ref().and_then(|server| server.url.as_deref()))
+            .ok_or_else(|| {
+                anyhow::anyhow!("Supply a configured remote server or URL for OAuth status")
+            })?;
+        crate::mcp::oauth::validate_mcp_url(url)?;
+        let static_auth = params
+            .headers
+            .as_ref()
+            .or_else(|| configured.as_ref().map(|server| &server.headers))
+            .is_some_and(|headers| {
+                headers
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case("authorization"))
+            });
+        let output = if static_auth {
+            "Static Authorization header configured (takes precedence over OAuth)"
+        } else if crate::mcp::oauth::status_for_config(
+            url,
+            configured.as_ref().and_then(|server| server.oauth.as_ref()),
+        )?
+        .logged_in
+        {
+            "OAuth credentials stored (not a connection or token-validity check)"
+        } else {
+            "No OAuth credentials stored. Run /mcp auth <server> to sign in."
+        };
+        Ok(ToolOutput::new(output).with_title("MCP: OAuth status"))
+    }
+
     async fn list_servers(&self, project_dir: Option<std::path::PathBuf>) -> Result<ToolOutput> {
         let manager = self.manager.read().await;
         let servers = manager.connected_servers().await;
@@ -673,7 +825,7 @@ impl McpManagementTool {
         }
 
         // Names only: full descriptions for every tool of every server cost
-        // tens of thousands of tokens. `mcp_search` returns descriptions and
+        // tens of thousands of tokens. `mcp action=search` returns descriptions and
         // schemas for the tools the agent actually needs.
         let mut output = String::new();
         output.push_str(&format!(
@@ -716,7 +868,7 @@ impl McpManagementTool {
         }
         if !servers.is_empty() {
             output.push_str(
-                "Use mcp_search with a server or query for descriptions and input schemas.\n\n",
+                "Use mcp action=search with a server or query for descriptions and input schemas.\n\n",
             );
         }
 
@@ -728,37 +880,18 @@ impl McpManagementTool {
     async fn connect_server(&self, params: McpToolInput, session_id: &str) -> Result<ToolOutput> {
         let server_name = params
             .server
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("'server' is required for connect action"))?;
 
-        // With an explicit command this is an ad-hoc connect. Without one, fall
-        // back to the configured server of that name, which also lets disabled
-        // configured servers be connected on demand, session-scoped, without
-        // rewriting config (issue #436).
-        let config = if let Some(command) = params.command {
-            McpServerConfig {
-                command,
-                args: params.args.unwrap_or_default(),
-                env: params.env.unwrap_or_default(),
-                shared: true,
-                transport: None,
-                url: None,
-                headers: std::collections::HashMap::new(),
-                enabled: None,
-                disabled: None,
-                timeout_secs: None,
-                oauth: None,
-            }
-        } else {
-            let manager = self.manager.read().await;
-            let configured = manager.config().servers.get(&server_name).cloned();
-            drop(manager);
-            configured.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "'command' is required for connect action ('{}' is not in the MCP config)",
-                    server_name
-                )
-            })?
-        };
+        let configured = self
+            .manager
+            .read()
+            .await
+            .config()
+            .servers
+            .get(&server_name)
+            .cloned();
+        let config = connection_config(&params, configured)?;
 
         let manager = self.manager.read().await;
 
@@ -812,7 +945,7 @@ impl McpManagementTool {
                     // The schema is part of the result on purpose: on providers
                     // without native deferred loading the cached tool list never
                     // changes, so this transcript entry is the only place the
-                    // model learns how to call the new tool (via `mcp_call`).
+                    // model learns how to call the new tool (via `mcp action=call`).
                     output.push_str(&format!(
                         "  - {}: {}\n    tool: {}  input_schema: {}\n",
                         name,
@@ -826,7 +959,7 @@ impl McpManagementTool {
                 references.truncate(MAX_SEARCH_TOOL_REFERENCES);
                 output.push_str(&format!(
                     "\nCall these tools directly by name if they appear in your tool list; \
-                     otherwise use mcp_call with server=\"{}\", tool=<tool>, and arguments \
+                     otherwise use mcp action=call with server=\"{}\", tool=<tool>, and arguments \
                      matching input_schema.\n",
                     server_name
                 ));
@@ -838,6 +971,18 @@ impl McpManagementTool {
                     .with_metadata(json!({ "tool_references": references })))
             }
             Err(e) => {
+                let auth_hint = if config.is_remote()
+                    && !config
+                        .headers
+                        .keys()
+                        .any(|key| key.eq_ignore_ascii_case("authorization"))
+                {
+                    format!(
+                        "\nIf authentication is required, configure this server and run `jcode mcp login {server_name}` in a terminal, then reconnect. Login never runs automatically."
+                    )
+                } else {
+                    String::new()
+                };
                 crate::logging::event_warn(
                     "MCP_LIFECYCLE",
                     vec![
@@ -847,10 +992,11 @@ impl McpManagementTool {
                         ("error", e.to_string()),
                     ],
                 );
-                Ok(
-                    ToolOutput::new(format!("Failed to connect to '{}': {}", server_name, e))
-                        .with_title("MCP: Connection failed"),
-                )
+                Ok(ToolOutput::new(format!(
+                    "Failed to connect to '{}': {}{}",
+                    server_name, e, auth_hint
+                ))
+                .with_title("MCP: Connection failed"))
             }
         }
     }
@@ -1071,7 +1217,7 @@ impl McpManagementTool {
                 crate::mcp::oauth::McpAuthStatus::NotApplicable => String::new(),
                 s => format!(", auth: {}", s.label()),
             };
-            let target = if cfg.is_http() {
+            let target = if cfg.is_remote() {
                 cfg.url.clone().unwrap_or_default()
             } else {
                 cfg.command.clone()
@@ -1278,7 +1424,11 @@ impl McpManagementTool {
             .configured_server(&name, ctx)
             .ok_or_else(|| anyhow::anyhow!("MCP server '{name}' is not configured"))?;
         let cancelled = cancel_pending_auth(&pending_auth_key(&config));
-        let removed = crate::mcp::oauth::logout(&config)?;
+        let url = config
+            .url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("MCP server has no URL"))?;
+        let removed = crate::mcp::oauth::logout_for_config(url, config.oauth.as_ref())?;
         let connected = self.manager.read().await.connected_servers().await;
         if connected.contains(&name) {
             let _ = self
@@ -1289,6 +1439,8 @@ impl McpManagementTool {
                     args: None,
                     env: None,
                     url: None,
+                    headers: None,
+                    transport: None,
                     scope: None,
                     replace: None,
                 })
@@ -1607,27 +1759,27 @@ mod tests {
     fn search_results_fit_the_budget_adaptively() {
         // Small results come back whole, long descriptions included.
         let small = vec![search_result(0, 2_000)];
-        let (out, detailed) = fit_search_results(&small, SEARCH_TOKEN_BUDGET);
+        let (out, detailed) = fit_search_results(&small, SEARCH_TOKEN_BUDGET).unwrap();
         assert_eq!(detailed, 1);
         assert!(out.contains(&"d".repeat(2_000)));
 
         // Moderately over budget: every match keeps its schema, descriptions shrink.
         let medium: Vec<_> = (0..10).map(|n| search_result(n, 4_000)).collect();
-        let (out, detailed) = fit_search_results(&medium, SEARCH_TOKEN_BUDGET);
+        let (out, detailed) = fit_search_results(&medium, SEARCH_TOKEN_BUDGET).unwrap();
         assert_eq!(detailed, 10);
         assert!(jcode_core::util::estimate_tokens(&out) <= SEARCH_TOKEN_BUDGET);
         assert!(!out.contains("more matches"));
 
         // Far over budget: leading matches keep detail, the rest are named.
         let large: Vec<_> = (0..400).map(|n| search_result(n, 1_000)).collect();
-        let (out, detailed) = fit_search_results(&large, SEARCH_TOKEN_BUDGET);
+        let (out, detailed) = fit_search_results(&large, SEARCH_TOKEN_BUDGET).unwrap();
         assert!(detailed > 0 && detailed < 400, "{detailed}");
         assert!(out.contains(&format!("{} more matches", 400 - detailed)));
         assert!(out.contains("mcp__s__tool_399"));
         assert!(jcode_core::util::estimate_tokens(&out) <= SEARCH_TOKEN_BUDGET + 2_000);
 
         // Opting in returns everything.
-        let (_, detailed) = fit_search_results(&large, usize::MAX);
+        let (_, detailed) = fit_search_results(&large, usize::MAX).unwrap();
         assert_eq!(detailed, 400);
     }
 

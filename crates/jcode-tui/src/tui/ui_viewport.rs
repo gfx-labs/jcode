@@ -45,14 +45,10 @@ pub(crate) fn copy_badge_alt_badge() -> String {
     format!("[{}]", copy_badge_alt_label())
 }
 
-/// Explicit label rendered before the shortcut badges so the copy affordance
-/// reads clearly (e.g. "Copy [Alt] [⇧] [S]") instead of relying solely on the
-/// hotkey glyphs.
 pub(crate) const COPY_BADGE_LABEL: &str = "Copy";
 
 fn copy_badge_shortcut_width(key_label: &str) -> usize {
-    // Includes the single separator space rendered between the row content and
-    // the first badge, plus the explicit "Copy" label ahead of the hotkeys.
+    // Reserve space for the separator and the visible copy label as well.
     UnicodeWidthStr::width(
         format!(
             " {COPY_BADGE_LABEL} {} [⇧] [{key_label}]",
@@ -353,7 +349,7 @@ pub(super) fn draw_messages(
     area: Rect,
     prepared: Arc<PreparedChatFrame>,
     show_native_scrollbar: bool,
-) -> info_widget::Margins {
+) -> (info_widget::Margins, Option<super::NativeScrollbar>) {
     let (render_area, scrollbar_area) =
         super::split_native_scrollbar_area(area, show_native_scrollbar);
     let left_inset = super::left_aligned_content_inset(render_area.width, app.centered_mode());
@@ -364,9 +360,15 @@ pub(super) fn draw_messages(
         height: render_area.height,
     };
     let wrapped_user_indices = &prepared.wrapped_user_indices;
-    let wrapped_user_prompt_starts = &prepared.wrapped_user_prompt_starts;
-    let wrapped_user_prompt_ends = &prepared.wrapped_user_prompt_ends;
-    let user_prompt_texts = &prepared.user_prompt_texts;
+    let clear_start = super::terminal_clear_start(app, &prepared);
+    let preview_start = clear_start.map_or(0, |start| {
+        prepared
+            .wrapped_user_prompt_starts
+            .partition_point(|line| *line < start)
+    });
+    let wrapped_user_prompt_starts = &prepared.wrapped_user_prompt_starts[preview_start..];
+    let wrapped_user_prompt_ends = &prepared.wrapped_user_prompt_ends[preview_start..];
+    let user_prompt_texts = &prepared.user_prompt_texts[preview_start..];
 
     let total_lines = prepared.total_wrapped_lines();
     let viewport_height = render_area.height as usize;
@@ -380,6 +382,7 @@ pub(super) fn draw_messages(
         user_prompt_texts,
         text_render_area,
         pinned_todo_band.len() as u16,
+        preview_start + app.compacted_hidden_user_prompts(),
     );
 
     super::set_last_max_scroll(max_scroll);
@@ -418,7 +421,14 @@ pub(super) fn draw_messages(
         super::set_tail_catchup_active(false);
         user_scroll.min(max_scroll)
     } else {
-        resolve_tail_follow_scroll(max_scroll, viewport_height)
+        // A clear is an explicit viewport boundary, not a jump to animate
+        // through old history. Never show rows preceding it while tailing.
+        if let Some(start) = clear_start {
+            super::set_tail_catchup_active(false);
+            max_scroll.max(start)
+        } else {
+            resolve_tail_follow_scroll(max_scroll, viewport_height)
+        }
     };
 
     // Publish the resolved geometry so scroll handlers and the anchor-reconcile
@@ -436,6 +446,7 @@ pub(super) fn draw_messages(
             user_prompt_texts,
             scroll,
             text_render_area.width,
+            preview_start + app.compacted_hidden_user_prompts(),
         )
     } else {
         0u16
@@ -526,6 +537,9 @@ pub(super) fn draw_messages(
         // prompt preview) is synthetic (not part of the scrolled transcript), so
         // offset by it to keep the content rows aligned.
         scroll_top: scroll.saturating_sub(top_band_lines as usize),
+        content_churning: app.is_processing()
+            || !app.streaming_text().is_empty()
+            || app.has_pending_mouse_scroll_animation(),
         ..Default::default()
     };
     margins
@@ -1019,6 +1033,16 @@ pub(super) fn draw_messages(
             let total_height = region.height;
             let image_end = region.end_line;
             let is_fit = region.render == jcode_tui_messages::ImageRegionRender::Fit;
+            // Scale fit images into the exact box layout reserved for them
+            // (`region.width` cols x `region.height` rows). Fitting into the
+            // full content width instead let the rounded-up row count upscale
+            // the picture a few cells wider than the margin carve assumed, so
+            // it drew over info widgets docked beside it.
+            let fit_cols = if region.width == 0 {
+                content_area.width
+            } else {
+                region.width.min(content_area.width)
+            };
 
             if let Some(native_latex) = crate::tui::markdown::handterm_native_latex_for_hash(hash) {
                 // Native math writes real terminal cells rather than an overlay,
@@ -1057,7 +1081,7 @@ pub(super) fn draw_messages(
             // the ones actually on screen get decoded/scaled, and a cold image
             // schedules background prep instead of stalling this frame.
             let fit_ready = if is_fit && image_end > scroll && abs_idx < visible_end {
-                super::inline_image_ui::ensure_drawable(hash, content_area.width, total_height)
+                super::inline_image_ui::ensure_drawable(hash, fit_cols, total_height)
             } else {
                 true
             };
@@ -1092,7 +1116,7 @@ pub(super) fn draw_messages(
                                 hash,
                                 image_area,
                                 frame.buffer_mut(),
-                                content_area.width,
+                                fit_cols,
                                 total_height,
                                 0,
                                 centered,
@@ -1149,7 +1173,7 @@ pub(super) fn draw_messages(
                                 hash,
                                 image_area,
                                 frame.buffer_mut(),
-                                content_area.width,
+                                fit_cols,
                                 total_height,
                                 skip_rows,
                                 centered,
@@ -1210,7 +1234,12 @@ pub(super) fn draw_messages(
                 if on_screen {
                     continue;
                 }
-                super::inline_image_ui::prefetch(region.hash, content_area.width, region.height);
+                let fit_cols = if region.width == 0 {
+                    content_area.width
+                } else {
+                    region.width.min(content_area.width)
+                };
+                super::inline_image_ui::prefetch(region.hash, fit_cols, region.height);
             }
         }
     }
@@ -1258,7 +1287,42 @@ pub(super) fn draw_messages(
         frame.render_widget(Paragraph::new(pinned_todo_band), band_area);
     }
 
-    if crate::config::config().display.prompt_preview && scroll > 0 {
+    if crate::config::config().display.prompt_preview && scroll > 0 && prompt_history_expanded() {
+        let items = expanded_prompt_preview_items(
+            wrapped_user_prompt_starts,
+            user_prompt_texts,
+            scroll,
+            preview_start + app.compacted_hidden_user_prompts(),
+        );
+        if !items.is_empty() {
+            let dim_style = Style::default().dim();
+            let width = content_area.width.saturating_sub(1) as usize;
+            let lines: Vec<Line<'static>> = items
+                .into_iter()
+                .map(|(num, text)| {
+                    let mut line = Line::from(vec![
+                        Span::styled(num, dim_style.fg(dim_color()).bg(user_bg())),
+                        Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
+                        Span::styled(text, dim_style.fg(user_text()).bg(user_bg())),
+                    ]);
+                    if line.width() > width {
+                        truncate_line_in_place_to_width(&mut line, width.saturating_sub(1));
+                        line.spans
+                            .push(Span::styled("…", dim_style.fg(dim_color()).bg(user_bg())));
+                    }
+                    line
+                })
+                .collect();
+            let preview_area = Rect {
+                x: content_area.x,
+                y: render_area.y,
+                width: content_area.width.saturating_sub(1),
+                height: lines.len() as u16,
+            };
+            clear_area(frame, preview_area);
+            frame.render_widget(Paragraph::new(lines), preview_area);
+        }
+    } else if crate::config::config().display.prompt_preview && scroll > 0 {
         let last_offscreen_prompt_idx =
             lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
 
@@ -1267,7 +1331,8 @@ pub(super) fn draw_messages(
         {
             let prompt_text = prompt_text.trim();
             if !prompt_text.is_empty() {
-                let prompt_num = prompt_order + 1 + app.compacted_hidden_user_prompts();
+                let prompt_num =
+                    preview_start + prompt_order + 1 + app.compacted_hidden_user_prompts();
                 let num_str = format!("{}", prompt_num);
                 let prefix_len = num_str.len() + 2;
                 let content_width =
@@ -1351,15 +1416,15 @@ pub(super) fn draw_messages(
         );
     }
 
-    if let Some(scrollbar_area) = scrollbar_area {
-        super::render_native_scrollbar(
-            frame,
-            scrollbar_area,
-            scroll,
-            total_lines,
-            visible_height,
-            false,
-        );
+    let chat_scrollbar = scrollbar_area.map(|area| super::NativeScrollbar {
+        area,
+        scroll,
+        total_lines,
+        visible_height,
+        focused: false,
+    });
+    if let Some(scrollbar) = chat_scrollbar {
+        scrollbar.render(frame);
     }
 
     // Derive the dock-gating "reliable" width profile for *new* info widgets:
@@ -1374,7 +1439,7 @@ pub(super) fn draw_messages(
     }
     info_widget::apply_settlement(&mut margins, content_area.width);
 
-    margins
+    (margins, chat_scrollbar)
 }
 
 /// Look-ahead window (in rows) used to compute the "reliable" margin profile that
@@ -1399,11 +1464,28 @@ fn windowed_min(widths: &[u16], window: usize) -> Vec<u16> {
     out
 }
 
-/// Lines for the pinned status band: optional todos followed by exactly one
-/// compact row per relevant background task. Completed tasks are shown briefly
-/// as confirmation, while running and failed tasks remain actionable.
-fn pinned_todo_band_lines(
+/// Lines for the pinned todo band. Background tasks render in the
+/// `background` info widget, not here.
+pub(crate) fn pinned_todo_band_lines(
     app: &dyn TuiState,
+    width: u16,
+    viewport_height: u16,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    pinned_todo_band_lines_for_payload(
+        app.pinned_todos_payload(),
+        app.pinned_todos_expanded(),
+        app.diff_mode(),
+        width,
+        viewport_height,
+    )
+}
+
+/// Pinned todo band for an arbitrary todo payload. Shared by the live chat
+/// viewport and the `/resume` preview so both render the band identically.
+pub(crate) fn pinned_todo_band_lines_for_payload(
+    payload: Option<&str>,
+    expanded: bool,
+    diff_mode: crate::config::DiffDisplayMode,
     width: u16,
     viewport_height: u16,
 ) -> (Vec<Line<'static>>, Option<usize>) {
@@ -1411,35 +1493,35 @@ fn pinned_todo_band_lines(
         return (Vec::new(), None);
     }
 
-    let task_lines: Vec<_> = app
-        .background_task_rows()
-        .iter()
-        .map(|task| active_background_task_line(task, width))
-        .collect();
     let card_lines = if crate::config::config().display.pin_todos {
-        app.pinned_todos_payload()
+        payload
             .map(|payload| {
-                let msg = crate::tui::DisplayMessage::todos(payload.to_string());
+                // Distinct title keeps the line cache from sharing entries with
+                // the width-capped inline transcript card.
+                let mut msg = crate::tui::DisplayMessage::todos(payload.to_string());
+                msg.title = Some("Pinned todos".to_string());
                 super::messages::get_cached_message_lines(
                     &msg,
                     width,
-                    app.diff_mode(),
-                    super::messages::render_todos_message,
+                    diff_mode,
+                    super::messages::render_pinned_todos_message,
                 )
             })
             .unwrap_or_default()
     } else {
         Vec::new()
     };
-    if card_lines.is_empty() && task_lines.is_empty() {
+    if card_lines.is_empty() {
         return (Vec::new(), None);
     }
+    let mut card_lines = card_lines;
+    super::messages::animate_lane_spinners(&mut card_lines);
 
     // Band budget: about a third of the viewport.
     let budget = ((viewport_height as usize) / 3).clamp(2, 12);
-    let content_budget = budget.saturating_sub(task_lines.len()).max(2);
+    let content_budget = budget.max(2);
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let has_more = card_lines.len() > content_budget && !app.pinned_todos_expanded();
+    let has_more = card_lines.len() > content_budget && !expanded;
     let mut more_line = None;
     if has_more {
         let shown = content_budget.saturating_sub(1);
@@ -1451,87 +1533,16 @@ fn pinned_todo_band_lines(
             Style::default().fg(dim_color()),
         )));
     } else {
+        if expanded {
+            more_line = Some(lines.len());
+            lines.push(Line::from(Span::styled(
+                "  ▴ Collapse todos",
+                Style::default().fg(dim_color()),
+            )));
+        }
         lines.extend(card_lines);
     }
-    lines.extend(task_lines);
     (lines, more_line)
-}
-
-fn active_background_task_line(task: &crate::tui::BackgroundTaskRow, width: u16) -> Line<'static> {
-    const BAR_WIDTH: usize = 6;
-    let (icon, task_color, percent) = match task.status {
-        crate::tui::BackgroundTaskRowStatus::Running => (
-            "◌",
-            accent_color(),
-            task.percent.unwrap_or(0.0).clamp(0.0, 100.0),
-        ),
-        crate::tui::BackgroundTaskRowStatus::Completed => ("✓", Color::Green, 100.0),
-        crate::tui::BackgroundTaskRowStatus::Failed => (
-            "×",
-            Color::Red,
-            task.percent.unwrap_or(0.0).clamp(0.0, 100.0),
-        ),
-    };
-    let rounded_percent = percent.round() as u8;
-    let status_label = if task.status == crate::tui::BackgroundTaskRowStatus::Failed {
-        "failed".to_string()
-    } else {
-        format!("{}%", rounded_percent)
-    };
-    let filled = ((percent / 100.0) * BAR_WIDTH as f32).round() as usize;
-    let (active_bar, remaining_bar) = if task.status == crate::tui::BackgroundTaskRowStatus::Failed
-    {
-        (
-            "━".repeat(filled.min(BAR_WIDTH)),
-            "─".repeat(BAR_WIDTH.saturating_sub(filled)),
-        )
-    } else if filled >= BAR_WIDTH {
-        ("━".repeat(BAR_WIDTH), String::new())
-    } else {
-        (
-            format!("{}╺", "━".repeat(filled)),
-            "─".repeat(BAR_WIDTH.saturating_sub(filled + 1)),
-        )
-    };
-
-    let fixed_width = UnicodeWidthStr::width(
-        format!("◌ bg   {} {}{}", active_bar, remaining_bar, status_label).as_str(),
-    );
-    let max_label_width = (width as usize).saturating_sub(fixed_width).max(1);
-    let label = truncate_background_task_label(&task.label, max_label_width);
-
-    Line::from(vec![
-        Span::styled(icon, Style::default().fg(task_color)),
-        Span::styled(" bg ", Style::default().fg(dim_color())),
-        Span::raw(label),
-        Span::raw("  "),
-        Span::styled(active_bar, Style::default().fg(task_color)),
-        Span::styled(remaining_bar, Style::default().fg(dim_color())),
-        Span::styled(
-            format!(" {}", status_label),
-            Style::default().fg(dim_color()),
-        ),
-    ])
-}
-
-fn truncate_background_task_label(label: &str, max_width: usize) -> String {
-    let label = label.replace(['\r', '\n'], " ");
-    if UnicodeWidthStr::width(label.as_str()) <= max_width {
-        return label;
-    }
-    if max_width <= 1 {
-        return "…".to_string();
-    }
-    let mut truncated = String::new();
-    for ch in label.chars() {
-        let candidate = format!("{}{}…", truncated, ch);
-        if UnicodeWidthStr::width(candidate.as_str()) > max_width {
-            break;
-        }
-        truncated.push(ch);
-    }
-    truncated.push('…');
-    truncated
 }
 
 static PINNED_TODO_MORE_AREA: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
@@ -1556,7 +1567,17 @@ fn compute_prompt_preview_line_count(
     user_prompt_texts: &[String],
     scroll: usize,
     area_width: u16,
+    prompt_number_offset: usize,
 ) -> u16 {
+    if prompt_history_expanded() {
+        return expanded_prompt_preview_items(
+            wrapped_user_prompt_starts,
+            user_prompt_texts,
+            scroll,
+            prompt_number_offset,
+        )
+        .len() as u16;
+    }
     let last_offscreen = lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
     let Some(prompt_order) = last_offscreen else {
         return 0;
@@ -1568,12 +1589,52 @@ fn compute_prompt_preview_line_count(
     if prompt_text.is_empty() {
         return 0;
     }
-    let num_str = format!("{}", prompt_order + 1);
+    let num_str = format!("{}", prompt_number_offset + prompt_order + 1);
     let prefix_len = num_str.len() + 2;
     let content_width = area_width.saturating_sub(prefix_len as u16 + 2) as usize;
     let text_flat = prompt_text.replace('\n', " ");
     let display_width = UnicodeWidthStr::width(text_flat.as_str());
     if display_width > content_width { 2 } else { 1 }
+}
+
+/// Number of previous prompts shown when the expanded prompt history (Alt+E) is on.
+const EXPANDED_PROMPT_PREVIEW_COUNT: usize = 6;
+
+static PROMPT_HISTORY_EXPANDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn prompt_history_expanded() -> bool {
+    PROMPT_HISTORY_EXPANDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Toggle the expanded previous-prompt band. Returns the new state.
+pub(crate) fn toggle_prompt_history_expanded() -> bool {
+    !PROMPT_HISTORY_EXPANDED.fetch_xor(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Last few offscreen prompts, oldest first, as `(number, flattened text)`.
+fn expanded_prompt_preview_items(
+    wrapped_user_prompt_starts: &[usize],
+    user_prompt_texts: &[String],
+    scroll: usize,
+    prompt_number_offset: usize,
+) -> Vec<(String, String)> {
+    let offscreen = lower_bound(wrapped_user_prompt_starts, scroll).min(user_prompt_texts.len());
+    let mut items: Vec<(String, String)> = (0..offscreen)
+        .rev()
+        .filter_map(|idx| {
+            let text = user_prompt_texts[idx].trim();
+            (!text.is_empty()).then(|| {
+                (
+                    format!("{}", prompt_number_offset + idx + 1),
+                    text.split_whitespace().collect::<Vec<_>>().join(" "),
+                )
+            })
+        })
+        .take(EXPANDED_PROMPT_PREVIEW_COUNT)
+        .collect();
+    items.reverse();
+    items
 }
 
 fn compute_max_scroll_with_prompt_preview(
@@ -1582,8 +1643,10 @@ fn compute_max_scroll_with_prompt_preview(
     user_prompt_texts: &[String],
     area: Rect,
     pinned_todo_lines: u16,
+    prompt_number_offset: usize,
 ) -> usize {
-    let mut max_scroll = total_lines.saturating_sub(area.height as usize);
+    let mut max_scroll =
+        total_lines.saturating_sub(area.height.saturating_sub(pinned_todo_lines) as usize);
     let preview_enabled = crate::config::config().display.prompt_preview;
     if max_scroll == 0 || (!preview_enabled && pinned_todo_lines == 0) {
         return max_scroll;
@@ -1596,6 +1659,7 @@ fn compute_max_scroll_with_prompt_preview(
                 user_prompt_texts,
                 max_scroll,
                 area.width,
+                prompt_number_offset,
             )
         } else {
             0
@@ -1614,115 +1678,19 @@ fn compute_max_scroll_with_prompt_preview(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn handterm_native_latex_cell_symbol_moves_invokes_and_restores_cursor() {
-        assert_eq!(
-            super::handterm_native_latex_cell_symbol(r"\frac{a}{b}", 3, 2).as_deref(),
-            Some("\x1b[s\x1b[2A\x1b[1D\x1b_L;\\frac{a}{b}\x1b\\\x1b[u\x1b[1C")
-        );
-        assert_eq!(
-            super::handterm_native_latex_cell_symbol("x", 1, 1).as_deref(),
-            Some("\x1b[s\x1b_L;x\x1b\\\x1b[u\x1b[1C")
-        );
-        assert!(super::handterm_native_latex_cell_symbol("x\x1by", 1, 1).is_none());
-    }
+#[path = "ui_viewport_tests.rs"]
+mod tests;
 
-    #[test]
-    fn tail_follow_small_appends_snap_to_bottom() {
-        // Streaming-sized appends (<= min jump) snap directly; no animation.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(103, 30);
-        assert_eq!(scroll, 103);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_large_append_slides_in_bounded_steps() {
-        // A 12-row jump advances by at most TAIL_CATCHUP_MAX_STEP per frame
-        // and reports an active catch-up until it reaches the bottom.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let first = super::resolve_tail_follow_scroll(112, 30);
-        assert!(first < 112, "must not snap: {first}");
-        assert!(
-            first - 100 <= super::TAIL_CATCHUP_MAX_STEP,
-            "step bounded: {first}"
-        );
-        assert!(crate::tui::ui::tail_catchup_active());
-
-        // Subsequent frames converge to the bottom and clear the flag.
-        let mut scroll = first;
-        let mut guard = 0;
-        while scroll < 112 {
-            crate::tui::ui::set_last_resolved_chat_scroll(scroll);
-            scroll = super::resolve_tail_follow_scroll(112, 30);
-            guard += 1;
-            assert!(guard < 50, "catch-up must converge");
-        }
-        assert_eq!(scroll, 112);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn explicit_tail_follow_request_skips_content_catch_up_animation() {
-        crate::tui::ui::set_last_resolved_chat_scroll(40);
-        crate::tui::ui::request_tail_follow_snap();
-
-        let scroll = super::resolve_tail_follow_scroll(80, 30);
-
-        assert_eq!(scroll, 80);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_caps_lag_to_one_viewport() {
-        // A huge append (way beyond a screen) starts at most one viewport
-        // behind the bottom so the catch-up never replays pages of content.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(400, 30);
-        assert!(scroll >= 400 - 30, "lag capped to viewport: {scroll}");
-        assert!(crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_backward_motion_snaps() {
-        // Content shrank (commit collapsed reasoning): snap, don't animate.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(80, 30);
-        assert_eq!(scroll, 80);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn default_copy_badge_alt_label_matches_platform() {
-        #[cfg(target_os = "macos")]
-        assert_eq!(super::copy_badge_alt_label_from_config(""), "⌥");
-
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(super::copy_badge_alt_label_from_config(""), "Alt");
-    }
-
-    #[test]
-    fn copy_badge_alt_label_uses_trimmed_config_override() {
-        assert_eq!(
-            super::copy_badge_alt_label_from_config(" Option "),
-            "Option"
-        );
-        assert_eq!(super::copy_badge_alt_label_from_config("⌥"), "⌥");
-    }
-
+#[cfg(test)]
+mod fork_copy_badge_tests {
     #[test]
     fn copy_badge_reserved_width_includes_explicit_copy_label() {
-        // The reserved width must be wide enough to hold the visible "Copy"
-        // text ahead of the hotkey glyphs, not just the hotkeys themselves.
+        use unicode_width::UnicodeWidthStr;
+
         let with_label = super::copy_badge_shortcut_width("S");
-        let hotkeys_only = unicode_width::UnicodeWidthStr::width(
-            format!(" {} [⇧] [S]", super::copy_badge_alt_badge()).as_str(),
-        );
-        assert!(
-            with_label > hotkeys_only,
-            "expected reserved width ({with_label}) to exceed hotkey-only width ({hotkeys_only})"
-        );
+        let hotkeys_only =
+            UnicodeWidthStr::width(format!(" {} [⇧] [S]", super::copy_badge_alt_badge()).as_str());
+        assert!(with_label > hotkeys_only);
         assert!(with_label >= hotkeys_only + super::COPY_BADGE_LABEL.len());
     }
 }

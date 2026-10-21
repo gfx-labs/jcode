@@ -108,11 +108,11 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
                             let challenge = challenge.lock().unwrap().clone().expect("authorization challenge");
                             let actual = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(params["code_verifier"].as_bytes()));
                             assert_eq!(actual, challenge, "PKCE verifier does not match authorization challenge");
-                            ("200 OK", String::new(), json!({"access_token":"first-token","refresh_token":"renew-token","expires_in":1}).to_string())
+                            ("200 OK", String::new(), json!({"access_token":"first-token","token_type":"Bearer","refresh_token":"renew-token","expires_in":1}).to_string())
                         } else {
                             assert_eq!(params.get("grant_type").map(String::as_str), Some("refresh_token"));
                             assert_eq!(params.get("refresh_token").map(String::as_str), Some("renew-token"));
-                            ("200 OK", String::new(), json!({"access_token":"renewed-token","refresh_token":"renew-token","expires_in":3600}).to_string())
+                            ("200 OK", String::new(), json!({"access_token":"renewed-token","token_type":"Bearer","refresh_token":"renew-token","expires_in":3600}).to_string())
                         }
                     },
                     _ => ("404 Not Found", String::new(), String::new()),
@@ -221,7 +221,7 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
         oauth::auth_status(&config),
         McpAuthStatus::Authenticated
     ));
-    assert!(oauth::logout(&config).unwrap());
+    assert!(oauth::logout(config.url.as_deref().unwrap()).unwrap());
     assert_eq!(oauth::auth_status(&config), McpAuthStatus::NotAuthenticated);
     // A callback with a mismatched state must not exchange a code or persist tokens.
     let prior_tokens = events
@@ -230,8 +230,8 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
         .iter()
         .filter(|(p, _)| p == "/token")
         .count();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
+    let rejected = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
         oauth::authenticate("fixture", &config, |url| {
             let parsed: url::Url = url.parse().unwrap();
             let query: std::collections::HashMap<_, _> =
@@ -242,10 +242,8 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
             });
         }),
     )
-    .await
-    .unwrap()
-    .unwrap_err();
-    assert!(error.to_string().contains("state mismatch"), "{error:#}");
+    .await;
+    assert!(rejected.is_err(), "invalid callback must not complete login");
     assert_eq!(
         events
             .lock()

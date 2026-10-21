@@ -182,23 +182,59 @@ fn load_save_roundtrip_via_temp_home() {
 fn fingerprint_changes_with_oauth_identity_and_timeout() {
     let base = cfg("x", &[]);
     let base_fp = fingerprint_config(&base);
-    let mut t = base.clone();
-    t.timeout_secs = Some(99);
-    assert_ne!(fingerprint_config(&t), base_fp);
-    let variants: Vec<crate::mcp::McpOAuthConfig> = vec![
-        serde_json::from_value(serde_json::json!({"client_id": "a"})).unwrap(),
-        serde_json::from_value(serde_json::json!({"client_id": "b"})).unwrap(),
-        serde_json::from_value(serde_json::json!({"client_name": "n"})).unwrap(),
-        serde_json::from_value(serde_json::json!({"scopes": ["s"]})).unwrap(),
-    ];
-    let mut seen = std::collections::HashSet::new();
-    seen.insert(base_fp);
-    for o in variants {
-        let mut c = base.clone();
-        c.oauth = Some(o);
-        assert!(
-            seen.insert(fingerprint_config(&c)),
-            "oauth variant must differ"
-        );
+    let mut timed = base.clone();
+    timed.timeout_secs = Some(99);
+    assert_ne!(fingerprint_config(&timed), base_fp);
+    let mut identified = base;
+    identified.oauth = Some(serde_json::from_value(serde_json::json!({"client_id": "custom"})).unwrap());
+    assert_ne!(fingerprint_config(&identified), base_fp);
+}
+
+/// Every session reports each shared server's connection. Only the first
+/// report of a catalog should touch the file; identical repeats must be free,
+/// and an external rewrite of the file must not be masked by the memo.
+#[test]
+fn sync_server_writes_once_skips_repeats_and_notices_external_edits() {
+    let _guard = crate::storage::lock_test_env();
+    let tmp = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("JCODE_HOME", tmp.path());
+    }
+    let config = cfg("node", &["sync.js"]);
+    let tools = vec![tool("alpha"), tool("beta")];
+
+    assert!(McpSchemaCache::sync_server("sync-srv", &config, &tools));
+    assert!(
+        !McpSchemaCache::sync_server("sync-srv", &config, &tools),
+        "identical repeat must not rewrite"
+    );
+
+    // Another process wipes the cache: the next report must restore it.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    McpSchemaCache::default().save();
+    assert!(
+        McpSchemaCache::load()
+            .tools_for("sync-srv", &config)
+            .is_none()
+    );
+    McpSchemaCache::sync_server("sync-srv", &config, &tools);
+    let restored = McpSchemaCache::load();
+    assert_eq!(
+        restored.tools_for("sync-srv", &config).map(|t| t.len()),
+        Some(2),
+        "external edit must not be masked by the in-process memo"
+    );
+
+    // A changed catalog is written.
+    let fewer = vec![tool("alpha")];
+    assert!(McpSchemaCache::sync_server("sync-srv", &config, &fewer));
+    assert_eq!(
+        McpSchemaCache::load()
+            .tools_for("sync-srv", &config)
+            .map(|t| t.len()),
+        Some(1)
+    );
+    unsafe {
+        std::env::remove_var("JCODE_HOME");
     }
 }

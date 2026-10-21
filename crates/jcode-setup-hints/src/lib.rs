@@ -120,6 +120,11 @@ pub struct SetupHintsState {
     /// small number of spaced repetitions.
     #[serde(default)]
     pub cli_launch_hint_shown_count: HashMap<String, u64>,
+    /// Set once the first-run onboarding start choice ("Find bugs in my most
+    /// active repo" / "Start a new session") has been shown. Onboarding never
+    /// auto-starts again after this.
+    #[serde(default)]
+    pub onboarding_start_choice_shown: bool,
 }
 
 /// Serde default helper: fields documented as "true by default".
@@ -149,6 +154,7 @@ impl Default for SetupHintsState {
             launch_hotkey_usage: HashMap::new(),
             cli_launch_hint_last_shown: HashMap::new(),
             cli_launch_hint_shown_count: HashMap::new(),
+            onboarding_start_choice_shown: false,
         }
     }
 }
@@ -320,12 +326,39 @@ fn load_launch_hotkeys_config() -> jcode_config_types::LaunchHotkeysConfig {
         return Default::default();
     };
     let path = dir.join("config.toml");
+    // Startup calls this several times (hotkey notice, resolve, install
+    // checks), each a full TOML parse of config.toml. Memoize on the file's
+    // path, mtime and length so edits are still picked up immediately.
+    type Key = (
+        std::path::PathBuf,
+        Option<std::time::SystemTime>,
+        Option<u64>,
+    );
+    static MEMO: std::sync::Mutex<Option<(Key, jcode_config_types::LaunchHotkeysConfig)>> =
+        std::sync::Mutex::new(None);
+    let metadata = std::fs::metadata(&path).ok();
+    let key: Key = (
+        path.clone(),
+        metadata.as_ref().and_then(|meta| meta.modified().ok()),
+        metadata.as_ref().map(std::fs::Metadata::len),
+    );
+    if !cfg!(test)
+        && let Ok(guard) = MEMO.lock()
+        && let Some((cached_key, config)) = guard.as_ref()
+        && *cached_key == key
+    {
+        return config.clone();
+    }
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Default::default();
     };
-    toml::from_str::<Wrapper>(&text)
+    let config = toml::from_str::<Wrapper>(&text)
         .map(|w| w.launch_hotkeys)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Ok(mut guard) = MEMO.lock() {
+        *guard = Some((key, config.clone()));
+    }
+    config
 }
 
 /// Record the directories the global launch hotkeys should reopen.

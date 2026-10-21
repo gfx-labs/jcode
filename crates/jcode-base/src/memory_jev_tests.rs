@@ -27,11 +27,11 @@ impl RelevanceTransport for Mock {
     }
     async fn evaluate(&self, state: Value, questions: Map<String, Value>) -> Result<Value> {
         assert!(questions.len() <= RelevanceTransport::max_questions(self).max(1));
-        assert!(request_size(&state, &questions)? <= MAX_REQUEST_BYTES);
+        assert!(request_size(&state, &questions, self.model_id())? <= MAX_REQUEST_BYTES);
         self.request_bytes
             .lock()
             .unwrap()
-            .push(request_size(&state, &questions)?);
+            .push(request_size(&state, &questions, self.model_id())?);
         self.questions.lock().unwrap().push(questions.clone());
         let mut calls = self.calls.lock().unwrap();
         let call = calls.len();

@@ -35,7 +35,7 @@ fn run_status(json: bool) -> Result<()> {
     }
 
     println!(
-        "Anonymous usage telemetry: {}",
+        "Usage telemetry: {}",
         if status.enabled {
             "enabled"
         } else {
@@ -60,7 +60,7 @@ fn run_status(json: bool) -> Result<()> {
         println!("Transcript endpoint: {}", transcript_endpoint.unwrap());
     }
     println!(
-        "Anonymous telemetry ID: {}",
+        "Installation telemetry ID: {}",
         status.telemetry_id.as_deref().unwrap_or("not assigned")
     );
     Ok(())
