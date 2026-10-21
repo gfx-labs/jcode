@@ -83,6 +83,11 @@ fn test_remote_model_picker_during_startup_waits_for_session_catalog() {
 /// next open is a cache hit with no pending background load.
 #[test]
 fn test_large_remote_model_picker_builds_off_ui_thread_then_caches() {
+    // Other tests exercise the SSH client by changing a process-global env var.
+    // This scenario is a native remote connection, not an SSH-local fallback.
+    let _env_lock = crate::storage::lock_test_env();
+    let _ssh_remote = EnvRestoreGuard::capture(["JCODE_SSH_REMOTE"]);
+    crate::env::remove_var("JCODE_SSH_REMOTE");
     let mut app = create_test_app();
     app.is_remote = true;
     app.remote_provider_name = Some("openrouter".to_string());

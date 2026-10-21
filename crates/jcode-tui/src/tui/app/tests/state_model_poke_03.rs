@@ -1198,6 +1198,11 @@ fn test_tui_openai_compatible_local_refresh_failure_is_pending_not_final_failure
 
 #[test]
 fn test_model_picker_opens_simplified_state_before_async_routes_complete() {
+    // SSH-mode tests change process environment. Keep this local picker scenario
+    // isolated through both the immediate and background catalog phases.
+    let _env_lock = crate::storage::lock_test_env();
+    let _ssh_remote = EnvRestoreGuard::capture(["JCODE_SSH_REMOTE"]);
+    crate::env::remove_var("JCODE_SSH_REMOTE");
     ensure_test_jcode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::tui::ui::clear_test_render_state_for_tests();
@@ -1801,36 +1806,38 @@ fn test_local_model_picker_openrouter_bare_openai_route_uses_openai_catalog_pref
 
 #[test]
 fn test_agent_model_picker_openrouter_bare_openai_route_saves_openai_catalog_prefix() {
-    let (mut app, _set_model_calls) = create_openrouter_spec_capture_test_app();
+    with_temp_jcode_home(|| {
+        let (mut app, _set_model_calls) = create_openrouter_spec_capture_test_app();
 
-    app.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
+        app.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
 
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("agent model picker should be open");
-    let model_idx = picker
-        .entries
-        .iter()
-        .position(|entry| entry.name == "gpt-5.4 (high)")
-        .expect("openrouter-backed OpenAI effort entry should be in picker");
-    let filtered_pos = picker
-        .filtered
-        .iter()
-        .position(|&i| i == model_idx)
-        .expect("entry should be in filtered list");
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("agent model picker should be open");
+        let model_idx = picker
+            .entries
+            .iter()
+            .position(|entry| entry.name == "gpt-5.4 (high)")
+            .expect("openrouter-backed OpenAI effort entry should be in picker");
+        let filtered_pos = picker
+            .filtered
+            .iter()
+            .position(|&i| i == model_idx)
+            .expect("entry should be in filtered list");
 
-    app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
-        .expect("agent model picker selection should succeed");
+        app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .expect("agent model picker selection should succeed");
 
-    let last = app.display_messages.last().expect("display message");
-    assert_eq!(last.role, "system");
-    assert!(
-        last.content.contains("openai/gpt-5.4@OpenAI"),
-        "message should show normalized saved spec, got: {}",
-        last.content
-    );
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content.contains("openai/gpt-5.4@OpenAI"),
+            "message should show normalized saved spec, got: {}",
+            last.content
+        );
+    });
 }
 
 #[test]
@@ -1898,6 +1905,8 @@ GPT:
 
 #[test]
 fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
     let mut app = create_login_smoke_model_app();
     app.display_messages = vec![DisplayMessage::system("seed render state")];
     app.bump_display_messages_version();
@@ -1911,7 +1920,6 @@ fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
             .expect("model picker should be open");
         picker.filter = filter.to_string();
         App::apply_inline_interactive_filter(picker);
-        let _render_lock = scroll_render_test_lock();
         let backend = ratatui::backend::TestBackend::new(180, 48);
         let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
         render_and_snap(app, &mut terminal)

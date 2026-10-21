@@ -200,10 +200,12 @@ fn terminal_setup_command_is_dispatched_and_reports_something_actionable() {
         "the command must be registered, got: {}",
         last.content
     );
-    // Whatever the outcome, the user must learn how Shift+Enter behaves here.
+    // Both a local configuration explanation and the SSH fallback are actionable.
     assert!(
-        last.content.contains("Shift+Enter") || last.content.contains("Terminal.app"),
-        "message should explain the Shift+Enter situation: {}",
+        last.content.contains("Shift+Enter")
+            || last.content.contains("Terminal.app")
+            || (last.content.contains("SSH mode") && last.content.contains("Connect to")),
+        "message should explain the Shift+Enter situation or SSH fallback: {}",
         last.content
     );
 }
