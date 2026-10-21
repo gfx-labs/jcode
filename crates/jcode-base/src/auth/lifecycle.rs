@@ -412,6 +412,7 @@ fn globally_preferred_model_rank(model: &str) -> (u8, usize) {
 /// so the bare canonical ids here line up with the live route ids. Claude Opus
 /// is the flagship, then Sonnet, then Nova/Llama/Mistral, then Haiku/cheap.
 const ALL_BEDROCK_MODELS: &[&str] = &[
+    "claude-opus-4-6",
     "claude-opus-4",
     "claude-sonnet-4",
     "claude-3-7-sonnet",

@@ -969,7 +969,7 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
     let _guard = lock_env();
     let _env_guard = crate::storage::lock_test_env();
     let dir = TempDir::new().expect("temp dir");
-    let saved: Vec<(String, Option<String>)> = [
+    let mut keys: Vec<String> = [
         "JCODE_HOME",
         "JCODE_NON_INTERACTIVE",
         "JCODE_DEFERRED_AUTH_BOOTSTRAP",
@@ -982,10 +982,23 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "JCODE_RUNTIME_PROVIDER",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_API_KEY_NAME",
+        "JCODE_OPENROUTER_ENV_FILE",
     ]
     .iter()
-    .map(|k| (k.to_string(), std::env::var(k).ok()))
+    .map(|key| (*key).to_string())
     .collect();
+    keys.extend(
+        provider_catalog::openai_compatible_profiles()
+            .iter()
+            .map(|profile| profile.api_key_env.to_string()),
+    );
+    let saved: Vec<(String, Option<String>)> = keys
+        .iter()
+        .map(|key| (key.clone(), std::env::var(key).ok()))
+        .collect();
 
     crate::env::set_var("JCODE_HOME", dir.path());
     crate::env::set_var("JCODE_NON_INTERACTIVE", "1");
@@ -999,8 +1012,16 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
         "CURSOR_API_KEY",
         "JCODE_ACTIVE_PROVIDER",
         "JCODE_INITIAL_PROVIDER_EXPLICIT",
+        "JCODE_RUNTIME_PROVIDER",
+        "JCODE_OPENROUTER_ALLOW_NO_AUTH",
+        "JCODE_OPENROUTER_API_BASE",
+        "JCODE_OPENROUTER_API_KEY_NAME",
+        "JCODE_OPENROUTER_ENV_FILE",
     ] {
         crate::env::remove_var(key);
+    }
+    for profile in provider_catalog::openai_compatible_profiles() {
+        crate::env::remove_var(profile.api_key_env);
     }
 
     let opencode_path = crate::auth::claude::ExternalClaudeAuthSource::OpenCode

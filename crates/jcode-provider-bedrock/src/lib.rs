@@ -144,6 +144,18 @@ impl BedrockProvider {
             .unwrap_or(false)
     }
 
+    /// IDs observed in the cached or live catalog, excluding speculative built-ins.
+    pub fn catalog_model_ids(&self) -> Vec<String> {
+        let mut models = self.fetched_models.read().map(|ids| ids.clone()).unwrap_or_default();
+        models.extend(
+            self.fetched_inference_profiles
+                .read()
+                .map(|ids| ids.clone())
+                .unwrap_or_default(),
+        );
+        models
+    }
+
     pub fn new() -> Self {
         let model =
             std::env::var("JCODE_BEDROCK_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());

@@ -118,7 +118,13 @@ fn promote_bedrock_placeholder_default(bedrock: &bedrock::BedrockProvider) {
     if !bedrock.has_catalog() {
         return;
     }
-    if let Some(best) = bedrock_promoted_default(&bedrock.model(), &bedrock.model_routes()) {
+    let catalog = bedrock.catalog_model_ids();
+    let routes: Vec<_> = bedrock
+        .model_routes()
+        .into_iter()
+        .filter(|route| catalog.contains(&route.model))
+        .collect();
+    if let Some(best) = bedrock_promoted_default(&bedrock.model(), &routes) {
         bedrock.replace_placeholder_default_model(&best);
     }
 }
@@ -3139,7 +3145,7 @@ mod bedrock_placeholder_default_tests {
     #[test]
     fn bedrock_placeholder_promotes_to_newest_usable_claude() {
         let routes = vec![
-            route(bedrock::BedrockProvider::PLACEHOLDER_DEFAULT_MODEL, true),
+            route(bedrock::BedrockProvider::PLACEHOLDER_DEFAULT_MODEL, false),
             route("anthropic.claude-sonnet-4-20250514-v1:0", true),
             route("us.anthropic.claude-opus-4-6-v1", true),
             route("amazon.nova-pro-v1:0", true),
