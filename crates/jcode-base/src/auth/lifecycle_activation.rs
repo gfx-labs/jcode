@@ -172,7 +172,9 @@ pub(super) fn sync_process_env_from_saved_credentials(
 
 pub(super) fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<String> {
     match normalized_auth_provider_id(provider_id) {
-        Some("azure-openai") => match crate::provider::activation::apply_azure_openai_runtime() {
+        Some("azure-openai") => match crate::provider::activation::apply_azure_openai_runtime_with(
+            !config_has_explicit_default_provider(),
+        ) {
             Ok(model) => model,
             Err(error) => {
                 let message = error.to_string();
@@ -206,7 +208,13 @@ pub(super) fn apply_auth_provider_runtime(provider_id: Option<&str>) -> Option<S
             let default_model =
                 crate::provider_catalog::resolve_openai_compatible_profile(profile).default_model;
             if let Err(error) =
-                crate::provider::activation::apply_openai_compatible_runtime(default_model.clone())
+                // Same guard as direct_provider_activation: an auth change in
+                // the shared daemon must not override an explicit configured
+                // default for every future session.
+                crate::provider::activation::apply_openai_compatible_runtime_with(
+                        default_model.clone(),
+                        !config_has_explicit_default_provider(),
+                    )
             {
                 let message = error.to_string();
                 crate::logging::auth_event(

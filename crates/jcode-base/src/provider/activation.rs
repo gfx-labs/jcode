@@ -125,6 +125,15 @@ impl ProviderActivation {
         self
     }
 
+    /// Keep the runtime/model env updates but leave the process-global
+    /// initial-provider selection untouched.
+    pub fn without_initial_selection(mut self) -> Self {
+        if matches!(self.selection, RuntimeSelection::Initial(_)) {
+            self.selection = RuntimeSelection::Unchanged;
+        }
+        self
+    }
+
     pub fn initial(runtime_id: RuntimeProviderId, active_provider: ActiveProvider) -> Self {
         Self::new(runtime_id, RuntimeSelection::Initial(active_provider))
     }
@@ -247,14 +256,40 @@ pub fn clear_initial_runtime_provider() {
 }
 
 pub fn apply_azure_openai_runtime() -> Result<Option<String>> {
+    apply_azure_openai_runtime_with(true)
+}
+
+/// `select_initial = false` is used by the shared daemon's auth-change path so
+/// that configuring a provider in one session does not change the provider
+/// that every future session starts on.
+pub fn apply_azure_openai_runtime_with(select_initial: bool) -> Result<Option<String>> {
     crate::auth::azure::apply_runtime_env()?;
     let model = crate::auth::azure::load_model();
-    ProviderActivation::azure_openai(model.clone()).apply_env()?;
+    let activation = ProviderActivation::azure_openai(model.clone());
+    let activation = if select_initial {
+        activation
+    } else {
+        activation.without_initial_selection()
+    };
+    activation.apply_env()?;
     Ok(model)
 }
 
 pub fn apply_openai_compatible_runtime(default_model: Option<String>) -> Result<()> {
-    ProviderActivation::openai_compatible(default_model).apply_env()
+    apply_openai_compatible_runtime_with(default_model, true)
+}
+
+pub fn apply_openai_compatible_runtime_with(
+    default_model: Option<String>,
+    select_initial: bool,
+) -> Result<()> {
+    let activation = ProviderActivation::openai_compatible(default_model);
+    let activation = if select_initial {
+        activation
+    } else {
+        activation.without_initial_selection()
+    };
+    activation.apply_env()
 }
 
 #[cfg(test)]
@@ -288,6 +323,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn openai_compatible_activation_without_initial_selection_keeps_default() {
+        let _lock = crate::storage::lock_test_env();
+        let _guard = EnvGuard::new(&[
+            "JCODE_RUNTIME_PROVIDER",
+            "JCODE_ACTIVE_PROVIDER",
+            "JCODE_INITIAL_PROVIDER_EXPLICIT",
+            "JCODE_OPENROUTER_MODEL",
+            "JCODE_OPENROUTER_TRANSPORT_STATE",
+        ]);
+        crate::env::set_var("JCODE_ACTIVE_PROVIDER", "claude");
+
+        apply_openai_compatible_runtime_with(Some("morph-v3-large".to_string()), false).unwrap();
+
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("claude")
+        );
+        assert!(std::env::var_os("JCODE_INITIAL_PROVIDER_EXPLICIT").is_none());
+        assert_eq!(
+            std::env::var("JCODE_OPENROUTER_MODEL").as_deref(),
+            Ok("morph-v3-large")
+        );
+
+        apply_openai_compatible_runtime_with(None, true).unwrap();
+        assert_eq!(
+            std::env::var("JCODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("openrouter")
+        );
     }
 
     #[test]
