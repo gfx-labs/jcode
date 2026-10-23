@@ -161,6 +161,9 @@ pub(super) fn update_session_start_history(
 }
 
 pub(super) fn get_or_create_id() -> Option<String> {
+    if !super::TELEMETRY_COMPILED_IN {
+        return None;
+    }
     let path = telemetry_id_path()?;
     if let Some(id) = read_existing_id() {
         return Some(id);

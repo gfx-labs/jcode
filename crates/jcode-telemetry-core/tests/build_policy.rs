@@ -51,6 +51,8 @@ fn build_policy_blocks_enablement_and_reporting() {
         telemetry::status().opt_out_source,
         Some(telemetry::TelemetryOptOutSource::BuildPolicy)
     );
+    telemetry::record_turn();
+    telemetry::record_assistant_response();
     telemetry::record_install_if_first_run();
     telemetry::record_upgrade_if_needed();
     telemetry::record_feedback("build-policy regression");

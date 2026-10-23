@@ -1491,8 +1491,14 @@ fn send_transcript_payload(payload: Value) -> bool {
 
 #[cfg(test)]
 fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
+    if !TELEMETRY_COMPILED_IN {
+        return false;
+    }
     concurrency::mark_legacy_concurrency_unavailable(&mut payload);
+    #[cfg(feature = "telemetry")]
     tests::TEST_DELIVERY_MODES.lock().unwrap().push(mode);
+    #[cfg(not(feature = "telemetry"))]
+    let _ = mode;
     if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
         emitted.push(payload);
     }
@@ -2825,5 +2831,5 @@ fn show_first_run_notice() {
     eprintln!("{reset}");
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "telemetry"))]
 mod tests;

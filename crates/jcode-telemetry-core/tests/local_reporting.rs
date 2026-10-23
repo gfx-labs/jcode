@@ -1,3 +1,5 @@
+#![cfg(feature = "telemetry")]
+
 //! Exercise the production queues and HTTP client with synthetic data only.
 //! Each scenario gets an isolated process/home. A second loopback listener traps
 //! redirects and acts as the proxy for any accidental non-local destination.

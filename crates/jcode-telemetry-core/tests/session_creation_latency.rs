@@ -1,3 +1,5 @@
+#![cfg(feature = "telemetry")]
+
 //! Exercises production telemetry HTTP delivery, not the cfg(test) payload sink.
 //! The subprocess proxy accepts CONNECT and never answers. No telemetry leaves
 //! loopback, and process-global clients/environment cannot leak between tests.
