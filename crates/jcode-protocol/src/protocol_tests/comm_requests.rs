@@ -386,6 +386,7 @@ fn test_comm_assign_next_roundtrip() -> Result<()> {
         message: Some("Take the next runnable task.".to_string()),
         model: Some("openai-api:gpt-5.5".to_string()),
         effort: Some("low".to_string()),
+        service_tier: Some("ultrafast".to_string()),
     };
     let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"comm_assign_next\""));
@@ -414,6 +415,9 @@ fn test_comm_assign_next_roundtrip() -> Result<()> {
     assert_eq!(message.as_deref(), Some("Take the next runnable task."));
     assert_eq!(model.as_deref(), Some("openai-api:gpt-5.5"));
     assert_eq!(effort.as_deref(), Some("low"));
+    if let Request::CommAssignNext { service_tier, .. } = parse_request_json(&json)? {
+        assert_eq!(service_tier.as_deref(), Some("ultrafast"));
+    }
     Ok(())
 }
 
@@ -457,6 +461,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
         model: Some("openai-api:gpt-5.5".to_string()),
         effort: Some("low".to_string()),
         label: Some("review auth flow".to_string()),
+        service_tier: Some("ultrafast".to_string()),
     };
     let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"comm_spawn\""));
@@ -464,6 +469,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     assert!(json.contains("\"spawn_mode\":\"headless\""));
     assert!(json.contains("\"effort\":\"low\""));
     assert!(json.contains("\"label\":\"review auth flow\""));
+    assert!(json.contains("\"service_tier\":\"ultrafast\""));
     assert!(json.contains("\"model\":\"openai-api:gpt-5.5\""));
     let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 59);
@@ -476,6 +482,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
         model,
         effort,
         label,
+        service_tier,
         ..
     } = decoded
     else {
@@ -489,6 +496,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     assert_eq!(model.as_deref(), Some("openai-api:gpt-5.5"));
     assert_eq!(effort.as_deref(), Some("low"));
     assert_eq!(label.as_deref(), Some("review auth flow"));
+    assert_eq!(service_tier.as_deref(), Some("ultrafast"));
     Ok(())
 }
 
@@ -507,15 +515,23 @@ fn test_comm_spawn_and_assign_next_decode_model_without_effort() -> Result<()> {
                 model,
                 effort,
                 label,
+                service_tier,
                 ..
             } => {
                 assert_eq!(model.as_deref(), Some("gpt-5.5"));
                 assert_eq!(effort, None);
                 assert_eq!(label, None);
+                assert_eq!(service_tier, None);
             }
-            Request::CommAssignNext { model, effort, .. } => {
+            Request::CommAssignNext {
+                model,
+                effort,
+                service_tier,
+                ..
+            } => {
                 assert_eq!(model.as_deref(), Some("gpt-5.5"));
                 assert_eq!(effort, None);
+                assert_eq!(service_tier, None);
             }
             _ => return Err(anyhow!("expected spawn or assign_next")),
         }
@@ -546,15 +562,23 @@ fn test_comm_spawn_and_assign_next_roundtrip_omitted_or_null_model() -> Result<(
                         model,
                         effort,
                         label,
+                        service_tier,
                         ..
                     } => {
                         assert_eq!(model, None);
                         assert_eq!(effort, None);
                         assert_eq!(label, None);
+                        assert_eq!(service_tier, None);
                     }
-                    Request::CommAssignNext { model, effort, .. } => {
+                    Request::CommAssignNext {
+                        model,
+                        effort,
+                        service_tier,
+                        ..
+                    } => {
                         assert_eq!(model, None);
                         assert_eq!(effort, None);
+                        assert_eq!(service_tier, None);
                     }
                     _ => return Err(anyhow!("expected spawn or assign_next")),
                 }

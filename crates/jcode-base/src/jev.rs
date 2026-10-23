@@ -15,7 +15,6 @@ use laya::{configured_laya_base, laya_endpoint, resolve_laya_with, should_bypass
 const PROVIDER_ENV: &str = "JCODE_MEMORY_JEV_PROVIDER";
 const BROWSER_PROVIDER_ENV: &str = "JCODE_BROWSER_JEV_PROVIDER";
 const SKILL_PROVIDER_ENV: &str = "JCODE_SKILL_JEV_PROVIDER";
-const SWARM_PROVIDER_ENV: &str = "JCODE_SWARM_JEV_PROVIDER";
 const VOICE_PROVIDER_ENV: &str = "JCODE_VOICE_JEV_PROVIDER";
 const LAYA_BASE_URL_ENV: &str = "JCODE_LAYA_BASE_URL";
 const LAYA_DEFAULT_BASE: &str = "http://127.0.0.1:8080";
@@ -50,8 +49,11 @@ enum JevPurpose {
     Memory,
     Browser,
     Skill,
-    Swarm,
     Voice,
+    /// Generic agent-initiated decisions. Shares the browser entitlement and
+    /// provider selector: it is a choice-compatible upstream capability, not a
+    /// purpose-specific entitlement.
+    Decision,
 }
 
 impl JevPurpose {
@@ -60,8 +62,8 @@ impl JevPurpose {
             Self::Memory => "memory",
             Self::Browser => "browser",
             Self::Skill => "skill",
-            Self::Swarm => "swarm",
             Self::Voice => "voice",
+            Self::Decision => "decision",
         }
     }
 
@@ -70,9 +72,11 @@ impl JevPurpose {
             Self::Memory => "memory_jev",
             Self::Browser => "browser_jev",
             Self::Skill => "skill_jev",
-            Self::Swarm => "swarm_jev",
             // Voice uses the gateway's existing typed noul contract.
             Self::Voice => "memory_jev",
+            // Generic decisions are choice-shaped like browser handoff actions;
+            // no separate entitlement exists upstream.
+            Self::Decision => "browser_jev",
         }
     }
 
@@ -85,14 +89,17 @@ impl JevPurpose {
             Self::Memory => PROVIDER_ENV,
             Self::Browser => BROWSER_PROVIDER_ENV,
             Self::Skill => SKILL_PROVIDER_ENV,
-            Self::Swarm => SWARM_PROVIDER_ENV,
             Self::Voice => VOICE_PROVIDER_ENV,
+            Self::Decision => BROWSER_PROVIDER_ENV,
         };
         match env(key) {
             Ok(value) => Ok(value),
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
-                Self::Browser | Self::Skill | Self::Swarm | Self::Voice => "auto".into(),
+                Self::Browser
+                | Self::Skill
+                | Self::Voice
+                | Self::Decision => "auto".into(),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
         }
@@ -165,7 +172,7 @@ fn configured_model_override(purpose: JevPurpose) -> Option<String> {
             "JCODE_MEMORY_JEV_MODEL",
             crate::config::config().agents.memory_jev_model.clone(),
         ),
-        JevPurpose::Browser => (
+        JevPurpose::Browser | JevPurpose::Decision => (
             "JCODE_BROWSER_JEV_MODEL",
             crate::config::config().agents.browser_jev_model.clone(),
         ),
@@ -173,9 +180,9 @@ fn configured_model_override(purpose: JevPurpose) -> Option<String> {
             "JCODE_VOICE_JEV_MODEL",
             crate::config::config().agents.voice_jev_model.clone(),
         ),
-        // Skill and swarm routing share the provider's default decision model;
-        // they have no purpose-specific model override.
-        JevPurpose::Skill | JevPurpose::Swarm => return None,
+        // Skill routing shares the provider's default decision model; it has
+        // no purpose-specific model override.
+        JevPurpose::Skill => return None,
     };
     resolve_model_override(std::env::var(env).ok(), configured)
 }
@@ -242,21 +249,17 @@ impl JevClient {
         Self::resolve(JevPurpose::Skill).is_ok()
     }
 
-    /// Swarm worker model routing. Independent of memory configuration and
-    /// defaults to subscription-first auto selection, like skill routing.
-    pub fn for_swarm() -> Result<Self> {
-        Self::for_purpose(JevPurpose::Swarm)
-    }
-
-    /// A configured credential route exists for swarm model routing.
-    pub fn swarm_available() -> bool {
-        Self::resolve(JevPurpose::Swarm).is_ok()
-    }
-
     /// Voice uses included Jcode access, then Typesafe BYOK. Other provider keys
     /// and memory/browser configuration are ignored.
     pub fn for_voice() -> Result<Self> {
         Self::for_purpose(JevPurpose::Voice)
+    }
+
+    /// Generic agent-initiated decisions (`jev_decision` tool). Shares the
+    /// browser decision credentials and provider selector
+    /// (`JCODE_BROWSER_JEV_PROVIDER`); no separate setup exists.
+    pub fn for_decision() -> Result<Self> {
+        Self::for_purpose(JevPurpose::Decision)
     }
 
     fn for_purpose(purpose: JevPurpose) -> Result<Self> {
@@ -486,8 +489,8 @@ impl JevClient {
                     JevPurpose::Memory => "Jcode Memory",
                     JevPurpose::Browser => "Jcode Browser",
                     JevPurpose::Skill => "Jcode Skill Router",
-                    JevPurpose::Swarm => "Jcode Swarm Router",
                     JevPurpose::Voice => "Jcode Voice",
+                    JevPurpose::Decision => "Jcode Decision",
                 },
             );
         }
@@ -921,10 +924,11 @@ mod tests {
         }
     }
 
-    /// The swarm router's model choice shape passes validation on every provider.
+    /// The generic decision choice shape (jev_decision tool) passes validation
+    /// on every provider, including the shared browser entitlement route.
     #[test]
-    fn swarm_router_choice_passes_request_validation_for_every_provider() {
-        let questions = json!({"model": {"type": "choice", "instructions": "Choose a model route", "criteria": {"openai-oauth:gpt-6.1-sol": "Hard work", "zai:glm-5.3": "Bulk work"}}})
+    fn decision_choice_passes_request_validation_for_every_provider() {
+        let questions = json!({"decision": {"type": "choice", "instructions": "Pick the best route", "criteria": {"option_a": "Large-context review", "option_b": "Fast implementation"}}})
             .as_object().unwrap().clone();
         for provider in [
             JevProvider::OpenRouter,
@@ -933,12 +937,12 @@ mod tests {
             JevProvider::Jcode,
         ] {
             request_body_for(
-                JevPurpose::Swarm,
+                JevPurpose::Decision,
                 provider,
-                json!("Fix the flaky test"),
+                json!({"task": "review a diff"}),
                 &questions,
             )
-            .unwrap_or_else(|err| panic!("swarm rejected for {}: {err}", provider.name()));
+            .unwrap_or_else(|err| panic!("decision rejected for {}: {err}", provider.name()));
         }
     }
 

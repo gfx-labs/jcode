@@ -1263,9 +1263,8 @@ async fn run_swarm_plan_loop(
                 },
                 message: params.message.clone(),
                 model: params.model.clone(),
-                // Worker effort is not agent-controlled: the server applies
-                // `agents.swarm_effort` (default "low").
-                effort: None,
+                effort: params.effort.clone(),
+                service_tier: params.service_tier.clone(),
             };
             match send_request(request).await {
                 Ok(ServerEvent::CommAssignTaskResponse {
@@ -1416,10 +1415,9 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput) 
         request_nonce: Some(fresh_spawn_request_nonce(ctx)),
         spawn_mode: params.spawn_mode.clone(),
         model: params.model.clone(),
-        // Worker effort is not agent-controlled: the server applies
-        // `agents.swarm_effort` (default "low").
-        effort: None,
+        effort: params.effort.clone(),
         label: None,
+        service_tier: params.service_tier.clone(),
     };
 
     match send_request(spawn_request).await {
@@ -1775,6 +1773,13 @@ struct CommunicateInput {
     /// Takes precedence over agents.swarm_model; see list_models for routes.
     #[serde(default)]
     model: Option<String>,
+    /// Reasoning effort requested for newly spawned workers.
+    #[serde(default)]
+    effort: Option<String>,
+    /// OpenAI service tier for spawned workers: priority, ultrafast, flex, or
+    /// off. Unset keeps the configured default.
+    #[serde(default)]
+    service_tier: Option<String>,
     /// Short human-readable label for a spawned agent shown in swarm UI.
     /// Required and nonblank for the explicit `spawn` action.
     #[serde(default)]
@@ -1856,15 +1861,15 @@ impl Tool for CommunicateTool {
                 "action": {
                     "type": "string",
                     "enum": ADVERTISED_SWARM_ACTIONS,
-                    "description": "Action. launch runs your todo list (one agent per lane). spawn starts one worker on a lane; spawn requires label and should include prompt. message sends to one agent (to_session) or a channel; only the coordinator may omit both to message everyone. list_models shows available models/routes."
+                    "description": "Swarm operation. spawn requires label. list_models lists available model routes."
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message body. Goes to to_session, or to channel; with neither, everyone (coordinator only). For report, the body."
+                    "description": "Message body: DM, channel post, or report body."
                 },
                 "tldr": {
                     "type": "string",
-                    "description": "Optional one-line summary (under ~120 chars); recommended for bodies over 240 chars, else auto-derived."
+                    "description": "One-line summary for long bodies."
                 },
                 "status": {
                     "type": "string",
@@ -1897,7 +1902,7 @@ impl Tool for CommunicateTool {
                 "label": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required for spawn: the worker's lane name (e.g. 'auth refactor'). Each spawned worker owns that lane in your todo list (created from the prompt if missing); its todo list is the lane and syncs only it."
+                    "description": "Required for spawn: worker lane name."
                 },
                 "phase": {
                     "type": "integer",
@@ -1933,6 +1938,15 @@ impl Tool for CommunicateTool {
                 "model": {
                     "type": "string",
                     "description": "Model for new workers, e.g. 'openai-api:gpt-5.6-luna'. 'inherit' uses yours. See list_models."
+                },
+                "effort": {
+                    "type": "string",
+                    "description": "Reasoning effort for newly spawned workers. Overrides the configured default."
+                },
+                "service_tier": {
+                    "type": "string",
+                    "enum": ["priority", "ultrafast", "flex", "off"],
+                    "description": "OpenAI service tier for spawned workers."
                 },
                 "session_ids": {
                     "type": "array",
@@ -2515,10 +2529,9 @@ impl Tool for CommunicateTool {
                     request_nonce: None,
                     spawn_mode: params.spawn_mode.clone(),
                     model: params.model.clone(),
-                    // Worker effort is not agent-controlled: the server applies
-                    // `agents.swarm_effort` (default "low").
-                    effort: None,
+                    effort: params.effort.clone(),
                     label: Some(label),
+                    service_tier: params.service_tier.clone(),
                 };
 
                 match send_request(request).await {
@@ -2830,9 +2843,8 @@ impl Tool for CommunicateTool {
                     spawn_if_needed: params.spawn_if_needed,
                     message: params.message.clone(),
                     model: params.model.clone(),
-                    // Worker effort is not agent-controlled: the server applies
-                    // `agents.swarm_effort` (default "low").
-                    effort: None,
+                    effort: params.effort.clone(),
+                    service_tier: params.service_tier.clone(),
                 };
 
                 match send_request(request).await {
@@ -2884,9 +2896,8 @@ impl Tool for CommunicateTool {
                         spawn_if_needed: params.spawn_if_needed,
                         message: params.message.clone(),
                         model: params.model.clone(),
-                        // Worker effort is not agent-controlled: the server applies
-                        // `agents.swarm_effort` (default "low").
-                        effort: None,
+                        effort: params.effort.clone(),
+                        service_tier: params.service_tier.clone(),
                     };
 
                     match send_request(request).await {

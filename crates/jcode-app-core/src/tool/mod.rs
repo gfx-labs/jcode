@@ -31,6 +31,7 @@ pub mod applet;
 mod goal;
 pub mod inflight;
 mod jcode_docs;
+pub mod jev_decision;
 pub mod mcp;
 mod memory;
 mod name_suggestions;
@@ -479,6 +480,12 @@ impl Registry {
                 jcode_docs::JcodeDocsTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "jev_decision",
+                jev_decision::JevDecisionTool::new,
+            );
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
             Self::insert_tool_timed(
                 &mut m,

@@ -663,7 +663,7 @@ pub(super) async fn spawn_swarm_agent(
     requested_model: Option<String>,
     requested_effort: Option<String>,
     label: Option<String>,
-    routing_context: Option<super::swarm_model_router::RoutingContext>,
+    requested_service_tier: Option<String>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
@@ -691,37 +691,10 @@ pub(super) async fn spawn_swarm_agent(
     let configured_swarm_model =
         session_swarm_model(req_session_id, sessions, agents_config.swarm_model.clone()).await;
     let resolved_spawn_mode = resolve_swarm_spawn_mode(spawn_mode, agents_config.swarm_spawn_mode);
-    let routed = if super::swarm_model_router::should_route(requested_model.as_deref()) {
-        let context = routing_context.unwrap_or_else(|| {
-            let mut context =
-                super::swarm_model_router::RoutingContext::from_task(initial_message.as_deref());
-            context.label = label.clone();
-            context
-        });
-        super::swarm_model_router::select_swarm_model(
-            &agents_config.swarm_router,
-            &context,
-            &provider_template.model_routes(),
-        )
-        .await
-    } else {
-        None
-    };
-    if let Some(routed) = routed.as_ref() {
-        crate::logging::info(&format!(
-            "Swarm model router selected {} (effort={:?}, service_tier={:?}, confidence={:.2})",
-            routed.spec, routed.effort, routed.service_tier, routed.confidence
-        ));
-    }
-    let (routed_model, routed_effort, routed_service_tier) = match routed {
-        Some(routed) => (Some(routed.spec), routed.effort, routed.service_tier),
-        None => (None, None, None),
-    };
     let selection = resolve_swarm_spawn_selection(
         requested_model
             .clone()
-            .filter(|model| !model.trim().is_empty())
-            .or(routed_model),
+            .filter(|model| !model.trim().is_empty()),
         configured_swarm_model.clone(),
         &coordinator,
     );
@@ -731,14 +704,14 @@ pub(super) async fn spawn_swarm_agent(
     let spawn_effort = resolve_swarm_spawn_effort(
         requested_effort
             .as_deref()
-            .filter(|effort| !effort.trim().is_empty())
-            .or(routed_effort.as_deref()),
+            .filter(|effort| !effort.trim().is_empty()),
         agents_config.swarm_effort.as_deref(),
     );
     crate::logging::info(&format!(
-        "Swarm spawn model resolution: requested_model={:?} requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
+        "Swarm spawn model resolution: requested_model={:?} requested_effort={:?} requested_service_tier={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
         requested_model,
         requested_effort,
+        requested_service_tier,
         agents_config.swarm_effort,
         configured_swarm_model,
         coordinator.model,
@@ -765,7 +738,7 @@ pub(super) async fn spawn_swarm_agent(
             spawn_provider_key.as_deref(),
             spawn_route_api_method.as_deref(),
             spawn_effort.as_deref(),
-            routed_service_tier.as_deref(),
+            requested_service_tier.as_deref(),
             coordinator_is_canary,
             startup_message.as_deref(),
             |session_id, cwd, selfdev_requested, provider_key| {
@@ -809,7 +782,7 @@ pub(super) async fn spawn_swarm_agent(
                 spawn_provider_key.clone(),
                 spawn_route_api_method.clone(),
                 spawn_effort.clone(),
-                routed_service_tier.clone(),
+                requested_service_tier.clone(),
                 Some(Arc::clone(mcp_pool)),
                 Some(req_session_id.to_string()),
                 super::headless::HeadlessMemoryScope::RealProject,
@@ -973,6 +946,7 @@ pub(super) async fn handle_comm_spawn(
     model: Option<String>,
     effort: Option<String>,
     label: Option<String>,
+    service_tier: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
@@ -1032,6 +1006,7 @@ pub(super) async fn handle_comm_spawn(
             effort.clone().unwrap_or_default(),
             model.clone().unwrap_or_default(),
             label.clone().unwrap_or_default(),
+            service_tier.clone().unwrap_or_default(),
         ],
     );
     let Some(mutation_state) = begin_or_replay(
@@ -1056,7 +1031,7 @@ pub(super) async fn handle_comm_spawn(
         model,
         effort,
         label,
-        None,
+        service_tier,
         sessions,
         global_session_id,
         provider_template,

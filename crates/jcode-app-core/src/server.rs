@@ -56,7 +56,6 @@ mod socket;
 mod swarm;
 mod swarm_channels;
 mod swarm_labels;
-mod swarm_model_router;
 mod swarm_mutation_state;
 mod swarm_persistence;
 pub(crate) mod swarm_todo_link;

@@ -690,6 +690,12 @@ pub enum Request {
         /// otherwise derived from the first line of `initial_message`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Optional OpenAI service tier for the spawned worker
+        /// (`priority`, `ultrafast`, `flex`, `off`). Unset keeps
+        /// `agents.swarm_openai_service_tier` / provider behavior. Invalid
+        /// values are ignored with a warning rather than failing the spawn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
     },
 
     /// List models/routes available for spawning swarm agents
@@ -807,6 +813,10 @@ pub enum Request {
         /// (same semantics as CommSpawn::effort).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        /// Optional OpenAI service tier for workers spawned by this assignment
+        /// (same semantics as CommSpawn::service_tier).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_tier: Option<String>,
     },
 
     /// Control an existing assigned task lifecycle (coordinator only)

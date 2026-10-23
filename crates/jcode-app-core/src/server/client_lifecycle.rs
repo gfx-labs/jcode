@@ -2803,6 +2803,7 @@ pub(super) async fn handle_client(
                 model,
                 effort,
                 label,
+                service_tier,
             } => {
                 let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                     Some(spawn_mode) => spawn_mode,
@@ -2818,6 +2819,7 @@ pub(super) async fn handle_client(
                     model,
                     effort,
                     label,
+                    service_tier,
                     &client_event_tx,
                     &sessions,
                     &global_session_id,
@@ -3080,6 +3082,7 @@ pub(super) async fn handle_client(
                 message,
                 model,
                 effort,
+                service_tier,
             } => {
                 handle_comm_assign_next(
                     id,
@@ -3091,6 +3094,7 @@ pub(super) async fn handle_client(
                     message,
                     model,
                     effort,
+                    service_tier,
                     &client_event_tx,
                     &sessions,
                     &global_session_id,

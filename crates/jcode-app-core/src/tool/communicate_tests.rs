@@ -784,7 +784,7 @@ fn schema_still_requires_action() {
 }
 
 #[test]
-fn schema_advertises_model_override_but_not_effort() {
+fn schema_advertises_explicit_model_effort_and_service_tier() {
     let schema = CommunicateTool::new().parameters_schema();
     let props = schema["properties"]
         .as_object()
@@ -798,9 +798,14 @@ fn schema_advertises_model_override_but_not_effort() {
             .contains("list_models"),
         "model param should point at the list_models action"
     );
-    // Worker effort is user-configured (`agents.swarm_effort`, default low),
-    // never chosen by the coordinating agent.
-    assert!(!props.contains_key("effort"));
+    assert_eq!(props["effort"]["type"], json!("string"));
+    assert_eq!(props["service_tier"]["type"], json!("string"));
+    assert!(
+        props["service_tier"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ultrafast"))
+    );
     assert!(
         schema["properties"]["action"]["enum"]
             .as_array()
