@@ -1015,7 +1015,6 @@ async fn session_agent_models_update_and_spawn_while_coordinator_busy() {
             None,
             Some("routing test".into()),
             None,
-            None,
             &sessions,
             &Arc::new(RwLock::new(String::new())),
             &provider,
