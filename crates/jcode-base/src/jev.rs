@@ -96,10 +96,7 @@ impl JevPurpose {
             Ok(value) => Ok(value),
             Err(std::env::VarError::NotPresent) => Ok(match self {
                 Self::Memory => memory_default(),
-                Self::Browser
-                | Self::Skill
-                | Self::Voice
-                | Self::Decision => "auto".into(),
+                Self::Browser | Self::Skill | Self::Voice | Self::Decision => "auto".into(),
             }),
             Err(_) => bail!("{key} must contain a valid provider name"),
         }

@@ -9,9 +9,11 @@ fn telemetry_pill_opens_settings_page_and_commits_choice() {
         let mut app = create_test_app();
         app.onboarding_flow = None;
         app.begin_onboarding_flow_at_login();
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-                .unwrap();
+        let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
+            "OpenAI/Codex",
+            "Codex auth.json",
+        )])
+        .unwrap();
         if let Some(flow) = app.onboarding_flow.as_mut() {
             flow.phase = OnboardingPhase::Login {
                 import: Some(review),
@@ -46,13 +48,19 @@ fn telemetry_pill_opens_settings_page_and_commits_choice() {
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Char('a')));
         assert!(app.handle_onboarding_continue_prompt_key(KeyCode::Enter));
         if !crate::telemetry::opt_out_forced_by_env() {
-            assert!(crate::telemetry::is_enabled());
-            assert!(crate::telemetry::content_sharing_enabled());
+            // Default builds compile telemetry out: enabling cannot turn it on.
+            assert_eq!(
+                crate::telemetry::is_enabled(),
+                crate::telemetry::telemetry_compiled_in()
+            );
+            assert_eq!(
+                crate::telemetry::content_sharing_enabled(),
+                crate::telemetry::telemetry_compiled_in()
+            );
         }
-        let no_telemetry_marker = std::path::Path::new(
-            &std::env::var_os("JCODE_HOME").expect("temporary JCODE_HOME"),
-        )
-        .join("no_telemetry");
+        let no_telemetry_marker =
+            std::path::Path::new(&std::env::var_os("JCODE_HOME").expect("temporary JCODE_HOME"))
+                .join("no_telemetry");
         assert!(
             !no_telemetry_marker.exists(),
             "Checking everything must remove the persisted opt-out marker"
@@ -85,9 +93,11 @@ fn telemetry_page_send_nothing_disables_telemetry_and_esc_goes_back() {
         let mut app = create_test_app();
         app.onboarding_flow = None;
         app.begin_onboarding_flow_at_login();
-        let review =
-            ImportReview::new(vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex auth.json")])
-                .unwrap();
+        let review = ImportReview::new(vec![ExternalAuthReviewCandidate::fixture(
+            "OpenAI/Codex",
+            "Codex auth.json",
+        )])
+        .unwrap();
         if let Some(flow) = app.onboarding_flow.as_mut() {
             flow.phase = OnboardingPhase::Login {
                 import: Some(review),
@@ -103,7 +113,11 @@ fn telemetry_page_send_nothing_disables_telemetry_and_esc_goes_back() {
             Some(OnboardingPhase::Login { import: Some(_) })
         ));
         if !crate::telemetry::opt_out_forced_by_env() {
-            assert!(crate::telemetry::is_enabled());
+            // In compiled-out builds Esc cannot leave telemetry enabled.
+            assert_eq!(
+                crate::telemetry::is_enabled(),
+                crate::telemetry::telemetry_compiled_in()
+            );
         }
 
         // Reopen (Continue focused), uncheck everything with `n`, then
@@ -125,10 +139,9 @@ fn telemetry_page_send_nothing_disables_telemetry_and_esc_goes_back() {
         drop(delivery_block);
         assert!(!crate::telemetry::is_enabled());
         assert!(!crate::telemetry::content_sharing_enabled());
-        let no_telemetry_marker = std::path::Path::new(
-            &std::env::var_os("JCODE_HOME").expect("temporary JCODE_HOME"),
-        )
-        .join("no_telemetry");
+        let no_telemetry_marker =
+            std::path::Path::new(&std::env::var_os("JCODE_HOME").expect("temporary JCODE_HOME"))
+                .join("no_telemetry");
         assert!(
             no_telemetry_marker.exists(),
             "Unchecking everything must persist the opt-out marker"

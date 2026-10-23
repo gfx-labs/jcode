@@ -122,7 +122,11 @@ fn parse_choice(value: Value, options: &Map<String, Value>) -> Result<(String, O
     if !options.contains_key(&answer.choice) {
         bail!(
             "Decision service returned '{}' which is not one of the offered options",
-            answer.choice.chars().take(MAX_OPTION_ID_CHARS).collect::<String>()
+            answer
+                .choice
+                .chars()
+                .take(MAX_OPTION_ID_CHARS)
+                .collect::<String>()
         );
     }
     Ok((answer.choice.clone(), answer.confidence))

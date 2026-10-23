@@ -2,8 +2,14 @@ use super::*;
 
 fn valid_options() -> Map<String, Value> {
     Map::from_iter([
-        ("option_a".into(), json!("Review the change with a large-context model")),
-        ("option_b".into(), json!("Implement the change with a fast model")),
+        (
+            "option_a".into(),
+            json!("Review the change with a large-context model"),
+        ),
+        (
+            "option_b".into(),
+            json!("Implement the change with a fast model"),
+        ),
     ])
 }
 
@@ -73,6 +79,10 @@ async fn execute_rejects_bad_input_before_any_network_call() {
         "instructions": "Pick.",
         "options": {"a": "A", "b": "  "}
     });
-    let err = tool.execute(blank, test_ctx()).await.unwrap_err().to_string();
+    let err = tool
+        .execute(blank, test_ctx())
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("non-empty description"), "{err}");
 }
