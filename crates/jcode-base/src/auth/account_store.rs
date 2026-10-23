@@ -54,6 +54,17 @@ pub(crate) fn lock_store(home: &Path, store_name: &str) -> Result<StoreLockGuard
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'),
         "Unsafe account store name"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // New store directories are created owner-only atomically; existing
+        // directories are left untouched and validated by open_store_lock.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(home)?;
+    }
+    #[cfg(not(unix))]
     std::fs::create_dir_all(home)?;
     let metadata = std::fs::symlink_metadata(home)?;
     anyhow::ensure!(
@@ -473,6 +484,7 @@ mod tests {
     #[test]
     fn store_lock_serializes_threads_and_nested_transactions() {
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 let home = home.path();
@@ -489,6 +501,7 @@ mod tests {
     #[test]
     fn store_lock_serializes_process_transactions() {
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         let mut children = (0..4)
             .map(|_| {
                 std::process::Command::new(std::env::current_exe().unwrap())
@@ -572,6 +585,7 @@ mod tests {
     #[test]
     fn store_lock_rejects_invalid_names() {
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         for name in [
             "",
             ".",
@@ -591,6 +605,7 @@ mod tests {
     fn store_lock_rejects_unsafe_paths() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         let target = home.path().join("target");
         std::fs::write(&target, "unchanged").unwrap();
         let path = home.path().join(".auth.json.lock");

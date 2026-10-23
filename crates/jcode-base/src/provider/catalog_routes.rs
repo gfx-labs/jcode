@@ -1182,6 +1182,10 @@ mod tests {
         fn new() -> Self {
             let lock = crate::storage::lock_test_env();
             let temp = tempfile::tempdir().expect("tempdir");
+            // Account stores reject group/other-writable homes; harden the
+            // umask-derived tempdir root (0o775 under umask 0o002).
+            jcode_core::fs::set_directory_permissions_owner_only(temp.path())
+                .expect("owner-only JCODE_HOME");
             let vars = vec![
                 ("JCODE_HOME", std::env::var_os("JCODE_HOME")),
                 ("OPENCODE_API_KEY", std::env::var_os("OPENCODE_API_KEY")),

@@ -13,6 +13,10 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
     // and per-test overrides can re-register a different stub.
     register_test_external_runtimes();
     let temp = tempfile::tempdir().expect("tempdir");
+    // Account stores reject group/other-writable homes; tempdir applies the
+    // process umask (0o775 under umask 0o002), so harden the fixture root.
+    jcode_core::fs::set_directory_permissions_owner_only(temp.path())
+        .expect("owner-only JCODE_HOME");
     let prev_home = std::env::var_os("JCODE_HOME");
     let prev_subscription =
         std::env::var_os(crate::subscription_catalog::JCODE_SUBSCRIPTION_ACTIVE_ENV);

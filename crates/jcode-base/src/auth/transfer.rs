@@ -1236,6 +1236,7 @@ mod tests {
     #[test]
     fn cloud_enumerates_all_accounts_without_selecting_or_exporting_extra_fields() {
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         assert!(cloud_accounts_at(home.path()).unwrap().is_empty());
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             for label in ["first", "second"] {
@@ -1273,6 +1274,7 @@ mod tests {
     fn cloud_handoff_replaces_stale_rotated_copy_but_not_other_identity() {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let original = cloud_fixture(provider, "chosen");
             import_cloud_at(home.path(), provider, "chosen", &original).unwrap();
             let (_, _, access, refresh) = cloud_keys(provider);
@@ -1310,6 +1312,7 @@ mod tests {
         // the handoff, while a hint that is present and different still does.
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let full = cloud_fixture(provider, "chosen");
             let stripped = revised(
                 &revised(&full, "email", Value::Null),
@@ -1343,6 +1346,8 @@ mod tests {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let local = tempfile::tempdir().unwrap();
             let remote = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(local.path()).unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(remote.path()).unwrap();
             let bytes = cloud_fixture(provider, "my original account");
             import_cloud_at(local.path(), provider, "my original account", &bytes).unwrap();
             let before = fs::read(local.path().join(provider.store_name())).unwrap();
@@ -1391,6 +1396,7 @@ mod tests {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             for active_value in [json!("second"), Value::Null] {
                 let home = tempfile::tempdir().unwrap();
+                jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
                 let source_bytes = source(home.path(), provider);
                 let selected = export_cloud_account_at(home.path(), provider, None).unwrap();
                 assert_eq!(selected.label(), "second");
@@ -1443,6 +1449,7 @@ mod tests {
     fn cloud_refresh_requires_same_identity_and_preserves_unknown_account_fields() {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let bytes = cloud_fixture(provider, "selected");
             import_cloud_at(home.path(), provider, "selected", &bytes).unwrap();
             let path = home.path().join(provider.store_name());
@@ -1491,6 +1498,7 @@ mod tests {
     fn cloud_identityless_return_requires_original_departure_and_no_intervening_update() {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let identity = if provider == TransferProvider::OpenAi {
                 "account_id"
             } else {
@@ -1529,6 +1537,7 @@ mod tests {
     fn cloud_validation_is_bounded_and_does_not_modify_existing_store() {
         let provider = TransferProvider::OpenAi;
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         let valid = cloud_fixture(provider, "chosen");
         import_cloud_at(home.path(), provider, "chosen", &valid).unwrap();
         let before = fs::read(home.path().join(provider.store_name())).unwrap();
@@ -1589,6 +1598,7 @@ mod tests {
         let provider = TransferProvider::Claude;
         let bytes = cloud_fixture(provider, "chosen");
         let target = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(target.path()).unwrap();
         import_cloud_at(target.path(), provider, "chosen", &bytes).unwrap();
         let before = fs::read(target.path().join(provider.store_name())).unwrap();
         fs::set_permissions(
@@ -1607,6 +1617,7 @@ mod tests {
         .unwrap();
         for hardlink in [false, true] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let path = home.path().join(provider.store_name());
             if hardlink {
                 fs::hard_link(target.path().join(provider.store_name()), &path).unwrap();
@@ -1649,6 +1660,7 @@ mod tests {
     fn cloud_concurrent_imports_do_not_lose_unrelated_accounts() {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let home = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
             let barrier = Arc::new(Barrier::new(8));
             let threads: Vec<_> = (0..8)
                 .map(|i| {
@@ -1675,6 +1687,7 @@ mod tests {
     #[test]
     fn cloud_rejects_unlabeled_legacy_and_duplicate_labels() {
         let home = tempfile::tempdir().unwrap();
+        jcode_core::fs::set_directory_permissions_owner_only(home.path()).unwrap();
         let path = home.path().join("auth.json");
         let legacy = br#"{"anthropic":{"access":"synthetic","refresh":"synthetic","expires":1}}"#;
         fs::write(&path, legacy).unwrap();
@@ -1743,6 +1756,8 @@ mod tests {
         for provider in [TransferProvider::OpenAi, TransferProvider::Claude] {
             let local = tempfile::tempdir().unwrap();
             let remote = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(local.path()).unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(remote.path()).unwrap();
             let home = remote.path().join("jcode");
             fs::create_dir(&home).unwrap();
             let original = source(local.path(), provider);
@@ -1913,6 +1928,8 @@ mod tests {
         ] {
             let local = tempfile::tempdir().unwrap();
             let remote = tempfile::tempdir().unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(local.path()).unwrap();
+            jcode_core::fs::set_directory_permissions_owner_only(remote.path()).unwrap();
             let source = serde_json::to_vec(&json!({
                 "openai_accounts": [{
                     "label": "active", "access_token": token,

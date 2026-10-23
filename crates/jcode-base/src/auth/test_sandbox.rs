@@ -15,6 +15,9 @@ impl AuthTestSandbox {
         let temp = tempfile::Builder::new()
             .prefix("jcode-auth-lifecycle-")
             .tempdir()?;
+        // Account stores reject group/other-writable homes; tempdir applies the
+        // process umask (0o775 under umask 0o002), so harden the fixture root.
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path())?;
         let saved_env = tracked_env_vars()
             .into_iter()
             .map(|key| {

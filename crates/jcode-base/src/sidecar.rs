@@ -1376,6 +1376,7 @@ mod tests {
         // Make backend selection deterministic by isolating credentials.
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
 
@@ -1403,6 +1404,7 @@ mod tests {
     fn test_chatgpt_oauth_uses_luna_with_no_reasoning_when_available() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         codex::set_active_account_override(Some("openai-1".to_string()));
         crate::provider::clear_all_model_unavailability_for_account();
@@ -1422,6 +1424,7 @@ mod tests {
     fn test_chatgpt_oauth_falls_back_to_gpt_5_4_low_when_luna_unavailable() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         codex::set_active_account_override(Some("openai-1".to_string()));
         crate::provider::clear_all_model_unavailability_for_account();
@@ -1554,6 +1557,7 @@ mod tests {
     fn session_sidecar_uses_session_memory_model_override() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         std::fs::write(
             temp.path().join("config.toml"),
@@ -1587,6 +1591,7 @@ mod tests {
     fn sidecar_uses_active_provider_when_no_oauth_creds() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
 
@@ -1617,6 +1622,7 @@ mod tests {
     fn provider_sidecar_keeps_the_route_selected_at_construction() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
 
@@ -1653,6 +1659,7 @@ mod tests {
     fn sidecar_provider_path_works_for_all_providers() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
+        jcode_core::fs::set_directory_permissions_owner_only(temp.path()).expect("owner-only home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
         let _openai = EnvVarGuard::unset("OPENAI_API_KEY");
 

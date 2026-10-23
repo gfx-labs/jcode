@@ -60,6 +60,7 @@ fn jcode_auth_file_roundtrip() {
 fn jcode_path_respects_jcode_home() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
+    jcode_core::fs::set_directory_permissions_owner_only(temp.path()).unwrap();
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
     assert_eq!(jcode_path().unwrap(), temp.path().join("auth.json"));
@@ -85,6 +86,7 @@ fn jcode_path_respects_jcode_home() {
 fn sandboxed_jcode_home_is_detected_without_hiding_explicit_env_credentials() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
+    jcode_core::fs::set_directory_permissions_owner_only(temp.path()).unwrap();
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
 
     assert!(crate::storage::running_with_sandboxed_home());
@@ -109,6 +111,7 @@ fn real_jcode_home_is_not_treated_as_a_sandbox() {
 fn load_auth_file_preserves_existing_named_labels() {
     let _lock = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();
+    jcode_core::fs::set_directory_permissions_owner_only(temp.path()).unwrap();
     let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
     set_active_account_override(None);
 
