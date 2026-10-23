@@ -12,8 +12,8 @@ pub use jcode_config_types::{
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
     NotificationsConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, RulesConfig,
     SafetyConfig, SessionConfig, SessionNameStyle, SessionNamesConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
-    UpdateChannel, WebSearchConfig, WebSearchEngine,
+    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
+    WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -597,10 +597,52 @@ pub fn on_config_reloaded(listener: fn()) {
         .push(listener);
 }
 
+/// Credentials used only by the shared Jev decision client.
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct JevConfig {
+    pub provider: Option<String>,
+    pub openrouter_api_key: Option<String>,
+}
+
+impl std::fmt::Debug for JevConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JevConfig")
+            .field("provider", &self.provider)
+            .field(
+                "openrouter_api_key",
+                &self.openrouter_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn jev_openrouter_config_roundtrips_without_debug_secret() {
+    let config: Config =
+        toml::from_str("[jev]\nprovider = 'openrouter'\nopenrouter_api_key = 'test-secret'\n")
+            .unwrap();
+    assert_eq!(config.jev.provider.as_deref(), Some("openrouter"));
+    assert_eq!(
+        config.jev.openrouter_api_key.as_deref(),
+        Some("test-secret")
+    );
+    assert!(!format!("{config:?}").contains("test-secret"));
+    let decoded: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(
+        decoded.jev.openrouter_api_key,
+        config.jev.openrouter_api_key
+    );
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
+    /// Shared Jev provider and optional Jev-only credential override.
+    pub jev: JevConfig,
+
     /// Idle session memory hibernation policy.
     pub session: SessionConfig,
 

@@ -289,13 +289,37 @@ impl JevClient {
     }
 
     fn resolve(purpose: JevPurpose) -> Result<(JevProvider, String, String, Option<String>)> {
+        let config = crate::config::config();
         let selector = purpose.selector_with(
-            |key| std::env::var(key),
-            || crate::config::config().agents.memory_jev_provider.clone(),
+            |key| match std::env::var(key) {
+                Err(std::env::VarError::NotPresent) if purpose != JevPurpose::Voice => config
+                    .jev
+                    .provider
+                    .clone()
+                    .ok_or(std::env::VarError::NotPresent),
+                result => result,
+            },
+            || config.agents.memory_jev_provider.clone(),
         )?;
         // Unlike the API-key helper, this does not consult registered
         // cross-provider fallback resolvers or the shared compatible slot.
         let load = |env: &str, file: &str| {
+            if env == "OPENROUTER_API_KEY" {
+                if let Some(key) = config
+                    .jev
+                    .openrouter_api_key
+                    .as_deref()
+                    .filter(|key| !key.trim().is_empty())
+                {
+                    return Some(key.to_owned());
+                }
+                if let Some(key) = crate::provider_catalog::load_env_value_from_env_or_config(
+                    "JCODE_JEV_OPENROUTER_API_KEY",
+                    "jev.env",
+                ) {
+                    return Some(key);
+                }
+            }
             crate::provider_catalog::load_env_value_from_env_or_config(env, file)
         };
         let (provider, api_key) = if purpose == JevPurpose::Voice {
