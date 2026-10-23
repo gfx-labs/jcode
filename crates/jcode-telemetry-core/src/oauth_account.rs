@@ -42,7 +42,10 @@ enum Command {
 /// Nonblocking, bounded enqueue. No identity is created while opted out.
 /// Repeated calls are safe, including after deferred network failures.
 pub fn enqueue_oauth_account(provider: &str, email: &str) -> bool {
-    if !super::is_enabled() {
+    if !super::TELEMETRY_COMPILED_IN {
+        return false;
+    }
+    if !super::TelemetryCategory::Accounts.enabled() {
         return false;
     }
     let email = canonical_email(email);
@@ -177,7 +180,7 @@ struct Http(reqwest::blocking::Client);
 impl Transport for Http {
     fn check(&self, id: &str, c: &Candidate) -> Option<Check> {
         // Unit tests cannot accidentally contact the real telemetry service.
-        if cfg!(test) {
+        if cfg!(test) || !super::TELEMETRY_COMPILED_IN {
             return None;
         }
         // An invalid base URL override fails closed rather than reaching the public service.
@@ -206,7 +209,7 @@ impl Transport for Http {
         })
     }
     fn upload(&self, id: &str, c: &Candidate) {
-        if cfg!(test) || !super::is_enabled() {
+        if cfg!(test) || !super::TELEMETRY_COMPILED_IN || !super::is_enabled() {
             return;
         }
         let Ok(endpoints) = super::reporting_endpoints() else {

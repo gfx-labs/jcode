@@ -6,6 +6,7 @@ const BASE_URL_ENV: &str = "JCODE_TELEMETRY_BASE_URL";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryEndpoints {
     pub event: reqwest::Url,
+    pub usage: reqwest::Url,
     pub transcript: reqwest::Url,
     pub oauth_account: reqwest::Url,
     pub oauth_account_check: reqwest::Url,
@@ -44,6 +45,8 @@ fn parse_base_url(value: &str) -> Result<TelemetryEndpoints, &'static str> {
     let prefix = base.path().trim_end_matches('/').to_string();
     base.set_path(&format!("{prefix}/v1/event"));
     let event = base.clone();
+    base.set_path(&format!("{prefix}/v2/usage"));
+    let usage = base.clone();
     base.set_path(&format!("{prefix}/v1/transcript"));
     let transcript = base.clone();
     base.set_path(&format!("{prefix}/v1/oauth-account"));
@@ -51,6 +54,7 @@ fn parse_base_url(value: &str) -> Result<TelemetryEndpoints, &'static str> {
     base.set_path(&format!("{prefix}/v1/oauth-account/check"));
     Ok(TelemetryEndpoints {
         event,
+        usage,
         transcript,
         oauth_account,
         oauth_account_check: base,
@@ -67,6 +71,10 @@ mod tests {
         assert_eq!(
             endpoints.event.as_str(),
             "https://telemetry.jcode.sh/v1/event"
+        );
+        assert_eq!(
+            endpoints.usage.as_str(),
+            "https://telemetry.jcode.sh/v2/usage"
         );
         assert_eq!(
             endpoints.transcript.as_str(),
@@ -88,6 +96,7 @@ mod tests {
         ] {
             let endpoints = parse_base_url(base).unwrap();
             assert_eq!(endpoints.event.as_str(), format!("{expected}/v1/event"));
+            assert_eq!(endpoints.usage.as_str(), format!("{expected}/v2/usage"));
             assert_eq!(
                 endpoints.transcript.as_str(),
                 format!("{expected}/v1/transcript")

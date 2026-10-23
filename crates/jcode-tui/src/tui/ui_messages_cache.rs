@@ -28,6 +28,7 @@ where
             tool_call_details: crate::config::config().display.tool_call_details,
             compact_transcript: crate::config::config().display.compact_transcript,
             reasoning_display: crate::config::config().display.reasoning_display(),
+            latex_rendering: crate::config::config().display.latex_rendering,
         },
         render,
     )

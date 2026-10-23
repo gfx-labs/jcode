@@ -478,6 +478,9 @@ pub fn parse_openai_response_event(
     };
 
     match event.kind.as_str() {
+        "response.created" => {
+            return event.response.as_ref().and_then(extract_service_tier);
+        }
         "response.output_text.delta" => {
             if let Some(delta) = event.delta {
                 *saw_text_delta = true;
@@ -640,6 +643,9 @@ pub fn parse_openai_response_event(
                 model, service_tier, output_tokens, reasoning_tokens
             ));
 
+            if let Some(tier) = event.response.as_ref().and_then(extract_service_tier) {
+                pending.push_back(tier);
+            }
             let stop_reason = event
                 .response
                 .as_ref()
@@ -668,6 +674,14 @@ pub fn parse_openai_response_event(
     }
 
     None
+}
+
+fn extract_service_tier(response: &Value) -> Option<StreamEvent> {
+    let tier = response.get("service_tier")?.as_str()?.trim();
+    (!tier.is_empty()).then(|| StreamEvent::ServiceTier {
+        tier: tier.to_string(),
+        requested: None,
+    })
 }
 
 fn extract_last_assistant_message_phase(response: &Value) -> Option<String> {
@@ -1052,7 +1066,8 @@ fn extract_input_token_detail(usage: &Value, field: &str) -> Option<u64> {
         .find_map(|key| usage.get(key)?.get(field)?.as_u64())
 }
 
-fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
+/// Extract provider counters without converting inclusive OpenAI input totals.
+pub fn extract_usage_from_response(response: &Value) -> Option<StreamEvent> {
     let usage = response.get("usage")?;
     let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64());
     let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64());

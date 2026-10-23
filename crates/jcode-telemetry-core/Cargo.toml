@@ -4,11 +4,19 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+# Compile-time opt-in for upstream telemetry behavior. Default builds ship
+# telemetry hard-disabled by build policy: no events are created, stored, or
+# sent, and no config, env var, or command can enable it.
+default = []
+telemetry = []
+
 [lib]
 name = "jcode_telemetry_core"
 path = "src/lib.rs"
 
 [dependencies]
+anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 jcode-build-meta = { path = "../jcode-build-meta" }
 jcode-core = { path = "../jcode-core" }

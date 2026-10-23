@@ -1,26 +1,38 @@
 # Telemetry reporting destinations
 
-Jcode sends usage events to `https://telemetry.jcode.sh/v1/event` by default.
+## Build policy
+
+This branch's default builds disable telemetry at compile time. Configuration,
+environment variables, and runtime commands cannot enable usage reporting,
+transcript uploads, or OAuth account reporting in those builds. Local diagnostic
+logs remain available and are not uploaded by telemetry.
+
+The receiver documentation below applies only to a separately compiled build
+that explicitly includes telemetry support.
+
+Enabled builds route usage reports to `/v2/usage` and other events to
+`https://telemetry.jcode.sh/v1/event` by default.
 Transcript uploads use `/v1/transcript` and require separate content-sharing
 consent. Changing the destination does not enable either kind of reporting.
 
 ## Local or self-hosted receiver
 
-Set one environment variable to redirect **both** streams:
+Set one environment variable to redirect reporting streams:
 
 ```bash
 export JCODE_TELEMETRY_BASE_URL=http://127.0.0.1:8080
 jcode telemetry status
 ```
 
-The receiver should accept JSON POST requests at `/v1/event` and, if content
-sharing is enabled, `/v1/transcript`, returning a 2xx status. These are Jcode's
+The receiver should accept JSON POST requests at `/v1/event`, `/v2/usage`, and, if content
+sharing is enabled, `/v1/transcript`. Usage reports require a matching receipt acknowledgment.
+These are Jcode's
 custom event schemas, **not OpenTelemetry/OTLP**. See
 `crates/jcode-usage-types/src/lib.rs` for usage event fields and
 `crates/jcode-telemetry-core/src/lib.rs` for transcript payload construction.
 
 A path prefix is supported: `https://collector.example/jcode` produces
-`/jcode/v1/event` and `/jcode/v1/transcript`. Supply the base, not the full
+`/jcode/v1/event`, `/jcode/v2/usage`, and `/jcode/v1/transcript`. Supply the base, not the full
 `/v1/event` path. Trailing slashes are ignored. HTTP and HTTPS are supported.
 Use HTTP only on a trusted local network, preferably loopback. Use HTTPS for
 remote receivers. Credentials in URLs, query strings, and fragments are rejected.
@@ -32,8 +44,9 @@ host, where the daemon runs. To persist the override, put it in the shell or
 service configuration that launches Jcode. There is no TOML setting for this
 override.
 
-`jcode telemetry status --json` includes `event_endpoint`,
-`transcript_endpoint`, and `endpoint_error`. It is read-only and creates no
+`jcode telemetry status --json` includes `compiled_in`, `enabled`, `event_endpoint`,
+`transcript_endpoint`, and `endpoint_error`. Default builds report
+`compiled_in: false` and `opt_out_source: "build_policy"`. It is read-only and creates no
 telemetry identity. Consent status (`enabled`) is independent of destination
 validity, so check `endpoint_error` as well.
 

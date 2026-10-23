@@ -745,9 +745,7 @@ impl AnthropicProvider {
             "off" | "disabled" => Some("none".to_string()),
             // `swarm` is a UI sentinel meaning "configured root effort + use the swarm tool".
             // Stored verbatim; resolved to a real effort in `actual_effort_for_model`.
-            "none" | "low" | "medium" | "high" | "xhigh" | "max" | "swarm" | "swarm-deep" => {
-                Some(value)
-            }
+            "none" | "low" | "medium" | "high" | "xhigh" | "max" | "swarm" => Some(value),
             other => {
                 jcode_base::logging::info(&format!(
                     "Warning: Ignoring unsupported Anthropic reasoning effort '{}'; expected none|low|medium|high|xhigh|max.",
@@ -779,14 +777,12 @@ impl AnthropicProvider {
         }
     }
 
-    /// Like [`Self::actual_effort_for_model`], but preserves the swarm sentinels
-    /// (light `swarm` and `swarm-deep`) so the stored/UI value keeps reflecting
-    /// the chosen swarm mode. Used when persisting the user's choice; request
-    /// building resolves swarm to a real effort.
+    /// Like [`Self::actual_effort_for_model`], but preserves the `swarm`
+    /// sentinel so the stored/UI value keeps reflecting swarm mode. Used when
+    /// persisting the user's choice; request building resolves swarm to a real
+    /// effort.
     fn store_effort_for_model(model: &str, effort: &str) -> String {
-        if jcode_base::prompt::is_deep_swarm_effort(effort) {
-            jcode_base::prompt::SWARM_DEEP_EFFORT.to_string()
-        } else if jcode_base::prompt::is_swarm_effort(effort) {
+        if jcode_base::prompt::is_swarm_effort(effort) {
             jcode_base::prompt::SWARM_EFFORT.to_string()
         } else {
             Self::actual_effort_for_model(model, effort)
@@ -808,9 +804,7 @@ impl AnthropicProvider {
     /// cheaper models stay cheap.
     fn default_reasoning_effort_for_model(model: &str) -> Option<String> {
         let key = Self::normalized_model_key(model);
-        if key.contains("claude-opus-5-5") {
-            Some("medium".to_string())
-        } else if key.contains("claude-opus-5") {
+        if key.contains("claude-opus-5") {
             Some("low".to_string())
         } else if key.contains("claude-opus") {
             Some(if Self::model_supports_xhigh_effort(model) {
@@ -1065,7 +1059,17 @@ impl AnthropicProvider {
     async fn get_oauth_access_token(&self) -> Result<(String, bool)> {
         // A removed explicit account must fail closed, even with a fresh cache.
         if let Some(label) = self.oauth_account_label() {
-            auth::claude::load_credentials_for_account(&label)?;
+            let mut cached = self.credentials.write().await;
+            let stored = auth::claude::load_credentials_for_account(&label)?;
+            if cached.as_ref().is_some_and(|old| {
+                old.access_token != stored.access_token
+                    || old.refresh_token != stored.refresh_token
+                    || old.expires_at != stored.expires_at
+            }) {
+                // /cloud imports happen in another process. Discard the old
+                // daemon snapshot and validate the newly stored account below.
+                *cached = None;
+            }
         }
         // Check cached credentials
         {
@@ -1594,11 +1598,10 @@ impl Provider for AnthropicProvider {
                     | "xhigh"
                     | "max"
                     | "swarm"
-                    | "swarm-deep"
             )
         {
             anyhow::bail!(
-                "Unsupported Anthropic reasoning effort '{}'; expected none|low|medium|high|xhigh|max|swarm|swarm-deep",
+                "Unsupported Anthropic reasoning effort '{}'; expected none|low|medium|high|xhigh|max|swarm",
                 effort
             );
         }
@@ -1639,7 +1642,7 @@ impl Provider for AnthropicProvider {
         if Self::model_supports_max_effort(&model) {
             efforts.push("max");
         }
-        efforts.extend(["swarm", "swarm-deep"]);
+        efforts.push("swarm");
         efforts
     }
 
@@ -2128,6 +2131,22 @@ async fn run_stream_with_retries(
                     return;
                 }
 
+                // Replayed web search payloads are bound to the account that
+                // produced them. After a fork or account switch Anthropic
+                // rejects them, so resend with plain-text summaries instead of
+                // bricking the session.
+                if !saw_output
+                    && jcode_provider_anthropic::is_invalid_native_replay_error(&error_str)
+                    && jcode_provider_anthropic::downgrade_native_replay(&mut request.messages)
+                {
+                    jcode_base::logging::warn(&format!(
+                        "Anthropic rejected replayed server tool blocks; retrying with text summaries: {}",
+                        e
+                    ));
+                    last_error = Some(e);
+                    continue;
+                }
+
                 // Check if this is a transient/retryable error
                 if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
                     if saw_output {
@@ -2288,17 +2307,14 @@ async fn stream_response(
                 .map_err(anyhow::Error::msg)?,
         );
     }
-    req = req
-        .header("anthropic-version", API_VERSION)
-        .header("content-type", "application/json")
-        .header(
-            "accept",
-            if is_oauth {
-                "application/json"
-            } else {
-                "text/event-stream"
-            },
-        );
+    req = req.header("anthropic-version", API_VERSION).header(
+        "accept",
+        if is_oauth {
+            "application/json"
+        } else {
+            "text/event-stream"
+        },
+    );
 
     if is_oauth {
         // OAuth tokens require:
@@ -2343,8 +2359,14 @@ async fn stream_response(
         req = req.header("anthropic-beta", beta_header);
     }
 
+    let req = jcode_provider_core::request_compression::json_body(
+        req,
+        url,
+        &request,
+        jcode_base::provider::request_compression_mode(),
+    )?;
     let response = jcode_provider_core::transport::send_with_initial_response_timeout(
-        req.json(&request),
+        req,
         stream_idle_timeout,
     )
     .await

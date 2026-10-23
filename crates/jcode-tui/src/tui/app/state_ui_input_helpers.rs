@@ -124,6 +124,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Fold tool results to one-line rows that expand on click",
     ),
     RegisteredCommand::public(
+        "/latex",
+        "Toggle LaTeX images (on/off/status/none/unicode/image)",
+    ),
+    RegisteredCommand::public(
         "/thinking-display",
         "Show/hide the model's thinking text (off/full/collapsed/current)",
     ),
@@ -331,6 +335,7 @@ impl App {
 
     #[cfg(test)]
     pub(crate) fn set_input_for_test(&mut self, input: impl Into<String>) {
+        self.wake_idle_hibernation();
         self.input = input.into();
         self.cursor_pos = self.input.len();
     }
@@ -845,15 +850,7 @@ impl App {
 
         if prefix.starts_with("/effort ") {
             let efforts = [
-                "none",
-                "minimal",
-                "low",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "swarm",
-                "swarm-deep",
+                "none", "minimal", "low", "medium", "high", "xhigh", "max", "swarm",
             ];
             return self.rank_suggestions(
                 input,
@@ -1493,7 +1490,7 @@ impl App {
     /// the active guided flow phase. Defaults to the starter suggestion cards.
     pub fn onboarding_welcome_kind(&self) -> crate::tui::OnboardingWelcomeKind {
         use crate::tui::OnboardingWelcomeKind;
-        use crate::tui::app::onboarding_flow::{OnboardingPhase, SummaryPill, TelemetryLevel};
+        use crate::tui::app::onboarding_flow::{OnboardingPhase, SummaryPill};
         match self.onboarding_phase() {
             Some(OnboardingPhase::Login { import }) => {
                 let prompt = import.as_ref().map(|review| {
@@ -1517,10 +1514,9 @@ impl App {
                             SummaryPill::ImportLess => crate::tui::ImportSummaryPill::ImportLess,
                             SummaryPill::Telemetry => crate::tui::ImportSummaryPill::Telemetry,
                         },
-                        telemetry: review.telemetry.map(|level| match level {
-                            TelemetryLevel::Everything => crate::tui::TelemetryChoice::Everything,
-                            TelemetryLevel::NoContent => crate::tui::TelemetryChoice::NoContent,
-                            TelemetryLevel::Nothing => crate::tui::TelemetryChoice::Nothing,
+                        telemetry: review.telemetry.map(|t| crate::tui::TelemetryPage {
+                            cursor: t.cursor,
+                            checked: t.checked,
                         }),
                         telemetry_env_forced_off: crate::telemetry::opt_out_forced_by_env(),
                         checked_count: review.checked_count(),
@@ -1818,6 +1814,7 @@ impl App {
                 | "/compact"
                 | "/compact mode"
                 | "/alignment"
+                | "/latex"
                 | "/compact-notifications"
                 | "/compact-transcript"
                 | "/show-agentgrep-output"

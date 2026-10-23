@@ -532,7 +532,7 @@ pub(crate) fn effort_display_label(effort: &str) -> &str {
 fn effort_display_label_with_root<'a>(effort: &'a str, root: Option<&str>) -> &'a str {
     macro_rules! swarm_label {
         ($mode:literal, $detail:literal) => {
-            match root.unwrap_or("max") {
+            match root.unwrap_or("low") {
                 "none" => concat!($mode, " (None + ", $detail, ") [Beta]"),
                 "minimal" => concat!($mode, " (Minimal + ", $detail, ") [Beta]"),
                 "low" => concat!($mode, " (Low + ", $detail, ") [Beta]"),
@@ -544,8 +544,7 @@ fn effort_display_label_with_root<'a>(effort: &'a str, root: Option<&str>) -> &'
         };
     }
     match effort {
-        "swarm" => swarm_label!("Swarm", "light fan-out"),
-        "swarm-deep" => swarm_label!("Swarm Deep", "task graph"),
+        "swarm" => swarm_label!("Swarm", "parallel agents"),
         "max" => "Max",
         "xhigh" => "xHigh",
         "high" => "High",
@@ -621,11 +620,14 @@ pub(super) fn fast_mode_success_message(
     let status = if enabled { "on" } else { "off" };
     if applies_next_request {
         format!(
-            "✓ Fast mode {} ({})\nApplies to the next request/turn. The current in-flight request keeps its existing tier.",
+            "✓ Fast mode configured {} ({})\nRequested for the next provider request, including later in this turn. The current in-flight request is unchanged. Provider acceptance is not yet confirmed.",
             status, label
         )
     } else {
-        format!("✓ Fast mode {} ({})", status, label)
+        format!(
+            "✓ Fast mode configured {} ({})\nRequested for the next provider request. Provider acceptance is not yet confirmed.",
+            status, label
+        )
     }
 }
 
@@ -665,6 +667,35 @@ pub(super) fn fast_mode_default_message(default_enabled: bool, default_label: &s
         "Saved default fast mode is {}.\nDefault tier: {}\nUse /fast default on, /fast default ultrafast, or /fast default off.",
         if default_enabled { "on" } else { "off" },
         default_label
+    )
+}
+
+/// Suffix for "Switched to model" notices: auth method plus the masked
+/// account email (e.g. `j***y@gmail.com`) when the route uses OAuth, so the
+/// account is recognizable without exposing the full address on screen.
+pub(crate) fn switched_model_account_suffix(
+    auth_label: Option<&str>,
+    oauth_email: Option<&str>,
+) -> String {
+    let email = oauth_email
+        .map(str::trim)
+        .filter(|email| !email.is_empty())
+        .map(mask_email);
+    match (auth_label, email) {
+        (Some(label), Some(email)) => format!(" (via {label} · {email})"),
+        (Some(label), None) => format!(" (via {label})"),
+        (None, Some(email)) => format!(" ({email})"),
+        (None, None) => String::new(),
+    }
+}
+
+/// Notice after switching the active saved account. The switch rebinds this
+/// session and becomes the default for new sessions, but other sessions that
+/// are already running keep the credentials they loaded.
+pub(super) fn account_switch_notice(provider: &str, label: &str) -> String {
+    format!(
+        "Switched {provider} account to `{label}` for this session and new sessions. \
+         Other running sessions keep their current account until they reload."
     )
 }
 
@@ -1245,8 +1276,9 @@ pub(crate) fn prime_git_info(budget: Duration) {
 }
 
 /// Fetch a session's todos plus its goal-level assessments through the same
-/// stale-while-revalidate cache, so the info widget can render goal metadata
+/// stale-while-revalidate cache for consumers that need goal metadata
 /// (closed feedback loop and objectives) without extra disk reads per frame.
+#[cfg(test)]
 pub(super) fn gather_todos_and_goals_for_session(
     session_id: Option<&str>,
 ) -> (Vec<TodoItem>, Vec<crate::todo::TodoGoal>) {
@@ -1737,5 +1769,42 @@ pub(crate) fn porcelain_status_letter(index: u8, worktree: u8) -> char {
         b'D' => 'D',
         b'R' | b'C' => 'R',
         _ => 'M',
+    }
+}
+
+#[cfg(test)]
+mod switched_model_account_suffix_tests {
+    use super::switched_model_account_suffix;
+
+    #[test]
+    fn email_is_masked() {
+        assert_eq!(
+            switched_model_account_suffix(Some("OAuth"), Some("jeremy@gmail.com")),
+            " (via OAuth · j***y@gmail.com)"
+        );
+        assert_eq!(
+            switched_model_account_suffix(Some("OAuth"), Some("me@example.com")),
+            " (via OAuth · m*@example.com)"
+        );
+    }
+
+    #[test]
+    fn no_email_keeps_existing_suffix() {
+        assert_eq!(
+            switched_model_account_suffix(Some("API key"), None),
+            " (via API key)"
+        );
+        assert_eq!(switched_model_account_suffix(None, Some("  ")), "");
+    }
+}
+
+#[cfg(test)]
+mod account_switch_notice_tests {
+    #[test]
+    fn notice_states_that_other_running_sessions_are_unchanged() {
+        let notice = super::account_switch_notice("OpenAI", "openai-fox");
+        assert!(notice.contains("`openai-fox`"));
+        assert!(notice.contains("this session and new sessions"));
+        assert!(notice.contains("Other running sessions keep their current account"));
     }
 }

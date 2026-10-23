@@ -72,9 +72,13 @@ async fn apply_remote_speed_direction(
     remote: &mut RemoteConnection,
     direction: i8,
 ) -> Result<()> {
-    use jcode_provider_core::service_tier::{speed_tier_ladder, step_speed_tier};
+    use jcode_provider_core::service_tier::{speed_tier_ladder_with_capabilities, step_speed_tier};
     let (provider_name, provider_model) = app.remote_effort_identity();
-    let ladder = speed_tier_ladder(provider_name.as_deref(), provider_model.as_deref());
+    let ladder = speed_tier_ladder_with_capabilities(
+        provider_name.as_deref(),
+        provider_model.as_deref(),
+        app.remote_available_service_tiers.as_deref(),
+    );
     let Some((index, next, at_end)) =
         step_speed_tier(&ladder, app.remote_service_tier.as_deref(), direction)
     else {
@@ -90,9 +94,23 @@ async fn apply_remote_speed_direction(
         ));
         return Ok(());
     }
-    app.set_status_notice(app_mod::speed_tier_notice(next, index, ladder.len(), None));
-    remote.set_service_tier(next).await?;
+    request_remote_service_tier(app, remote, next).await?;
     Ok(())
+}
+
+async fn request_remote_service_tier(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+    tier: &str,
+) -> Result<()> {
+    // A transient notice acknowledges input without claiming configuration or
+    // provider acceptance. The server acknowledgement replaces it, so fast
+    // round trips do not add a second transcript message.
+    app.set_status_notice(format!(
+        "Speed: {} requested (waiting for server)",
+        app_mod::service_tier_display_label(tier)
+    ));
+    remote.set_service_tier(tier).await
 }
 
 async fn apply_remote_effort_direction(
@@ -215,18 +233,13 @@ async fn handle_remote_key_internal(
     remote: &mut RemoteConnection,
     text_input: Option<String>,
 ) -> Result<()> {
+    app.wake_idle_hibernation();
     let mut code = code;
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
-    if app.pending_provider_failover.is_some() && !app.is_processing {
-        if code == KeyCode::Esc {
-            app.cancel_pending_provider_failover("Provider auto-switch canceled");
-            return Ok(());
-        }
-        if !input::is_scroll_only_key(app, code, modifiers) {
-            app.cancel_pending_provider_failover("Provider auto-switch canceled");
-        }
+    if app.handle_key_during_provider_failover(code) {
+        return Ok(());
     }
 
     if app.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
@@ -627,6 +640,10 @@ async fn handle_remote_key_internal(
             }
             KeyCode::Char('v') => {
                 app.paste_from_clipboard();
+                return Ok(());
+            }
+            KeyCode::Char('e') => {
+                input::handle_alt_key(app, KeyCode::Char('e'));
                 return Ok(());
             }
             _ => {}
@@ -1053,6 +1070,20 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
         return Ok(());
     }
     if !app.input.is_empty() {
+        let command = input::expand_paste_placeholders(app, &app.input)
+            .trim()
+            .to_string();
+        if !app_mod::commands_cloud::check_cloud_handoff_input(app, &command) {
+            return Ok(());
+        }
+        if app.cloud_handoff_blocks_work()
+            && app_mod::commands_cloud::parse_cloud_command(app.input.trim()).is_none()
+        {
+            app.set_status_notice(
+                "Cloud handoff pending. Use /cloud cancel before submitting more work.",
+            );
+            return Ok(());
+        }
         let prepared = input::take_prepared_input(app);
         let trimmed = prepared.expanded.trim();
 
@@ -1070,6 +1101,20 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                             "This session already runs on a remote host. Use /local to bring it back first.".to_string(),
                         ));
                 return Ok(());
+            }
+            if matches!(
+                app_mod::commands_cloud::parse_cloud_command(trimmed),
+                Some(app_mod::commands_cloud::CloudCommand::Move { .. })
+            ) {
+                // A fresh session is not on disk until its first message, and
+                // `jcode cloud move` loads it from disk. The daemon holds the
+                // model, effort and account, so ask it to write the file now.
+                if let Err(error) = remote.persist_session().await {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Could not save this session before moving it: {error}. Nothing moved."
+                    )));
+                    return Ok(());
+                }
             }
             app_mod::commands_cloud::handle_cloud_command(app, trimmed, &session_id);
             return Ok(());
@@ -1403,7 +1448,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             match mode.as_str() {
                 "on" => {
                     app_mod::auth::save_openai_fast_setting_local(app, true);
-                    remote.set_service_tier("priority").await?;
+                    request_remote_service_tier(app, remote, "priority").await?;
                 }
                 "ultrafast" | "ultra" | "ultra-fast" => {
                     app_mod::auth::save_openai_service_tier_setting_local(app, "ultrafast");
@@ -1411,7 +1456,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                 }
                 "off" => {
                     app_mod::auth::save_openai_fast_setting_local(app, false);
-                    remote.set_service_tier("off").await?;
+                    request_remote_service_tier(app, remote, "off").await?;
                 }
                 "status" => {
                     let default_tier = crate::config::Config::load().provider.openai_service_tier;
@@ -1489,7 +1534,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                     return Ok(());
                 }
             };
-            remote.set_service_tier(service_tier).await?;
+            request_remote_service_tier(app, remote, service_tier).await?;
             return Ok(());
         }
 

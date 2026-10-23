@@ -22,6 +22,7 @@ fn run_status(json: bool) -> Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
+                "compiled_in": crate::telemetry::telemetry_compiled_in(),
                 "enabled": status.enabled,
                 "content_sharing_enabled": status.content_sharing_enabled,
                 "opt_out_source": source,
@@ -67,6 +68,9 @@ fn run_status(json: bool) -> Result<()> {
 }
 
 fn run_enable() -> Result<()> {
+    if !crate::telemetry::telemetry_compiled_in() {
+        bail!("Telemetry is disabled in this build and cannot be enabled.");
+    }
     if !crate::telemetry::set_usage_telemetry_enabled(true) {
         bail!("failed to persist telemetry setting");
     }
