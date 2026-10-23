@@ -582,15 +582,6 @@ pub struct AgentsConfig {
     /// string to change the worker default. An explicit `model` in the swarm
     /// tool overrides this default for newly spawned workers.
     pub swarm_model: Option<String>,
-    /// Allowlist of models newly spawned swarm workers may run on.
-    ///
-    /// Empty (the default) means unrestricted. Each entry is matched against
-    /// canonical routed specs (`provider:model`, e.g. `openai-api:gpt-6-luna`)
-    /// and may use `*` wildcards (e.g. `zai:*`). The model a spawn resolves
-    /// to, whether chosen explicitly, inherited, or defaulted, must match an
-    /// entry or the spawn is rejected. There is no silent substitution.
-    #[serde(default)]
-    pub swarm_allowed_models: Vec<String>,
     /// Reasoning effort for spawned swarm workers (`"low"`, `"medium"`,
     /// `"high"`, ...). An explicit `effort` in the swarm tool overrides this
     /// default for new workers; unset means `"low"`.
@@ -743,7 +734,6 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
-            swarm_allowed_models: Vec::new(),
             swarm_effort: None,
             swarm_openai_service_tier: None,
             swarm_root_effort: None,

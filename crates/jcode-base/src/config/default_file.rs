@@ -530,14 +530,6 @@ wake_mode = "internal"
 # Env override: JCODE_SWARM_MODEL
 # swarm_model = "inherit"
 #
-# Allowlist of models newly spawned swarm workers may run on. Empty (the
-# default) means unrestricted. Each entry is matched against canonical routed
-# specs ("provider:model", e.g. "openai-api:gpt-6-luna") and may use "*"
-# wildcards (e.g. "zai:*"). The model a spawn resolves to, whether chosen
-# explicitly, inherited, or defaulted, must match an entry or the spawn is
-# rejected. There is no silent substitution.
-# swarm_allowed_models = []
-#
 # Reasoning effort for spawned swarm workers ("low", "medium", "high", ...).
 # An explicit `effort` in the swarm tool overrides this default for new
 # workers. Unset = "low".
