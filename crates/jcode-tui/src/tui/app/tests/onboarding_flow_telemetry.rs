@@ -34,7 +34,14 @@ fn telemetry_pill_opens_settings_page_and_commits_choice() {
                 let page = review.telemetry.expect("telemetry page open");
                 assert_eq!(page.cursor, 0);
                 if !crate::telemetry::opt_out_forced_by_env() {
-                    assert_eq!(page.checked, [false, true, true, true, true, true]);
+                    // Compiled-out builds open the page with every category
+                    // unchecked; enabling is impossible by build policy.
+                    let expected: [bool; 6] = if crate::telemetry::telemetry_compiled_in() {
+                        [false, true, true, true, true, true]
+                    } else {
+                        [false; 6]
+                    };
+                    assert_eq!(page.checked, expected);
                 }
             }
             other => panic!("expected telemetry page open, got {other:?}"),
