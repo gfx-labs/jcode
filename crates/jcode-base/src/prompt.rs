@@ -228,6 +228,10 @@ pub struct ContextInfo {
     pub has_global_agents_md: bool,
     /// Global AGENTS.md size (chars)
     pub global_agents_md_chars: usize,
+    /// Whether global ~/JCODE.md was loaded
+    pub has_global_jcode_md: bool,
+    /// Global JCODE.md size (chars)
+    pub global_jcode_md_chars: usize,
     /// Skills section size (chars)
     pub skills_chars: usize,
     /// Self-dev section size (chars)
@@ -279,6 +283,7 @@ impl ContextInfo {
             + self.session_context_chars
             + self.project_agents_md_chars
             + self.global_agents_md_chars
+            + self.global_jcode_md_chars
             + self.skills_chars
             + self.selfdev_chars
             + self.memory_chars
@@ -307,6 +312,9 @@ impl ContextInfo {
         }
         if self.has_global_agents_md {
             parts.push(("~agents", self.global_agents_md_chars, "📋"));
+        }
+        if self.has_global_jcode_md {
+            parts.push(("~jcode", self.global_jcode_md_chars, "📋"));
         }
         if self.skills_chars > 0 {
             parts.push(("skills", self.skills_chars, "🔧"));
@@ -422,6 +430,8 @@ pub fn build_system_prompt_full_with_capabilities(
     info.project_agents_md_chars = md_info.project_agents_md_chars;
     info.has_global_agents_md = md_info.has_global_agents_md;
     info.global_agents_md_chars = md_info.global_agents_md_chars;
+    info.has_global_jcode_md = md_info.has_global_jcode_md;
+    info.global_jcode_md_chars = md_info.global_jcode_md_chars;
 
     // Add optional prompt overlays from ~/.jcode/ and ./.jcode/
     let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
@@ -568,6 +578,8 @@ fn build_system_prompt_split_with_capabilities_and_agents_md(
     info.project_agents_md_chars = md_info.project_agents_md_chars;
     info.has_global_agents_md = md_info.has_global_agents_md;
     info.global_agents_md_chars = md_info.global_agents_md_chars;
+    info.has_global_jcode_md = md_info.has_global_jcode_md;
+    info.global_jcode_md_chars = md_info.global_jcode_md_chars;
 
     // Add optional prompt overlays from ~/.jcode/ and ./.jcode/
     let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
@@ -942,6 +954,7 @@ fn same_canonical_path(first: &Path, second: &Path) -> bool {
 fn load_agents_md_files_from_dirs(
     project_dir: &Path,
     global_agents_md: Option<&Path>,
+    global_jcode_md: Option<&Path>,
 ) -> (Option<String>, ContextInfo) {
     let mut contents = vec![];
     let mut info = ContextInfo::default();
@@ -983,6 +996,22 @@ fn load_agents_md_files_from_dirs(
         contents.push(content);
     }
 
+    // ~/JCODE.md is additive jcode-specific guidance on top of ~/AGENTS.md.
+    // It is skipped only when it canonicalizes to a file already loaded above,
+    // so distinct AGENTS.md and JCODE.md files are both included.
+    if let Some(global_jcode_md) = global_jcode_md
+        && !(same_canonical_path(&project_agents_md, global_jcode_md)
+            || global_agents_md.is_some_and(|agents_md| {
+                same_canonical_path(agents_md, global_jcode_md)
+            }))
+        && let Some((content, size)) =
+            load_file(global_jcode_md, "Global Jcode Instructions (~/JCODE.md)")
+    {
+        info.has_global_jcode_md = true;
+        info.global_jcode_md_chars = size;
+        contents.push(content);
+    }
+
     if contents.is_empty() {
         (None, info)
     } else {
@@ -994,7 +1023,12 @@ fn load_agents_md_files_from_dirs(
 pub fn load_agents_md_files_from_dir(working_dir: Option<&Path>) -> (Option<String>, ContextInfo) {
     let project_dir = working_dir.unwrap_or(Path::new("."));
     let global_agents_md = crate::storage::user_home_path("AGENTS.md").ok();
-    load_agents_md_files_from_dirs(project_dir, global_agents_md.as_deref())
+    let global_jcode_md = crate::storage::user_home_path("JCODE.md").ok();
+    load_agents_md_files_from_dirs(
+        project_dir,
+        global_agents_md.as_deref(),
+        global_jcode_md.as_deref(),
+    )
 }
 
 /// Load optional prompt overlay markdown from ~/.jcode/ and ./.jcode/

@@ -582,15 +582,18 @@ pub struct AgentsConfig {
     /// string to change the worker default. An explicit `model` in the swarm
     /// tool overrides this default for newly spawned workers.
     pub swarm_model: Option<String>,
-    /// Optional Jev task-aware model router for spawned swarm agents.
+    /// Allowlist of models newly spawned swarm workers may run on.
     ///
-    /// Disabled by default. When enabled, an omitted per-spawn model is
-    /// selected from the configured candidates before falling back to
-    /// `swarm_model` and then coordinator inheritance.
-    pub swarm_router: SwarmRouterConfig,
+    /// Empty (the default) means unrestricted. Each entry is matched against
+    /// canonical routed specs (`provider:model`, e.g. `openai-api:gpt-6-luna`)
+    /// and may use `*` wildcards (e.g. `zai:*`). The model a spawn resolves
+    /// to, whether chosen explicitly, inherited, or defaulted, must match an
+    /// entry or the spawn is rejected. There is no silent substitution.
+    #[serde(default)]
+    pub swarm_allowed_models: Vec<String>,
     /// Reasoning effort for spawned swarm workers (`"low"`, `"medium"`,
-    /// `"high"`, ...). The swarm tool does not let agents choose worker
-    /// effort. Unset means `"low"`.
+    /// `"high"`, ...). An explicit `effort` in the swarm tool overrides this
+    /// default for new workers; unset means `"low"`.
     pub swarm_effort: Option<String>,
     /// Optional OpenAI service tier for spawned swarm/subagent sessions.
     ///
@@ -740,7 +743,7 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
-            swarm_router: SwarmRouterConfig::default(),
+            swarm_allowed_models: Vec::new(),
             swarm_effort: None,
             swarm_openai_service_tier: None,
             swarm_root_effort: None,
@@ -780,46 +783,6 @@ impl AgentsConfig {
             .into_iter()
             .find(|level| level.eq_ignore_ascii_case(value))
             .unwrap_or("low")
-    }
-}
-
-/// Jev-backed task-aware model routing for newly spawned swarm agents.
-///
-/// Decisions go through the shared Jev client, so provider and credentials
-/// follow `JCODE_SWARM_JEV_PROVIDER` (default `auto`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct SwarmRouterConfig {
-    /// Opt in to remote task-aware model selection.
-    pub enabled: bool,
-    /// Upper bound on the routing decision in milliseconds.
-    pub timeout_ms: u64,
-    /// Ordered allowlist of models exposed as choices. Each entry is a
-    /// route-pinned spec (`openai-oauth:gpt-6-luna`) or a bare model id
-    /// (`glm-5.3`), matched against available routes.
-    pub candidates: Vec<String>,
-    /// Routing policy text Jev evaluates each candidate against, keyed by the
-    /// candidate string as written in `candidates`.
-    pub descriptions: std::collections::BTreeMap<String, String>,
-    /// Reasoning effort applied when a candidate is selected, keyed like
-    /// `descriptions`. An explicit spawn `effort` still wins.
-    pub efforts: std::collections::BTreeMap<String, String>,
-    /// OpenAI service tier (`priority`/`fast`, `ultrafast`, `flex`, `off`) applied when a
-    /// candidate is selected, keyed like `descriptions`. Overrides
-    /// `swarm_openai_service_tier` for that worker. Ignored by non-OpenAI routes.
-    pub service_tiers: std::collections::BTreeMap<String, String>,
-}
-
-impl Default for SwarmRouterConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout_ms: 5_000,
-            candidates: Vec::new(),
-            descriptions: std::collections::BTreeMap::new(),
-            efforts: std::collections::BTreeMap::new(),
-            service_tiers: std::collections::BTreeMap::new(),
-        }
     }
 }
 

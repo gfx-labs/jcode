@@ -244,7 +244,7 @@ fn agents_md_same_canonical_file_is_loaded_only_as_project_instructions() {
     let agents_md = project_dir.path().join("AGENTS.md");
     std::fs::write(&agents_md, "shared instructions").unwrap();
 
-    let (content, info) = load_agents_md_files_from_dirs(project_dir.path(), Some(&agents_md));
+    let (content, info) = load_agents_md_files_from_dirs(project_dir.path(), Some(&agents_md), None);
     let content = content.expect("project instructions");
 
     assert!(info.has_project_agents_md);
@@ -263,7 +263,7 @@ fn agents_md_distinct_project_and_global_files_are_both_loaded() {
     std::fs::write(&global_agents_md, "global instructions").unwrap();
 
     let (content, info) =
-        load_agents_md_files_from_dirs(project_dir.path(), Some(&global_agents_md));
+        load_agents_md_files_from_dirs(project_dir.path(), Some(&global_agents_md), None);
     let content = content.expect("project and global instructions");
 
     assert!(info.has_project_agents_md);
@@ -277,7 +277,7 @@ fn captured_agents_md_keeps_split_prompt_stable_after_file_write() {
     let project_dir = tempfile::TempDir::new().unwrap();
     let agents_md = project_dir.path().join("AGENTS.md");
     std::fs::write(&agents_md, "original session instructions").unwrap();
-    let snapshot = load_agents_md_files_from_dirs(project_dir.path(), None);
+    let snapshot = load_agents_md_files_from_dirs(project_dir.path(), None, None);
 
     let (before, _) = build_system_prompt_split_with_agents_md(
         None,
@@ -307,7 +307,7 @@ fn captured_agents_md_keeps_split_prompt_stable_after_file_write() {
 
     // A new session/workspace boundary captures a fresh snapshot rather than
     // pinning the old instructions forever.
-    let fresh_snapshot = load_agents_md_files_from_dirs(project_dir.path(), None);
+    let fresh_snapshot = load_agents_md_files_from_dirs(project_dir.path(), None, None);
     let (next_session, _) = build_system_prompt_split_with_agents_md(
         None,
         &[],
@@ -331,8 +331,11 @@ fn agents_md_missing_global_file_keeps_project_instructions() {
     let missing_global_agents_md = global_dir.path().join("missing-AGENTS.md");
     std::fs::write(project_dir.path().join("AGENTS.md"), "project only").unwrap();
 
-    let (content, info) =
-        load_agents_md_files_from_dirs(project_dir.path(), Some(&missing_global_agents_md));
+    let (content, info) = load_agents_md_files_from_dirs(
+        project_dir.path(),
+        Some(&missing_global_agents_md),
+        None,
+    );
     let content = content.expect("project instructions");
 
     assert!(info.has_project_agents_md);
@@ -353,12 +356,132 @@ fn agents_md_symlink_alias_is_deduplicated_by_canonical_file_path() {
     symlink(&global_agents_md, project_dir.path().join("AGENTS.md")).unwrap();
 
     let (content, info) =
-        load_agents_md_files_from_dirs(project_dir.path(), Some(&global_agents_md));
+        load_agents_md_files_from_dirs(project_dir.path(), Some(&global_agents_md), None);
     let content = content.expect("project instructions through symlink");
 
     assert!(info.has_project_agents_md);
     assert!(!info.has_global_agents_md);
     assert_eq!(content.matches("symlinked instructions").count(), 1);
+}
+
+#[test]
+fn global_jcode_md_loads_additively_with_global_agents_md() {
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let global_dir = tempfile::TempDir::new().unwrap();
+    let global_agents_md = global_dir.path().join("AGENTS.md");
+    let global_jcode_md = global_dir.path().join("JCODE.md");
+    std::fs::write(&global_agents_md, "global agents instructions").unwrap();
+    std::fs::write(&global_jcode_md, "global jcode instructions").unwrap();
+
+    let (content, info) = load_agents_md_files_from_dirs(
+        project_dir.path(),
+        Some(&global_agents_md),
+        Some(&global_jcode_md),
+    );
+    let content = content.expect("global agents and jcode instructions");
+
+    assert!(info.has_global_agents_md);
+    assert!(info.has_global_jcode_md);
+    assert_eq!(
+        info.global_agents_md_chars,
+        "global agents instructions".len()
+    );
+    assert_eq!(
+        info.global_jcode_md_chars,
+        "global jcode instructions".len()
+    );
+    assert_eq!(content.matches("global agents instructions").count(), 1);
+    assert_eq!(content.matches("global jcode instructions").count(), 1);
+
+    // Both files also flow into the split system prompt with their metadata.
+    let (split, split_info) = build_system_prompt_split_with_agents_md(
+        None,
+        &[],
+        false,
+        None,
+        Some(project_dir.path()),
+        (Some(content), info.clone()),
+    );
+    assert!(split_info.has_global_agents_md);
+    assert!(split_info.has_global_jcode_md);
+    assert!(split
+        .static_part
+        .contains("# Global Instructions (~/AGENTS.md)"));
+    assert!(split
+        .static_part
+        .contains("# Global Jcode Instructions (~/JCODE.md)"));
+}
+
+#[test]
+fn global_jcode_md_alone_loads_without_global_agents_md() {
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let global_dir = tempfile::TempDir::new().unwrap();
+    let missing_agents_md = global_dir.path().join("missing-AGENTS.md");
+    let global_jcode_md = global_dir.path().join("JCODE.md");
+    std::fs::write(&global_jcode_md, "jcode only instructions").unwrap();
+
+    let (content, info) = load_agents_md_files_from_dirs(
+        project_dir.path(),
+        Some(&missing_agents_md),
+        Some(&global_jcode_md),
+    );
+    let content = content.expect("jcode instructions");
+
+    assert!(!info.has_global_agents_md);
+    assert!(info.has_global_jcode_md);
+    assert_eq!(info.global_jcode_md_chars, "jcode only instructions".len());
+    assert!(content.contains("# Global Jcode Instructions (~/JCODE.md)"));
+    assert!(!content.contains("# Global Instructions (~/AGENTS.md)"));
+    assert_eq!(content.matches("jcode only instructions").count(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn global_jcode_md_symlink_alias_is_deduplicated_by_canonical_file_path() {
+    use std::os::unix::fs::symlink;
+
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let global_dir = tempfile::TempDir::new().unwrap();
+    let global_agents_md = global_dir.path().join("AGENTS.md");
+    let global_jcode_md = global_dir.path().join("JCODE.md");
+    std::fs::write(&global_jcode_md, "symlinked jcode instructions").unwrap();
+    symlink(&global_jcode_md, &global_agents_md).unwrap();
+
+    let (content, info) = load_agents_md_files_from_dirs(
+        project_dir.path(),
+        Some(&global_agents_md),
+        Some(&global_jcode_md),
+    );
+    let content = content.expect("deduplicated alias instructions");
+
+    assert!(info.has_global_agents_md);
+    assert!(!info.has_global_jcode_md);
+    assert_eq!(content.matches("symlinked jcode instructions").count(), 1);
+}
+
+#[test]
+fn missing_global_jcode_md_keeps_existing_instructions() {
+    let project_dir = tempfile::TempDir::new().unwrap();
+    let global_dir = tempfile::TempDir::new().unwrap();
+    let global_agents_md = global_dir.path().join("AGENTS.md");
+    let missing_jcode_md = global_dir.path().join("missing-JCODE.md");
+    std::fs::write(project_dir.path().join("AGENTS.md"), "project instructions").unwrap();
+    std::fs::write(&global_agents_md, "global agents instructions").unwrap();
+
+    let (content, info) = load_agents_md_files_from_dirs(
+        project_dir.path(),
+        Some(&global_agents_md),
+        Some(&missing_jcode_md),
+    );
+    let content = content.expect("project and global agents instructions");
+
+    assert!(info.has_project_agents_md);
+    assert!(info.has_global_agents_md);
+    assert!(!info.has_global_jcode_md);
+    assert_eq!(info.global_jcode_md_chars, 0);
+    assert!(content.contains("# Project Instructions (AGENTS.md)"));
+    assert!(content.contains("# Global Instructions (~/AGENTS.md)"));
+    assert!(!content.contains("# Global Jcode Instructions (~/JCODE.md)"));
 }
 
 #[test]

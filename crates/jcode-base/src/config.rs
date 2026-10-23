@@ -12,7 +12,7 @@ pub use jcode_config_types::{
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
     NotificationsConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, RulesConfig,
     SafetyConfig, SessionConfig, SessionNameStyle, SessionNamesConfig, SessionPickerResumeAction,
-    SponsorsConfig, SwarmRouterConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
+    SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig,
     UpdateChannel, WebSearchConfig, WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};

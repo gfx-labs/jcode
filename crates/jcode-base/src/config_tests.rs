@@ -1846,3 +1846,38 @@ fn removed_overscroll_status_key_still_loads_config() {
     assert!(config.display.centered);
     assert_eq!(config.display.usage_display, "used");
 }
+
+/// `agents.swarm_allowed_models` restricts which models newly spawned swarm
+/// workers may be pinned to; empty (the default) means unrestricted. The
+/// legacy `[agents.swarm_router]` table was removed with the automatic router
+/// and must not break config loading.
+#[test]
+fn swarm_allowed_models_parses_and_empty_default_is_unrestricted() {
+    let defaults = Config::default().agents;
+    assert!(defaults.swarm_allowed_models.is_empty());
+
+    let cfg: Config = toml::from_str(
+        "[agents]\nswarm_allowed_models = [\"openai-api:gpt-6-luna\", \"glm-5.3\", \"zai:*\"]\n",
+    )
+    .expect("swarm_allowed_models should parse");
+    assert_eq!(
+        cfg.agents.swarm_allowed_models,
+        vec![
+            "openai-api:gpt-6-luna".to_string(),
+            "glm-5.3".to_string(),
+            "zai:*".to_string()
+        ]
+    );
+
+    // Explicit empty list round-trips as unrestricted.
+    let cfg: Config =
+        toml::from_str("[agents]\nswarm_allowed_models = []\n").expect("empty list should parse");
+    assert!(cfg.agents.swarm_allowed_models.is_empty());
+
+    // The removed [agents.swarm_router] table must not fail config loading.
+    let legacy: Config = toml::from_str(
+        "[agents.swarm_router]\nenabled = true\ncandidates = [\"glm-5.3\"]\n",
+    )
+    .expect("legacy swarm_router table must not break config");
+    assert!(legacy.agents.swarm_allowed_models.is_empty());
+}

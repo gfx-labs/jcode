@@ -12,9 +12,11 @@ files, so you can tune agent behavior without rebuilding.
    checkout automatically receive the Desktop prompt and `desktop_selfdev` tool,
    separate from CLI/TUI self-dev flags, `selfdev`, and `debug_socket`.
 4. `AGENTS.md` — project `./AGENTS.md` and global `~/AGENTS.md`.
-5. Prompt overlay — `./.jcode/prompt-overlay.md` and `~/.jcode/prompt-overlay.md`.
-6. Preferred tools — `./.jcode/preferred-tools.md` and `~/.jcode/preferred-tools.md`.
-7. Memory and the active skill prompt (dynamic, not cached).
+5. `JCODE.md` — global `~/JCODE.md`, jcode-specific guidance additive to
+   `~/AGENTS.md` (deduplicated when it aliases the same file).
+6. Prompt overlay — `./.jcode/prompt-overlay.md` and `~/.jcode/prompt-overlay.md`.
+7. Preferred tools — `./.jcode/preferred-tools.md` and `~/.jcode/preferred-tools.md`.
+8. Memory and the active skill prompt (dynamic, not cached).
 
 ## Adding guidance (most common)
 
