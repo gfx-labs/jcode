@@ -1,13 +1,14 @@
 pub use jcode_tui_markdown::{
-    CopyTargetKind, IncrementalMarkdownRenderer, MERMAID_PENDING_PLACEHOLDER_TEXT,
-    MarkdownDebugStats, MarkdownMemoryProfile, RawCopyTarget, center_code_blocks,
+    CopyTargetKind, IncrementalMarkdownRenderer, LinkSpan, MERMAID_PENDING_PLACEHOLDER_TEXT,
+    MarkdownDebugStats, MarkdownMemoryProfile, RawCopyTarget, RenderedMarkdown, center_code_blocks,
     debug_memory_profile, debug_stats, debug_stats_json, encode_handterm_latex_apc,
     extract_copy_targets_from_rendered_lines, extract_streaming_copy_targets,
     handterm_native_latex_for_hash, highlight_file_lines, highlight_line,
     line_is_mermaid_pending_placeholder, mermaid_rendering_enabled, progress_bar, progress_line,
-    recenter_structured_blocks_for_display, render_markdown, render_markdown_lazy,
-    render_markdown_with_width, render_table_with_width, reset_debug_stats, set_center_code_blocks,
-    thread_render_count, with_center_code_blocks, with_mermaid_rendering_override, wrap_line,
+    recenter_markdown, recenter_structured_blocks_for_display, render_markdown,
+    render_markdown_lazy, render_markdown_with_links, render_markdown_with_width,
+    render_table_with_width, reset_debug_stats, set_center_code_blocks, thread_render_count,
+    with_center_code_blocks, with_mermaid_rendering_override, wrap_line, wrap_line_with_links,
     wrap_lines,
 };
 
@@ -72,6 +73,7 @@ pub fn install_jcode_markdown_hooks() {
             markdown_spacing: to_markdown_spacing_mode(cfg.display.markdown_spacing),
             mermaid_enabled: cfg.features.mermaid,
             latex_rendering: to_markdown_latex_mode(cfg.display.latex_rendering),
+            compact_links: cfg.display.compact_links,
         }
     });
     jcode_tui_markdown::set_memory_snapshot_hook(|| {

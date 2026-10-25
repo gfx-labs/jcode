@@ -124,6 +124,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Fold tool results to one-line rows that expand on click",
     ),
     RegisteredCommand::public(
+        "/compact-links",
+        "Show clickable Markdown labels without appended URLs",
+    ),
+    RegisteredCommand::public(
         "/latex",
         "Toggle LaTeX images (on/off/status/none/unicode/image)",
     ),
@@ -1165,6 +1169,30 @@ impl App {
             );
         }
 
+        if prefix.starts_with("/compact-links ") {
+            return self.rank_suggestions(
+                input,
+                vec![
+                    (
+                        "/compact-links on".into(),
+                        "Hide appended URLs, keeping labels clickable",
+                    ),
+                    (
+                        "/compact-links off".into(),
+                        "Show labels followed by their URLs",
+                    ),
+                    (
+                        "/compact-links toggle".into(),
+                        "Toggle compact links and save the preference",
+                    ),
+                    (
+                        "/compact-links status".into(),
+                        "Show the current link presentation",
+                    ),
+                ],
+            );
+        }
+
         if prefix.starts_with("/compact-transcript ") {
             return self.rank_suggestions(
                 input,
@@ -1817,6 +1845,7 @@ impl App {
                 | "/latex"
                 | "/compact-notifications"
                 | "/compact-transcript"
+                | "/compact-links"
                 | "/show-agentgrep-output"
                 | "/reasoning"
                 | "/thinking"

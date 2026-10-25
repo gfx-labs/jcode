@@ -11,7 +11,22 @@ pub(crate) fn get_cached_message_lines<F>(
 where
     F: FnOnce(&DisplayMessage, u16, crate::config::DiffDisplayMode) -> Vec<Line<'static>>,
 {
-    jcode_tui_messages::get_cached_message_lines(
+    get_cached_message_render(msg, width, diff_mode, |msg, width, diff_mode| {
+        render(msg, width, diff_mode).into()
+    })
+    .lines
+}
+
+pub(crate) fn get_cached_message_render<F>(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+    render: F,
+) -> markdown::RenderedMarkdown
+where
+    F: FnOnce(&DisplayMessage, u16, crate::config::DiffDisplayMode) -> markdown::RenderedMarkdown,
+{
+    jcode_tui_messages::get_cached_message_render(
         msg,
         width,
         diff_mode,
@@ -29,6 +44,7 @@ where
             compact_transcript: crate::config::config().display.compact_transcript,
             reasoning_display: crate::config::config().display.reasoning_display(),
             latex_rendering: crate::config::config().display.latex_rendering,
+            compact_links: crate::config::config().display.compact_links,
         },
         render,
     )

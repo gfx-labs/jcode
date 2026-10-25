@@ -1036,6 +1036,9 @@ pub trait TuiState {
     /// Render streaming text using incremental markdown renderer
     /// This is more efficient than re-rendering on every frame
     fn render_streaming_markdown(&self, width: usize) -> Vec<Line<'static>>;
+    fn render_streaming_markdown_with_links(&self, width: usize) -> markdown::RenderedMarkdown {
+        markdown::render_markdown_with_links(self.streaming_text(), Some(width))
+    }
     /// Whether centered mode is enabled
     fn centered_mode(&self) -> bool;
     /// Authentication status for all supported providers

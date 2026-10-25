@@ -3,6 +3,8 @@ use super::*;
 pub struct IncrementalMarkdownRenderer {
     /// Previously rendered lines
     rendered_lines: Vec<Line<'static>>,
+    rendered_links: Vec<LinkSpan>,
+    rendered_compact_links: bool,
     /// Text that was rendered (for comparison)
     rendered_text: String,
     /// Position of last safe checkpoint (after complete block)
@@ -27,6 +29,8 @@ impl IncrementalMarkdownRenderer {
     pub fn new(max_width: Option<usize>) -> Self {
         Self {
             rendered_lines: Vec::new(),
+            rendered_links: Vec::new(),
+            rendered_compact_links: compact_links(),
             rendered_text: String::new(),
             last_checkpoint: 0,
             lines_at_checkpoint: 0,
@@ -44,6 +48,10 @@ impl IncrementalMarkdownRenderer {
     /// 2. Finding safe re-render points (after complete blocks)
     /// 3. Only re-rendering from the last safe point
     pub fn update(&mut self, full_text: &str) -> Vec<Line<'static>> {
+        with_compact_links(false, || self.update_with_links(full_text).lines)
+    }
+
+    pub fn update_with_links(&mut self, full_text: &str) -> RenderedMarkdown {
         with_streaming_render_context(|| self.update_internal(full_text))
     }
 
@@ -60,16 +68,20 @@ impl IncrementalMarkdownRenderer {
         })
     }
 
-    fn update_internal(&mut self, full_text: &str) -> Vec<Line<'static>> {
+    fn update_internal(&mut self, full_text: &str) -> RenderedMarkdown {
         // Fast path: text unchanged. Not taken while a deferred mermaid
         // placeholder is baked into the cached lines and the deferred render
         // epoch has advanced: the background render finished, so re-render to
         // pick up the completed diagram.
         if full_text == self.rendered_text
+            && self.rendered_compact_links == compact_links()
             && !(self.rendered_mermaid_pending
                 && mermaid::deferred_render_epoch() != self.rendered_mermaid_epoch)
         {
-            return self.rendered_lines.clone();
+            return RenderedMarkdown {
+                lines: self.rendered_lines.clone(),
+                links: self.rendered_links.clone(),
+            };
         }
 
         // Full re-render required.
@@ -83,7 +95,10 @@ impl IncrementalMarkdownRenderer {
         // completes mid-render, the stamp is already older than the new epoch
         // and the next update re-renders instead of waiting forever.
         let mermaid_epoch_before = mermaid::deferred_render_epoch();
-        self.rendered_lines = render_markdown_with_width(full_text, self.max_width);
+        let rendered = render_markdown_with_links(full_text, self.max_width);
+        self.rendered_lines = rendered.lines;
+        self.rendered_links = rendered.links;
+        self.rendered_compact_links = compact_links();
         self.rendered_text = full_text.to_string();
         self.rendered_mermaid_pending = self
             .rendered_lines
@@ -94,7 +109,10 @@ impl IncrementalMarkdownRenderer {
         // Find checkpoint for next incremental update
         self.refresh_checkpoint(full_text, true);
 
-        self.rendered_lines.clone()
+        RenderedMarkdown {
+            lines: self.rendered_lines.clone(),
+            links: self.rendered_links.clone(),
+        }
     }
 
     /// Find the last complete block in text
@@ -231,6 +249,7 @@ impl IncrementalMarkdownRenderer {
     /// Reset the renderer state
     pub fn reset(&mut self) {
         self.rendered_lines.clear();
+        self.rendered_links.clear();
         self.rendered_text.clear();
         self.last_checkpoint = 0;
         self.lines_at_checkpoint = 0;

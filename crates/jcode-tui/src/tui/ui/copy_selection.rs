@@ -327,6 +327,20 @@ pub(super) fn link_target_from_snapshot(
     snapshot: &CopyViewportSnapshot,
     point: crate::tui::CopySelectionPoint,
 ) -> Option<String> {
+    if let CopyViewportData::ChatFrame { prepared } = &snapshot.data
+        && let Some(target) = prepared.link_target(point.abs_line, point.column)
+    {
+        return Some(target.to_string());
+    }
+    if let CopyViewportData::Dense { link_spans, .. } = &snapshot.data
+        && let Some(link) = link_spans.iter().find(|link| {
+            link.line == point.abs_line
+                && link.start_col <= point.column
+                && point.column < link.end_col
+        })
+    {
+        return Some(link.target.to_string());
+    }
     let raw_point = raw_selection_point(snapshot, point)?;
     let raw_text = snapshot.raw_plain_line(raw_point.raw_line)?;
     link_target_for_display_column(raw_text, raw_point.column)
@@ -401,6 +415,7 @@ mod tests {
             }],
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
+            link_spans: Vec::new(),
         };
         CopyViewportSnapshot {
             pane: crate::tui::CopySelectionPane::Chat,

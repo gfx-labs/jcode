@@ -1949,6 +1949,15 @@ impl crate::tui::TuiState for App {
         renderer.update(&self.streaming.streaming_text)
     }
 
+    fn render_streaming_markdown_with_links(
+        &self,
+        width: usize,
+    ) -> super::super::markdown::RenderedMarkdown {
+        let mut renderer = self.streaming_md_renderer.borrow_mut();
+        renderer.set_width(Some(width));
+        renderer.update_with_links(&self.streaming.streaming_text)
+    }
+
     fn centered_mode(&self) -> bool {
         self.centered
     }

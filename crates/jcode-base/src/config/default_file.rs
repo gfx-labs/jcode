@@ -200,6 +200,8 @@ reasoning_display = "full"
 
 # Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
 # markdown_spacing = "compact"
+# Show clickable Markdown labels without appending their URL. Toggle with /compact-links.
+# compact_links = false
 
 # LaTeX rendering: "none" (show source), "unicode" (terminal text), or "image" (typeset PNG, default).
 # Image mode uses `latex` + `dvipng`, or `pdflatex` + `pdftocairo` as a fallback.

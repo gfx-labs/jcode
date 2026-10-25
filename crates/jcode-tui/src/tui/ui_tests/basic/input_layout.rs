@@ -326,11 +326,10 @@ fn test_compute_visible_margins_left_aligned_respects_centered_header() {
     let area = Rect::new(0, 0, 40, 2);
     let margins = compute_visible_margins(&lines, &[], area, false);
 
-    // centered: used=15 => total_margin=25 => left=12, right=13. Left-aligned mode
-    // never places left-side widgets, so left is reported as 0, but the right gap
-    // must stay at the true 13 columns so widgets clear the centered text.
+    // Ratatui centers used=15 at 40/2 - 15/2 = 13, leaving 12 cells on the right.
+    // Left-aligned mode reports zero left space for widget placement.
     assert_eq!(margins.left_widths[0], 0);
-    assert_eq!(margins.right_widths[0], 13);
+    assert_eq!(margins.right_widths[0], 12);
 
     // left-aligned body is unchanged: full slack on the right.
     assert_eq!(margins.left_widths[1], 0);

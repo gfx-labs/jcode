@@ -94,6 +94,12 @@ pub(super) fn estimate_prepared_messages_bytes(prepared: &PreparedMessages) -> u
         + estimate_image_regions_bytes(&prepared.image_regions)
         + estimate_edit_tool_ranges_bytes(&prepared.edit_tool_ranges)
         + estimate_copy_targets_bytes(&prepared.copy_targets)
+        + prepared.link_spans.capacity() * std::mem::size_of::<jcode_tui_markdown::LinkSpan>()
+        + prepared
+            .link_spans
+            .iter()
+            .map(|link| link.target.len())
+            .sum::<usize>()
 }
 
 pub(super) fn estimate_prepared_chat_frame_bytes(prepared: &PreparedChatFrame) -> usize {

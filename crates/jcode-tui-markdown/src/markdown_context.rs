@@ -27,6 +27,16 @@ thread_local! {
     /// renders with diagrams inline) can pin a mode for one render without
     /// mutating global state that concurrent threads observe.
     static DIAGRAM_MODE_SCOPE: Cell<Option<DiagramDisplayMode>> = const { Cell::new(None) };
+    static COMPACT_LINKS_SCOPE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+pub(super) fn compact_links() -> bool {
+    COMPACT_LINKS_SCOPE.with(|ctx| ctx.get().unwrap_or(crate::config_snapshot().compact_links))
+}
+
+/// Render with a particular link presentation without mutating global configuration.
+pub fn with_compact_links<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    COMPACT_LINKS_SCOPE.with(|ctx| with_scoped_cell_value(ctx, Some(enabled), f))
 }
 
 struct ScopedReset<'a, T: Copy> {

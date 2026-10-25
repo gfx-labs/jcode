@@ -18,7 +18,8 @@ pub(super) fn assistant_aux_data(
         // Plan cards rewrite/box their markdown, so retain the legacy count for
         // their selection mapping. Match the renderer's conservative plan gate.
         let content_line_count = if msg.content.contains("```plan") {
-            markdown::render_markdown_with_width(&msg.content, Some(content_width as usize))
+            markdown::render_markdown_with_links(&msg.content, Some(content_width as usize))
+                .lines
                 .len()
                 .min(cached.len())
         } else {
@@ -32,7 +33,8 @@ pub(super) fn assistant_aux_data(
                     .map(ui::line_plain_text)
                     .collect()
             } else {
-                markdown::render_markdown(&msg.content)
+                markdown::render_markdown_with_links(&msg.content, None)
+                    .lines
                     .into_iter()
                     .map(|line| ui::line_plain_text(&align_if_unset(line, align)))
                     .collect()
@@ -54,6 +56,7 @@ pub(super) fn assistant_aux_data(
         centered,
         diff_mode,
         cached_len: cached.len(),
+        compact_links: crate::config::config().display.compact_links,
     };
 
     {

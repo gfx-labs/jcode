@@ -30,6 +30,7 @@ pub struct MarkdownConfigSnapshot {
     pub markdown_spacing: MarkdownSpacingMode,
     pub mermaid_enabled: bool,
     pub latex_rendering: LatexRenderingMode,
+    pub compact_links: bool,
 }
 
 impl Default for MarkdownConfigSnapshot {
@@ -39,6 +40,7 @@ impl Default for MarkdownConfigSnapshot {
             markdown_spacing: MarkdownSpacingMode::default(),
             mermaid_enabled: true,
             latex_rendering: LatexRenderingMode::default(),
+            compact_links: false,
         }
     }
 }
@@ -105,15 +107,20 @@ mod context;
 #[path = "markdown_wrap.rs"]
 mod wrap;
 
+#[path = "markdown_links.rs"]
+mod links;
+pub use links::{LinkSpan, RenderedMarkdown, recenter_markdown, wrap_line_with_links};
+use links::{TableLinkSpan, adjust_link_padding, finish_link};
+
 #[cfg(test)]
 pub(crate) use context::with_markdown_spacing_mode_override;
 pub use context::{
     center_code_blocks, get_diagram_mode_override, mermaid_rendering_enabled,
-    set_center_code_blocks, set_diagram_mode_override, with_center_code_blocks,
+    set_center_code_blocks, set_diagram_mode_override, with_center_code_blocks, with_compact_links,
     with_deferred_mermaid_render_context, with_diagram_mode_scope, with_mermaid_rendering_override,
 };
 use context::{
-    deferred_mermaid_render_context_enabled, effective_diagram_mode,
+    compact_links, deferred_mermaid_render_context_enabled, effective_diagram_mode,
     effective_markdown_spacing_mode, streaming_render_context_enabled,
     with_streaming_render_context,
 };
@@ -143,8 +150,10 @@ pub use render_core_adapter::{
     styled_line_to_line,
 };
 
-pub use render_full::{render_markdown_with_width, thread_render_count};
-pub use render_lazy::render_markdown_lazy;
+pub use render_full::{
+    render_markdown_with_links, render_markdown_with_width, thread_render_count,
+};
+pub use render_lazy::{render_markdown_lazy, render_markdown_lazy_with_links};
 pub use render_support::extract_copy_targets_from_rendered_lines;
 
 /// Reasoning-line markdown formatters and the zero-width sentinel they use.
@@ -172,7 +181,7 @@ pub use jcode_render_core::{
 
 use render_support::{
     highlight_code_cached, line_plain_text, placeholder_code_block, ranges_overlap,
-    render_table_aligned,
+    render_table_aligned_with_links,
 };
 
 fn should_render_mermaid_block(lang: Option<&str>) -> bool {
@@ -405,7 +414,16 @@ fn push_block_separator(
     }
 }
 
+#[cfg(test)]
 fn normalize_block_separators(lines: &mut Vec<Line<'static>>) {
+    normalize_block_separators_with_links(lines, &mut Vec::new());
+}
+
+fn normalize_block_separators_with_links(
+    lines: &mut Vec<Line<'static>>,
+    links: &mut Vec<LinkSpan>,
+) {
+    let mut line_map = vec![None; lines.len()];
     let mut normalized: Vec<Line<'static>> = Vec::with_capacity(lines.len());
     let mut previous_blank = true;
     // Blank lines that belong to an image/diagram placeholder body. The
@@ -419,7 +437,7 @@ fn normalize_block_separators(lines: &mut Vec<Line<'static>>) {
     // a placeholder body can legitimately end the rendered text.
     let mut protected_len = 0usize;
 
-    for line in lines.drain(..) {
+    for (old_index, line) in lines.drain(..).enumerate() {
         let is_blank = line_is_blank(&line);
         if is_blank {
             if preserve_blanks > 0 {
@@ -434,6 +452,7 @@ fn normalize_block_separators(lines: &mut Vec<Line<'static>>) {
             }
             normalized.push(Line::default());
         } else {
+            line_map[old_index] = Some(normalized.len());
             preserve_blanks =
                 if let Some((_, rows, _)) = mermaid::parse_inline_image_placeholder(&line) {
                     rows.saturating_sub(1) as usize
@@ -455,6 +474,14 @@ fn normalize_block_separators(lines: &mut Vec<Line<'static>>) {
     }
 
     *lines = normalized;
+    links.retain_mut(|link| {
+        if let Some(line) = line_map[link.line] {
+            link.line = line;
+            true
+        } else {
+            false
+        }
+    });
 }
 
 struct HighlightCache {
@@ -908,6 +935,7 @@ fn align_ordered_list_markers(
     lines: &mut [Line<'static>],
     item_starts: &[usize],
     max_digits: usize,
+    links: &mut [LinkSpan],
 ) {
     if max_digits <= 1 {
         return;
@@ -922,7 +950,9 @@ fn align_ordered_list_markers(
             continue;
         };
         let extra_pad = max_digits.saturating_sub(digit_count);
+        let before = line.width();
         pad_ordered_marker_line(line, marker_prefix_width, indent_width, extra_pad);
+        adjust_link_padding(links, line_idx, before, line.width());
     }
 }
 

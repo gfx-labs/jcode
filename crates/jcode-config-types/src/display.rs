@@ -45,6 +45,8 @@ pub struct DisplayConfig {
     /// Markdown block spacing style (compact/document, default: compact)
     #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub markdown_spacing: MarkdownSpacingMode,
+    /// Show Markdown link labels without appending their targets (default: false).
+    pub compact_links: bool,
     /// LaTeX rendering style (none/unicode/image, default: image)
     #[serde(deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub latex_rendering: LatexRenderingMode,
@@ -147,6 +149,7 @@ impl Default for DisplayConfig {
             reasoning_display: Some(ReasoningDisplayMode::Full),
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
+            compact_links: false,
             latex_rendering: LatexRenderingMode::default(),
             idle_animation: false,
             prompt_entry_animation: true,

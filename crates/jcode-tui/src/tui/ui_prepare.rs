@@ -29,6 +29,7 @@ struct AssistantAuxKey {
     centered: bool,
     diff_mode: crate::config::DiffDisplayMode,
     cached_len: usize,
+    compact_links: bool,
 }
 
 const ASSISTANT_AUX_CACHE_LIMIT: usize = 2048;
@@ -361,6 +362,7 @@ fn empty_prepared_messages() -> PreparedMessages {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        link_spans: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
     }
@@ -581,7 +583,7 @@ fn prepare_active_batch_progress(
         super::left_pad_lines_to_block_width(&mut lines, width, block_width);
     }
 
-    wrap_lines_with_map(lines, &[], &[], &[], &[], &[], width, &[], &[], &[])
+    wrap_lines_with_map(lines, &[], &[], &[], &[], &[], width, &[], &[], &[], &[])
 }
 
 pub(super) fn prepare_messages(
@@ -632,6 +634,7 @@ pub(super) fn prepare_messages(
             .wrapping_add(jcode_tui_messages::transcript_expand_epoch().wrapping_mul(0x9e37_79b9)),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
         latex_rendering: crate::config::config().display.latex_rendering,
+        compact_links: crate::config::config().display.compact_links,
     };
 
     super::note_full_prep_request();
@@ -864,6 +867,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
             copy_targets: Vec::new(),
+            link_spans: Vec::new(),
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
         });
@@ -902,6 +906,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             image_regions: Vec::new(),
             edit_tool_ranges: Vec::new(),
             copy_targets: Vec::new(),
+            link_spans: Vec::new(),
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
         })
@@ -1089,6 +1094,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
             .wrapping_add(jcode_tui_messages::transcript_expand_epoch().wrapping_mul(0x9e37_79b9)),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
         latex_rendering: crate::config::config().display.latex_rendering,
+        compact_links: crate::config::config().display.compact_links,
     };
     let msg_count = app.display_messages().len();
     let cache_lookup_start = Instant::now();
@@ -1273,6 +1279,7 @@ struct BodyRenderCtx<'a> {
 #[derive(Default)]
 struct BodyAcc {
     lines: Vec<Line<'static>>,
+    link_spans: Vec<markdown::LinkSpan>,
     raw_plain_lines: Vec<String>,
     line_raw_overrides: Vec<Option<WrappedLineMap>>,
     line_copy_offsets: Vec<usize>,
@@ -1407,12 +1414,18 @@ fn render_message_into(
         }
         "assistant" => {
             let content_width = width.saturating_sub(4);
-            let cached = get_cached_message_lines(
+            let rendered = get_cached_message_render(
                 msg,
                 content_width,
                 app.diff_mode(),
-                render_assistant_message,
+                render_assistant_message_with_links,
             );
+            acc.link_spans
+                .extend(rendered.links.into_iter().map(|mut link| {
+                    link.line += acc.lines.len();
+                    link
+                }));
+            let cached = rendered.lines;
             let message_copy_targets = assistant_message_copy_targets(&msg.content, &cached);
             for target in message_copy_targets {
                 acc.copy_targets
@@ -1805,6 +1818,7 @@ pub(super) fn prepare_body_incremental(
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
         &acc.segments,
+        &acc.link_spans,
     );
 
     let prepared = Arc::make_mut(&mut prev);
@@ -1900,6 +1914,12 @@ pub(super) fn prepare_body_incremental(
             }),
     );
     prepared
+        .link_spans
+        .extend(new_wrapped.link_spans.into_iter().map(|mut link| {
+            link.line += prev_len;
+            link
+        }));
+    prepared
         .message_boundaries
         .extend(
             new_wrapped
@@ -1963,6 +1983,7 @@ pub(super) fn truncate_prepared_to_boundary(prepared: &mut PreparedMessages, kee
         .edit_tool_ranges
         .retain(|r| r.start_line < wrapped_len);
     prepared.copy_targets.retain(|t| t.start_line < wrapped_len);
+    prepared.link_spans.retain(|link| link.line < wrapped_len);
 
     // The pending-mermaid placeholder may have lived in the dropped tail;
     // recompute so a stale-positive stamp cannot force rebuilds forever.
@@ -2127,6 +2148,7 @@ pub(super) fn prepare_body_prepended(
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
         &acc.segments,
+        &acc.link_spans,
     );
 
     // Blank-separator continuity at the seam: the suffix's first message baked
@@ -2279,6 +2301,20 @@ pub(super) fn prepare_body_prepended(
         prepared.message_boundaries = boundaries;
     }
 
+    let mut link_spans = head.link_spans;
+    link_spans.extend(
+        prepared
+            .link_spans
+            .iter()
+            .filter(|link| link.line >= cut_wrapped)
+            .cloned()
+            .map(|mut link| {
+                link.line = shift_wrapped(link.line);
+                link
+            }),
+    );
+    prepared.link_spans = link_spans;
+
     prepared.mermaid_pending_epoch = match (prepared.mermaid_pending_epoch, head_pending_epoch) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -2308,10 +2344,11 @@ fn prepare_streaming_cached(
     } else {
         display_width
     };
-    let mut md_lines = app.render_streaming_markdown(content_width);
+    let mut rendered = app.render_streaming_markdown_with_links(content_width);
     if centered {
-        markdown::recenter_structured_blocks_for_display(&mut md_lines, display_width);
+        markdown::recenter_markdown(&mut rendered, display_width);
     }
+    let md_lines = rendered.lines;
     let align = if centered {
         ratatui::layout::Alignment::Center
     } else {
@@ -2322,6 +2359,14 @@ fn prepare_streaming_cached(
     if prefix_blank {
         lines.push(Line::from(""));
     }
+    let link_spans: Vec<_> = rendered
+        .links
+        .into_iter()
+        .map(|mut link| {
+            link.line += lines.len();
+            link
+        })
+        .collect();
     // Streaming sections need the same copy metadata as finalized messages.
     // Only explicitly closed blocks are eligible, not the parser's EOF closure.
     let copy_targets: Vec<_> = markdown::extract_streaming_copy_targets(streaming, &md_lines)
@@ -2333,7 +2378,17 @@ fn prepare_streaming_cached(
     }
 
     let mut prepared = wrap_lines_with_map(
-        lines, &[], &[], &[], &[], &[], width, &[], &copy_targets, &[],
+        lines,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        width,
+        &[],
+        &copy_targets,
+        &[],
+        &link_spans,
     );
     stamp_mermaid_pending(&mut prepared, mermaid_epoch_before);
     prepared
@@ -2410,10 +2465,16 @@ pub(super) fn prepare_body(
         } else {
             display_width
         };
-        let mut md_lines = app.render_streaming_markdown(content_width);
+        let mut rendered = app.render_streaming_markdown_with_links(content_width);
         if centered {
-            markdown::recenter_structured_blocks_for_display(&mut md_lines, display_width);
+            markdown::recenter_markdown(&mut rendered, display_width);
         }
+        acc.link_spans
+            .extend(rendered.links.into_iter().map(|mut link| {
+                link.line += acc.lines.len();
+                link
+            }));
+        let md_lines = rendered.lines;
         let align = default_message_alignment("assistant", centered);
         acc.copy_targets.extend(
             markdown::extract_streaming_copy_targets(app.streaming_text(), &md_lines)
@@ -2440,6 +2501,7 @@ pub(super) fn prepare_body(
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
         &acc.segments,
+        &acc.link_spans,
     );
     let wrap_ms = wrap_start.elapsed().as_millis();
     if images_ms + ctx_ms + render_ms + wrap_ms >= 100 {
@@ -2567,6 +2629,7 @@ fn wrap_lines(
         image_regions,
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        link_spans: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
     }
@@ -2587,6 +2650,7 @@ fn wrap_lines_with_map(
     edit_ranges: &[(usize, String, usize, usize, bool)],
     copy_ranges: &[RawCopyTarget],
     segments: &[(u64, usize, usize, usize)],
+    link_spans: &[markdown::LinkSpan],
 ) -> PreparedMessages {
     let full_width = width.saturating_sub(1) as usize;
     let user_width = width.saturating_sub(2) as usize;
@@ -2607,6 +2671,14 @@ fn wrap_lines_with_map(
     let mut raw_to_wrapped: Vec<usize> = Vec::with_capacity(lines.len() + 1);
 
     let mut wrapped_lines: Vec<Line> = Vec::new();
+    let mut wrapped_links = Vec::new();
+    let mut links_by_line: HashMap<usize, Vec<markdown::LinkSpan>> = HashMap::new();
+    for link in link_spans {
+        links_by_line
+            .entry(link.line)
+            .or_default()
+            .push(link.clone());
+    }
     for (orig_idx, line) in lines.into_iter().enumerate() {
         let (raw_line, start_col, end_col) =
             if let Some(Some(map)) = line_raw_overrides.get(orig_idx) {
@@ -2621,7 +2693,16 @@ fn wrap_lines_with_map(
         raw_to_wrapped.push(wrapped_idx);
         let is_user_line = user_line_mask.get(orig_idx).copied().unwrap_or(false);
         let wrap_width = if is_user_line { user_width } else { full_width };
-        let new_lines = markdown::wrap_line(line, wrap_width);
+        let line_links = links_by_line
+            .get(&orig_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let rendered = markdown::wrap_line_with_links(line, wrap_width, line_links);
+        wrapped_links.extend(rendered.links.into_iter().map(|mut link| {
+            link.line += wrapped_idx;
+            link
+        }));
+        let new_lines = rendered.lines;
         let count = new_lines.len();
         let first_copy_offset = line_copy_offsets.get(orig_idx).copied().unwrap_or(0);
         // Same invariant as `wrap_lines`: the row widths sum to the source span
@@ -2748,6 +2829,7 @@ fn wrap_lines_with_map(
         image_regions,
         edit_tool_ranges,
         copy_targets,
+        link_spans: wrapped_links,
         message_boundaries,
         mermaid_pending_epoch: None,
     }

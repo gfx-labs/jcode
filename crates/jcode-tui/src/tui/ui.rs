@@ -146,6 +146,7 @@ pub(crate) use messages::{
     render_reasoning_message, render_swarm_message, render_system_message, render_tool_message,
     render_usage_message,
 };
+use messages::{get_cached_message_render, render_assistant_message_with_links};
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
     SidePanelDebugStats, SidePanelMermaidProbe, SidePanelMermaidProbeRect,
@@ -956,6 +957,7 @@ struct BodyCacheKey {
     /// member, so status/todo/tool-intent updates must invalidate the body.
     swarm_members_signature: u64,
     latex_rendering: crate::config::LatexRenderingMode,
+    compact_links: bool,
 }
 
 #[derive(Clone)]
@@ -1039,6 +1041,7 @@ impl BodyCacheState {
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
                     && entry.key.latex_rendering == key.latex_rendering
+                    && entry.key.compact_links == key.compact_links
             })
             .max_by_key(|entry| entry.msg_count)
             .map(|entry| (entry.prepared.clone(), entry.msg_count));
@@ -1061,6 +1064,7 @@ impl BodyCacheState {
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
                     && entry.key.latex_rendering == key.latex_rendering
+                    && entry.key.compact_links == key.compact_links
             })
             .max_by_key(|entry| entry.msg_count)
             .map(|entry| (entry.prepared.clone(), entry.msg_count));
@@ -1102,6 +1106,7 @@ impl BodyCacheState {
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
                     && entry.key.latex_rendering == key.latex_rendering
+                    && entry.key.compact_links == key.compact_links
             })
             .max_by_key(|(_, entry)| entry.msg_count)
             .map(|(idx, entry)| (false, idx, entry.msg_count));
@@ -1125,6 +1130,7 @@ impl BodyCacheState {
                     && entry.key.expanded_images_version == key.expanded_images_version
                     && entry.key.swarm_members_signature == key.swarm_members_signature
                     && entry.key.latex_rendering == key.latex_rendering
+                    && entry.key.compact_links == key.compact_links
             })
             .max_by_key(|(_, entry)| entry.msg_count)
             .map(|(idx, entry)| (true, idx, entry.msg_count));
@@ -1233,6 +1239,7 @@ struct FullPrepCacheKey {
     /// Signature of live swarm member cards embedded beneath spawn tool calls.
     swarm_members_signature: u64,
     latex_rendering: crate::config::LatexRenderingMode,
+    compact_links: bool,
 }
 
 #[derive(Clone)]
@@ -1686,6 +1693,7 @@ pub(crate) fn draw_onboarding_welcome_for_tests(
 #[derive(Clone)]
 enum CopyViewportData {
     Dense {
+        link_spans: Arc<Vec<markdown::LinkSpan>>,
         wrapped_plain_lines: Arc<Vec<String>>,
         wrapped_copy_offsets: Arc<Vec<usize>>,
         raw_plain_lines: Arc<Vec<String>>,
@@ -1879,6 +1887,7 @@ fn record_copy_pane_snapshot(
     visible_end: usize,
     content_area: Rect,
     left_margins: &[u16],
+    link_spans: Arc<Vec<markdown::LinkSpan>>,
 ) {
     #[cfg(test)]
     {
@@ -1886,6 +1895,7 @@ fn record_copy_pane_snapshot(
             *copy_snapshot_slot_mut(&mut state.borrow_mut(), pane) = Some(CopyViewportSnapshot {
                 pane,
                 data: CopyViewportData::Dense {
+                    link_spans,
                     wrapped_plain_lines,
                     wrapped_copy_offsets,
                     raw_plain_lines,
@@ -1904,6 +1914,7 @@ fn record_copy_pane_snapshot(
         *copy_snapshot_slot_mut(&mut state, pane) = Some(CopyViewportSnapshot {
             pane,
             data: CopyViewportData::Dense {
+                link_spans,
                 wrapped_plain_lines,
                 wrapped_copy_offsets,
                 raw_plain_lines,
@@ -1966,6 +1977,7 @@ pub(crate) fn record_side_pane_snapshot_precomputed(
     visible_end: usize,
     content_area: Rect,
     left_margins: &[u16],
+    link_spans: Arc<Vec<markdown::LinkSpan>>,
 ) {
     record_copy_pane_snapshot(
         crate::tui::CopySelectionPane::SidePane,
@@ -1977,6 +1989,7 @@ pub(crate) fn record_side_pane_snapshot_precomputed(
         visible_end,
         content_area,
         left_margins,
+        link_spans,
     );
 }
 
@@ -2005,6 +2018,7 @@ pub(crate) fn record_copy_viewport_snapshot(
         visible_end,
         content_area,
         left_margins,
+        Arc::new(Vec::new()),
     );
 }
 
@@ -2031,7 +2045,7 @@ pub(crate) fn line_left_margins_for_area(lines: &[Line<'static>], area_width: u1
             let total_margin = area_width.saturating_sub(used);
             match line.alignment.unwrap_or(Alignment::Left) {
                 Alignment::Left => 0,
-                Alignment::Center => total_margin / 2,
+                Alignment::Center => (area_width / 2).saturating_sub(used / 2),
                 Alignment::Right => total_margin,
             }
         })
@@ -2098,6 +2112,7 @@ pub(crate) fn record_input_copy_snapshot(
         visible_end,
         content_area,
         left_margins,
+        Arc::new(Vec::new()),
     );
 }
 
@@ -2132,6 +2147,7 @@ fn record_pane_snapshot_from_lines(
         visible_end,
         content_area,
         visible_left_margins,
+        Arc::new(Vec::new()),
     );
 }
 
@@ -2379,6 +2395,15 @@ pub(crate) fn link_target_from_screen(column: u16, row: u16) -> Option<String> {
         return None;
     }
     let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let rel_row = row.saturating_sub(snapshot.content_area.y) as usize;
+    let content_x = snapshot
+        .content_area
+        .x
+        .saturating_add(snapshot.left_margins.get(rel_row).copied().unwrap_or(0));
+    let width = line_display_width(snapshot.wrapped_plain_line(point.abs_line)?);
+    if column < content_x || usize::from(column - content_x) >= width {
+        return None;
+    }
     link_target_from_snapshot(&snapshot, point)
 }
 

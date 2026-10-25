@@ -15,8 +15,8 @@ use crate::message::{
     parse_background_task_notification_markdown,
     parse_background_task_progress_notification_markdown, strip_ansi_escape_sequences,
 };
-pub(super) use cache_support::get_cached_message_lines;
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
+pub(super) use cache_support::{get_cached_message_lines, get_cached_message_render};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
@@ -149,18 +149,26 @@ pub(crate) fn render_assistant_message(
     width: u16,
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
+    render_assistant_message_with_links(msg, width, _diff_mode).lines
+}
+
+pub(crate) fn render_assistant_message_with_links(
+    msg: &DisplayMessage,
+    width: u16,
+    _diff_mode: crate::config::DiffDisplayMode,
+) -> markdown::RenderedMarkdown {
     let centered = markdown::center_code_blocks();
     let wrap_width = centered_wrap_width(width, centered, 96);
     let mut lines =
         if let Some(folded) = render_assistant_with_folded_reasoning(msg, width, wrap_width) {
             folded
         } else if let Some(segments) = split_plan_segments(&msg.content) {
-            render_assistant_segments(&segments, width, wrap_width)
+            render_assistant_segments_with_links(&segments, width, wrap_width)
         } else {
-            markdown::render_markdown_with_width(&msg.content, Some(wrap_width))
+            markdown::render_markdown_with_links(&msg.content, Some(wrap_width))
         };
     if centered {
-        markdown::recenter_structured_blocks_for_display(&mut lines, width as usize);
+        markdown::recenter_markdown(&mut lines, width as usize);
     }
     lines
 }
@@ -246,36 +254,36 @@ fn split_plan_segments(content: &str) -> Option<Vec<AssistantSegment>> {
     saw_plan.then_some(segments)
 }
 
-fn render_assistant_segments(
+fn render_assistant_segments_with_links(
     segments: &[AssistantSegment],
     width: u16,
     wrap_width: usize,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+) -> markdown::RenderedMarkdown {
+    let mut rendered = markdown::RenderedMarkdown::default();
     for segment in segments {
         match segment {
             AssistantSegment::Markdown(text) => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
+                if !rendered.lines.is_empty() {
+                    rendered.lines.push(Line::from(""));
                 }
-                lines.extend(markdown::render_markdown_with_width(text, Some(wrap_width)));
+                rendered.append(markdown::render_markdown_with_links(text, Some(wrap_width)));
             }
             AssistantSegment::Plan(body) => {
-                if !lines.is_empty() {
-                    lines.push(Line::from(""));
+                if !rendered.lines.is_empty() {
+                    rendered.lines.push(Line::from(""));
                 }
-                lines.extend(render_plan_card(body, width));
+                rendered.append(render_plan_card_with_links(body, width));
             }
         }
     }
-    lines
+    rendered
 }
 
 /// Render the inner markdown of a ```plan block as a bordered plan card.
-fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
+fn render_plan_card_with_links(body: &str, width: u16) -> markdown::RenderedMarkdown {
     let border_style = Style::default().fg(rgb(158, 135, 255));
-    let max_box_width = (width.saturating_sub(4) as usize).clamp(28, 100);
-    let inner_width = max_box_width.saturating_sub(4).max(8);
+    let max_box_width = (width.saturating_sub(4) as usize).clamp(10, 100);
+    let inner_width = max_box_width.saturating_sub(4).max(6);
 
     let title = plan_card_title(body);
     let body_without_title = plan_card_body_without_title(body, &title);
@@ -285,11 +293,20 @@ fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
     // later in the pipeline. The card boxes its content immediately and
     // `render_rounded_box` truncates over-long lines, so wrap here to avoid
     // cutting plan text off at the border.
-    let rendered = markdown::render_markdown_with_width(&body_without_title, Some(inner_width));
-    let mut content: Vec<Line<'static>> = markdown::wrap_lines(rendered, inner_width);
+    let rendered = markdown::render_markdown_with_links(&body_without_title, Some(inner_width))
+        .wrapped(inner_width);
+    let mut links = rendered.links;
+    let mut content = rendered.lines;
     // Trim leading/trailing blank rows inside the card.
     while content.first().is_some_and(|line| line.width() == 0) {
         content.remove(0);
+        links.retain_mut(|link| {
+            if link.line == 0 {
+                return false;
+            }
+            link.line -= 1;
+            true
+        });
     }
     while content.last().is_some_and(|line| line.width() == 0) {
         content.pop();
@@ -301,7 +318,16 @@ fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
         )));
     }
 
-    render_rounded_box(&title, content, max_box_width, border_style)
+    let lines = render_rounded_box(&title, content, max_box_width, border_style);
+    for link in &mut links {
+        link.line += 1;
+        link.start_col += 2;
+        link.end_col += 2;
+    }
+    links.retain(|link| {
+        link.line < lines.len() && link.end_col <= lines[link.line].width().saturating_sub(2)
+    });
+    markdown::RenderedMarkdown { lines, links }
 }
 
 /// Title for the plan card: the first markdown heading in the body, else "Plan".
@@ -552,7 +578,7 @@ fn render_assistant_with_folded_reasoning(
     msg: &DisplayMessage,
     width: u16,
     wrap_width: usize,
-) -> Option<Vec<Line<'static>>> {
+) -> Option<markdown::RenderedMarkdown> {
     if !reasoning_folds_to_summary() {
         return None;
     }
@@ -566,6 +592,7 @@ fn render_assistant_with_folded_reasoning(
     // whole turn, which overstates it.
     let thinking_secs = jcode_tui_messages::thinking_secs_for(hash);
     let mut lines = render_folded_reasoning_block(&blocks, thinking_secs, wrap_width, expanded);
+    let mut links = Vec::new();
 
     // Everything outside the reasoning blocks is the answer. Splice the
     // blocks out so the remaining markdown renders as if the reasoning were
@@ -581,13 +608,17 @@ fn render_assistant_with_folded_reasoning(
     if !answer.trim().is_empty() {
         lines.push(Line::default().alignment(ratatui::layout::Alignment::Left));
         let rendered = if let Some(segments) = split_plan_segments(answer) {
-            render_assistant_segments(&segments, width, wrap_width)
+            render_assistant_segments_with_links(&segments, width, wrap_width)
         } else {
-            markdown::render_markdown_with_width(answer, Some(wrap_width))
+            markdown::render_markdown_with_links(answer, Some(wrap_width))
         };
-        lines.extend(rendered);
+        links.extend(rendered.links.into_iter().map(|mut link| {
+            link.line += lines.len();
+            link
+        }));
+        lines.extend(rendered.lines);
     }
-    Some(lines)
+    Some(markdown::RenderedMarkdown { lines, links })
 }
 
 /// Word-wrap plain text to `width`, hard-splitting tokens wider than the line.

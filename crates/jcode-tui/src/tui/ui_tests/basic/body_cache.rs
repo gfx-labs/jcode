@@ -13,6 +13,7 @@ fn test_body_cache_state_keeps_multiple_width_entries() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let key_b = BodyCacheKey {
         width: 41,
@@ -38,6 +39,7 @@ fn test_body_cache_state_keeps_multiple_width_entries() {
         copy_targets: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
+        link_spans: Vec::new(),
     });
     let prepared_b = Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("b")],
@@ -54,6 +56,7 @@ fn test_body_cache_state_keeps_multiple_width_entries() {
         copy_targets: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
+        link_spans: Vec::new(),
     });
 
     let mut cache = BodyCacheState::default();
@@ -89,6 +92,7 @@ fn test_body_cache_state_does_not_reuse_a_different_mermaid_aspect_profile() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let resized_key = BodyCacheKey {
         messages_version: 2,
@@ -122,6 +126,7 @@ fn test_body_cache_state_evicts_oldest_entries() {
             expanded_images_version: 0,
             swarm_members_signature: 0,
             latex_rendering: crate::config::LatexRenderingMode::Image,
+            compact_links: false,
         };
         let prepared = Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from(format!("{idx}"))],
@@ -138,6 +143,7 @@ fn test_body_cache_state_evicts_oldest_entries() {
             copy_targets: Vec::new(),
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
+            link_spans: Vec::new(),
         });
         cache.insert(key, prepared, idx, 0);
     }
@@ -164,6 +170,7 @@ fn test_body_cache_state_accepts_large_single_entry_within_total_budget() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let prepared = make_prepared_messages_with_content_bytes(3 * 1024 * 1024, "body-large-");
 
@@ -194,6 +201,7 @@ fn test_body_cache_state_retains_oversized_hot_entry() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let prepared = make_oversized_prepared_messages("body-oversized-");
 
@@ -225,6 +233,7 @@ fn test_body_cache_state_keeps_two_oversized_width_entries_hot() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let key_b = BodyCacheKey {
         width: 139,
@@ -263,6 +272,7 @@ fn test_body_cache_state_uses_oversized_hot_entry_as_incremental_base() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let prepared = make_oversized_prepared_messages("body-oversized-base-");
 
@@ -503,6 +513,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
         inline_images_visible: true,
     };
     let key_b = FullPrepCacheKey {
@@ -529,6 +540,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         copy_targets: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
+        link_spans: Vec::new(),
     }));
     let prepared_b = make_prepared_chat_frame(Arc::new(PreparedMessages {
         wrapped_lines: vec![Line::from("b")],
@@ -545,6 +557,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         copy_targets: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
+        link_spans: Vec::new(),
     }));
 
     let mut cache = FullPrepCacheState::default();
@@ -583,6 +596,7 @@ fn test_full_prep_cache_state_does_not_reuse_a_different_mermaid_aspect_profile(
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
     };
     let resized_key = FullPrepCacheKey {
         mermaid_aspect_bucket: Some(2500),
@@ -617,6 +631,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             expanded_images_version: 0,
             swarm_members_signature: 0,
             latex_rendering: crate::config::LatexRenderingMode::Image,
+            compact_links: false,
             inline_images_visible: true,
         };
         let prepared = make_prepared_chat_frame(Arc::new(PreparedMessages {
@@ -634,6 +649,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             copy_targets: Vec::new(),
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
+            link_spans: Vec::new(),
         }));
         cache.insert(key, prepared);
     }
@@ -663,6 +679,7 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
         inline_images_visible: true,
     };
     let prepared = make_prepared_chat_frame_with_content_bytes(3 * 1024 * 1024, "full-large-");
@@ -696,6 +713,7 @@ fn test_full_prep_cache_state_retains_oversized_hot_entry() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
         inline_images_visible: true,
     };
     let prepared = make_oversized_prepared_chat_frame("full-oversized-");
@@ -731,6 +749,7 @@ fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::Image,
+        compact_links: false,
         inline_images_visible: true,
     };
     let key_b = FullPrepCacheKey {
@@ -931,6 +950,7 @@ fn assert_prepared_equivalent(a: &PreparedMessages, b: &PreparedMessages, ctx: &
     let a_lines: Vec<String> = a.wrapped_lines.iter().map(line_to_plain).collect();
     let b_lines: Vec<String> = b.wrapped_lines.iter().map(line_to_plain).collect();
     assert_eq!(a_lines, b_lines, "{ctx}: wrapped_lines text differ");
+    assert_eq!(a.link_spans, b.link_spans, "{ctx}: link ranges differ");
     assert_eq!(
         a.wrapped_plain_lines, b.wrapped_plain_lines,
         "{ctx}: wrapped_plain_lines differ"
@@ -1031,10 +1051,10 @@ fn test_prefix_reuse_tail_edit_matches_full_build() {
         display_messages: vec![
             DisplayMessage::user("first prompt"),
             DisplayMessage::assistant(
-                "a fairly long answer that wraps across the width boundary here",
+                "a fairly long [界answer](https://example.test/first) that wraps across the width boundary here",
             ),
             DisplayMessage::user("second prompt"),
-            DisplayMessage::assistant("partial"),
+            DisplayMessage::assistant("[partial](docs/partial.md)"),
         ],
         messages_version: 1,
         ..Default::default()
@@ -1044,11 +1064,11 @@ fn test_prefix_reuse_tail_edit_matches_full_build() {
         display_messages: vec![
             DisplayMessage::user("first prompt"),
             DisplayMessage::assistant(
-                "a fairly long answer that wraps across the width boundary here",
+                "a fairly long [界answer](https://example.test/first) that wraps across the width boundary here",
             ),
             DisplayMessage::user("second prompt"),
             DisplayMessage::assistant(
-                "partial answer is now complete and considerably longer than before",
+                "[partial answer](docs/complete.md) is now complete and considerably longer than before",
             ),
         ],
         messages_version: 2,
@@ -1073,7 +1093,9 @@ fn test_prefix_reuse_append_matches_full_build() {
     let base_state = TestState {
         display_messages: vec![
             DisplayMessage::user("hello there"),
-            DisplayMessage::assistant("hi, how can I help you today with this task"),
+            DisplayMessage::assistant(
+                "hi, [how can I help](https://example.test/help) you today with this task",
+            ),
         ],
         messages_version: 1,
         ..Default::default()
@@ -1081,9 +1103,13 @@ fn test_prefix_reuse_append_matches_full_build() {
     let grown_state = TestState {
         display_messages: vec![
             DisplayMessage::user("hello there"),
-            DisplayMessage::assistant("hi, how can I help you today with this task"),
+            DisplayMessage::assistant(
+                "hi, [how can I help](https://example.test/help) you today with this task",
+            ),
             DisplayMessage::user("another question that is fairly long and wraps too"),
-            DisplayMessage::assistant("sure, here is the answer to your second question"),
+            DisplayMessage::assistant(
+                "sure, here is [the answer](docs/answer.md) to your second question",
+            ),
         ],
         messages_version: 2,
         ..Default::default()
@@ -1105,9 +1131,13 @@ fn test_prefix_reuse_truncation_matches_full_build() {
     let long_state = TestState {
         display_messages: vec![
             DisplayMessage::user("q1 that is reasonably long to force wrapping in body"),
-            DisplayMessage::assistant("answer one spanning multiple wrapped lines for sure"),
+            DisplayMessage::assistant(
+                "[answer one](docs/one.md) spanning multiple wrapped lines for sure",
+            ),
             DisplayMessage::user("q2 also long enough to wrap across the configured width"),
-            DisplayMessage::assistant("answer two also spanning several wrapped output lines"),
+            DisplayMessage::assistant(
+                "[answer two](docs/two.md) also spanning several wrapped output lines",
+            ),
         ],
         messages_version: 1,
         ..Default::default()
@@ -1115,7 +1145,9 @@ fn test_prefix_reuse_truncation_matches_full_build() {
     let short_state = TestState {
         display_messages: vec![
             DisplayMessage::user("q1 that is reasonably long to force wrapping in body"),
-            DisplayMessage::assistant("answer one spanning multiple wrapped lines for sure"),
+            DisplayMessage::assistant(
+                "[answer one](docs/one.md) spanning multiple wrapped lines for sure",
+            ),
         ],
         messages_version: 2,
         ..Default::default()

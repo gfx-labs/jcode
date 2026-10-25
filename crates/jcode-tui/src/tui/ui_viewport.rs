@@ -289,7 +289,7 @@ pub(super) fn compute_visible_margins(
             let (left_margin, right_margin) = match effective_alignment {
                 Alignment::Left => (0, total_margin),
                 Alignment::Center => {
-                    let left = total_margin / 2;
+                    let left = (area.width / 2).saturating_sub(used / 2);
                     let right = total_margin.saturating_sub(left);
                     (left, right)
                 }

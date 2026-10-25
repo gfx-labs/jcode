@@ -22,6 +22,7 @@ fn header_invalidation_discards_composed_account_quota_frames() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         latex_rendering: crate::config::LatexRenderingMode::default(),
+        compact_links: false,
     };
     {
         let mut cache = full_prep_cache().lock().unwrap();
@@ -112,7 +113,8 @@ fn wrapped_row_map_tiles_raw_line_and_skips_repeated_prefix() {
             .unwrap_or_else(|| panic!("case should render a line wider than 40: {case:?}"));
         let raw_width = unicode_width::UnicodeWidthStr::width(ui::line_plain_text(&line).as_str());
 
-        let prepared = wrap_lines_with_map(vec![line], &[], &[], &[], &[], &[], 40, &[], &[], &[]);
+        let prepared =
+            wrap_lines_with_map(vec![line], &[], &[], &[], &[], &[], 40, &[], &[], &[], &[]);
         let maps = prepared.wrapped_line_map.as_ref();
 
         assert!(maps.len() > 1, "case should wrap at width 40: {case:?}");
@@ -183,6 +185,7 @@ fn wrapped_copy_rows_match_visible_content_at_reported_widths() {
                 &[],
                 &[],
                 &[],
+                &[],
             ));
         }
 
@@ -210,6 +213,7 @@ fn wrapped_copy_rows_match_visible_content_at_reported_widths() {
             &users,
             &[],
             width,
+            &[],
             &[],
             &[],
             &[],
@@ -253,6 +257,7 @@ fn matching_suffix_len_detects_prepended_history() {
             })
             .collect(),
         mermaid_pending_epoch: None,
+        link_spans: Vec::new(),
     };
 
     // New transcript: two older-history messages prepended, tail unchanged.

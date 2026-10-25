@@ -1308,3 +1308,86 @@ fn streaming_copy_empty_blocks_and_trailing_blank_lines() {
         );
     }
 }
+#[test]
+fn markdown_link_targets_survive_compact_rendering_and_unicode_wrapping() {
+    let source = "See [**界e\u{301} guide**](https://example.test/a_(b)) and [界e\u{301} guide](docs/two.md#part).";
+    for compact in [false, true] {
+        with_compact_links(compact, || {
+            let full = render_markdown_with_links(source, Some(40));
+            let lazy = render_markdown_lazy_with_links(source, Some(40), 0..20);
+            assert_eq!(lines_to_string(&full.lines), lines_to_string(&lazy.lines));
+            assert_eq!(full.links, lazy.links);
+            assert_eq!(full.links.len(), 2);
+            assert_eq!(full.links[0].start_col, 4);
+            assert_eq!(full.links[0].target.as_ref(), "https://example.test/a_(b)");
+            assert_eq!(full.links[1].target.as_ref(), "docs/two.md#part");
+            assert_eq!(
+                lines_to_string(&full.lines).contains(" (https://"),
+                !compact
+            );
+            for document in [
+                format!("> {source}"),
+                format!("- {source}"),
+                format!("| links |\n| -- |\n| {source} | "),
+            ] {
+                for width in [7, 18, 40] {
+                    let rendered = render_markdown_with_links(&document, Some(width));
+                    let lazy = render_markdown_lazy_with_links(&document, Some(width), 0..100);
+                    assert_eq!(rendered.lines, lazy.lines);
+                    assert_eq!(rendered.links, lazy.links);
+                    let wrapped = rendered.wrapped(width);
+                    assert!(
+                        lines_to_string(&wrapped.lines).contains("界e"),
+                        "{document:?} {wrapped:?}"
+                    );
+                    for target in ["https://example.test/a_(b)", "docs/two.md#part"] {
+                        assert!(
+                            wrapped
+                                .links
+                                .iter()
+                                .any(|link| link.target.as_ref() == target),
+                            "{compact} {width} {document:?}: {wrapped:?}"
+                        );
+                    }
+                }
+            }
+            for alignment in [Alignment::Left, Alignment::Center] {
+                for width in [1, 2, 7, 13, 40] {
+                    let wrapped = wrap_line_with_links(
+                        full.lines[0].clone().alignment(alignment),
+                        width,
+                        &full.links,
+                    );
+                    for target in ["https://example.test/a_(b)", "docs/two.md#part"] {
+                        assert!(
+                            wrapped
+                                .links
+                                .iter()
+                                .any(|link| link.target.as_ref() == target),
+                            "{compact} {alignment:?} {width}"
+                        );
+                    }
+                    for link in &wrapped.links {
+                        assert!(link.start_col < link.end_col);
+                        assert!(link.end_col <= wrapped.lines[link.line].width());
+                    }
+                }
+            }
+        });
+    }
+    let mut streaming = IncrementalMarkdownRenderer::new(Some(40));
+    let expanded = with_compact_links(false, || streaming.update_with_links(source));
+    let compact = with_compact_links(true, || streaming.update_with_links(source));
+    assert!(lines_to_string(&expanded.lines).contains(" (https://"));
+    assert!(!lines_to_string(&compact.lines).contains(" (https://"));
+    assert_eq!(compact.links.len(), 2);
+    with_compact_links(true, || {
+        assert!(
+            lines_to_string(&render_markdown_with_width(source, Some(40))).contains(" (https://")
+        );
+        assert!(
+            lines_to_string(&render_markdown_lazy(source, Some(40), 0..20)).contains(" (https://")
+        );
+        assert!(lines_to_string(&streaming.update(source)).contains(" (https://"));
+    });
+}

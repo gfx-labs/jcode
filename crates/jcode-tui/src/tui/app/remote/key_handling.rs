@@ -1148,6 +1148,10 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             return Ok(());
         }
 
+        if app_mod::commands::handle_compact_links_command(app, trimmed) {
+            return Ok(());
+        }
+
         if handle_remote_rewind_command(app, remote, trimmed).await? {
             return Ok(());
         }

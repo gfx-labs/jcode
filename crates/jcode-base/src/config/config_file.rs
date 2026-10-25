@@ -311,6 +311,12 @@ impl Config {
         Ok(())
     }
 
+    pub fn set_compact_links(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.display.compact_links = enabled;
+        cfg.save()
+    }
+
     /// Persist the baked global launch-hotkey mapping.
     ///
     /// Auto-import calls this once with the per-repo chord -> directory layout it

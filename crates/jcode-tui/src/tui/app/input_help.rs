@@ -207,6 +207,9 @@ impl App {
             "compact-transcript" => {
                 "/compact-transcript\nShow whether the compact transcript is on.\n\n/compact-transcript on\nFold every tool result to a single summary row. Thinking is controlled independently by /thinking-display. Click a row to expand it in place and see the full output (edit tools expand to their full diff); click again to fold it back. Expanded state is remembered per message.\n\n/compact-transcript off\nRestore tool previews (bash output tail and inline diffs) without changing thinking display.\n\n/compact-transcript expand\nToggle the most recent tool result without the mouse."
             }
+            "compact-links" => {
+                "/compact-links\nShow the current Markdown link presentation.\n\n/compact-links on\nShow only clickable link labels, without appended URLs.\n\n/compact-links off\nShow link labels followed by their URLs (default). Labels remain clickable.\n\n/compact-links toggle\nSwitch between these modes. The preference is saved to display.compact_links and applies immediately."
+            }
             "thinking-display" | "thinking" | "reasoning" => {
                 "/thinking-display\nShow the current thinking display mode.\n\n/thinking-display off\nNever show thinking text.\n\n/thinking-display full\nKeep every thinking trace in the transcript, rendered inline.\n\n/thinking-display collapsed\nKeep every thinking trace, folded to a one-line `thinking` row with duration and size metrics. Click the row to read the full thought.\n\n/thinking-display current\nShow only the live thinking, then collapse it once a tool runs or the answer commits."
             }

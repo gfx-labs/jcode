@@ -211,6 +211,7 @@ fn dispatch_single_local_command(app: &mut App, trimmed: &str) -> bool {
     // back to local session/model/storage handlers for a remote command.
     if crate::tui::is_ssh_remote() {
         if super::commands::handle_cancel_command(app, trimmed)
+            || super::commands::handle_compact_links_command(app, trimmed)
             || super::commands::handle_help_command(app, trimmed)
             || super::commands::handle_diff_command(app, trimmed)
         {

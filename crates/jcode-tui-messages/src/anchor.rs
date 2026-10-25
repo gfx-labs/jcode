@@ -137,6 +137,7 @@ mod tests {
                 copy_targets: Vec::new(),
                 message_boundaries: boundaries,
                 mermaid_pending_epoch: None,
+                link_spans: Vec::new(),
             }),
         )])
     }
@@ -363,6 +364,7 @@ mod section_pos_tests {
             copy_targets: Vec::new(),
             message_boundaries: Vec::new(),
             mermaid_pending_epoch: None,
+            link_spans: Vec::new(),
         })
     }
 

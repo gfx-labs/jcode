@@ -1069,6 +1069,7 @@ pub(crate) fn build_section(
         image_regions,
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        link_spans: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
     }
@@ -1089,6 +1090,7 @@ fn empty() -> PreparedMessages {
         image_regions: Vec::new(),
         edit_tool_ranges: Vec::new(),
         copy_targets: Vec::new(),
+        link_spans: Vec::new(),
         message_boundaries: Vec::new(),
         mermaid_pending_epoch: None,
     }

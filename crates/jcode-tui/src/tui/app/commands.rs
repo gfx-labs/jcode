@@ -2996,6 +2996,49 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+pub(super) fn handle_compact_links_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/compact-links" && !trimmed.starts_with("/compact-links ") {
+        return false;
+    }
+    let rest = trimmed
+        .strip_prefix("/compact-links")
+        .unwrap_or_default()
+        .trim();
+    let current = crate::config::config().display.compact_links;
+    if rest.is_empty() || matches!(rest, "show" | "status") {
+        app.push_display_message(DisplayMessage::system(format!(
+            "Compact links: {}. Markdown labels remain clickable in both modes. Use /compact-links on to hide appended URLs, or /compact-links off to show them. This preference is saved.",
+            if current { "on" } else { "off" }
+        )));
+        return true;
+    }
+    let enabled = if rest == "toggle" {
+        Some(!current)
+    } else {
+        parse_on_off_value(rest)
+    };
+    let Some(enabled) = enabled else {
+        app.push_display_message(DisplayMessage::error(
+            "Usage: /compact-links [on|off|toggle|status]",
+        ));
+        return true;
+    };
+    match crate::config::Config::set_compact_links(enabled) {
+        Ok(()) => {
+            app.set_status_notice(format!(
+                "Compact links: {}",
+                if enabled { "on" } else { "off" }
+            ));
+            app.bump_display_messages_version_no_stats();
+            app.request_full_repaint();
+        }
+        Err(error) => app.push_display_message(DisplayMessage::error(format!(
+            "Could not save compact links: {error}"
+        ))),
+    }
+    true
+}
+
 fn handle_compact_transcript_command(app: &mut App, trimmed: &str) -> bool {
     if trimmed != "/compact-transcript" && !trimmed.starts_with("/compact-transcript ") {
         return false;
@@ -3703,6 +3746,9 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
+    if handle_compact_links_command(app, trimmed) {
+        return true;
+    }
     if handle_alignment_command(app, trimmed) {
         return true;
     }

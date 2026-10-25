@@ -170,11 +170,21 @@ pub(super) fn render_table_aligned(
     max_width: Option<usize>,
     alignments: &[jcode_render_core::Alignment],
 ) -> Vec<Line<'static>> {
+    render_table_aligned_with_links(rows, max_width, alignments, &[]).lines
+}
+
+pub(super) fn render_table_aligned_with_links(
+    rows: &[Vec<String>],
+    max_width: Option<usize>,
+    alignments: &[jcode_render_core::Alignment],
+    table_links: &[TableLinkSpan],
+) -> RenderedMarkdown {
     if rows.is_empty() {
-        return vec![];
+        return RenderedMarkdown::default();
     }
 
     let mut lines = Vec::new();
+    let mut links = Vec::new();
 
     // Calculate column widths
     let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
@@ -238,6 +248,7 @@ pub(super) fn render_table_aligned(
             .map(|cell_lines| cell_lines.len())
             .max()
             .unwrap_or(1);
+        let mut source_bytes = vec![0; row.len()];
 
         for physical_idx in 0..physical_rows {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -253,6 +264,42 @@ pub(super) fn render_table_aligned(
                     .unwrap_or_else(|| UnicodeWidthStr::width(display_text));
                 let text_width = UnicodeWidthStr::width(display_text);
                 let pad = col_width.saturating_sub(text_width);
+                let left_pad = match alignments.get(i).copied().unwrap_or_default() {
+                    jcode_render_core::Alignment::Left => 0,
+                    jcode_render_core::Alignment::Right => pad,
+                    jcode_render_core::Alignment::Center => pad / 2,
+                };
+                if !table_links.is_empty() {
+                    let cell = &row[i];
+                    let source_byte = &mut source_bytes[i];
+                    if let Some(offset) = cell
+                        .get(*source_byte..)
+                        .and_then(|rest| rest.find(display_text))
+                    {
+                        *source_byte += offset;
+                        let source_start = UnicodeWidthStr::width(&cell[..*source_byte]);
+                        let source_end = source_start + text_width;
+                        let display_start: usize = spans.iter().map(Span::width).sum::<usize>()
+                            + usize::from(i > 0) * 3
+                            + left_pad;
+                        for link in table_links
+                            .iter()
+                            .filter(|link| link.row == row_idx && link.column == i)
+                        {
+                            let start = source_start.max(link.start_col);
+                            let end = source_end.min(link.end_col);
+                            if start < end {
+                                links.push(LinkSpan {
+                                    line: lines.len(),
+                                    start_col: display_start + start - source_start,
+                                    end_col: display_start + end - source_start,
+                                    target: link.target.clone(),
+                                });
+                            }
+                        }
+                        *source_byte += display_text.len();
+                    }
+                }
                 let padded = match alignments.get(i).copied().unwrap_or_default() {
                     jcode_render_core::Alignment::Left => {
                         format!("{}{}", display_text, " ".repeat(pad))
@@ -301,7 +348,7 @@ pub(super) fn render_table_aligned(
         }
     }
 
-    lines
+    RenderedMarkdown { lines, links }
 }
 
 fn wrap_table_cell(cell: &str, width: usize) -> Vec<String> {

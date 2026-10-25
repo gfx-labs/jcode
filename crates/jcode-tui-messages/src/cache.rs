@@ -1,5 +1,6 @@
 use crate::DisplayMessage;
 use jcode_config_types::{DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode};
+use jcode_tui_markdown::RenderedMarkdown;
 use ratatui::layout::Alignment;
 use ratatui::text::{Line, Span};
 use std::collections::{HashMap, VecDeque};
@@ -22,20 +23,21 @@ struct MessageCacheKey {
     reasoning_display: jcode_config_types::ReasoningDisplayMode,
     transcript_expand_epoch: u64,
     latex_rendering: LatexRenderingMode,
+    compact_links: bool,
 }
 
 #[derive(Default)]
 struct MessageCacheState {
-    entries: HashMap<MessageCacheKey, Arc<Vec<Line<'static>>>>,
+    entries: HashMap<MessageCacheKey, Arc<RenderedMarkdown>>,
     order: VecDeque<MessageCacheKey>,
 }
 
 impl MessageCacheState {
-    fn get(&self, key: &MessageCacheKey) -> Option<Vec<Line<'static>>> {
+    fn get(&self, key: &MessageCacheKey) -> Option<RenderedMarkdown> {
         self.entries.get(key).map(|arc| arc.as_ref().clone())
     }
 
-    fn insert(&mut self, key: MessageCacheKey, lines: Vec<Line<'static>>) {
+    fn insert(&mut self, key: MessageCacheKey, lines: RenderedMarkdown) {
         let arc = Arc::new(lines);
         if let std::collections::hash_map::Entry::Occupied(mut entry) =
             self.entries.entry(key.clone())
@@ -91,6 +93,7 @@ pub struct MessageCacheContext {
     /// Reasoning display mode decides whether thinking folds or renders inline.
     pub reasoning_display: jcode_config_types::ReasoningDisplayMode,
     pub latex_rendering: LatexRenderingMode,
+    pub compact_links: bool,
 }
 
 pub fn left_pad_lines_for_centered_mode(lines: &mut [Line<'static>], width: u16) {
@@ -126,6 +129,22 @@ pub fn get_cached_message_lines<F>(
 where
     F: FnOnce(&DisplayMessage, u16, DiffDisplayMode) -> Vec<Line<'static>>,
 {
+    get_cached_message_render(msg, width, diff_mode, context, |msg, width, diff_mode| {
+        render(msg, width, diff_mode).into()
+    })
+    .lines
+}
+
+pub fn get_cached_message_render<F>(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: DiffDisplayMode,
+    context: MessageCacheContext,
+    render: F,
+) -> RenderedMarkdown
+where
+    F: FnOnce(&DisplayMessage, u16, DiffDisplayMode) -> RenderedMarkdown,
+{
     if cfg!(test) {
         return render(msg, width, diff_mode);
     }
@@ -148,6 +167,7 @@ where
         // process-wide epoch stands in for that state.
         transcript_expand_epoch: crate::transcript_expand_epoch(),
         latex_rendering: context.latex_rendering,
+        compact_links: context.compact_links,
     };
 
     let mut cache = match message_cache().lock() {
@@ -185,9 +205,10 @@ mod tests {
             reasoning_display: jcode_config_types::ReasoningDisplayMode::Full,
             transcript_expand_epoch: 0,
             latex_rendering: LatexRenderingMode::Image,
+            compact_links: false,
         };
         let mut isolated_cache = MessageCacheState::default();
-        isolated_cache.insert(key.clone(), vec![Line::from("image")]);
+        isolated_cache.insert(key.clone(), vec![Line::from("image")].into());
         let unicode_key = MessageCacheKey {
             latex_rendering: LatexRenderingMode::Unicode,
             ..key.clone()
@@ -196,7 +217,10 @@ mod tests {
         assert!(isolated_cache.get(&key).is_some());
         let weak = {
             let mut cache = message_cache().lock().unwrap();
-            cache.insert(key.clone(), vec![Line::from("derived text".repeat(100))]);
+            cache.insert(
+                key.clone(),
+                vec![Line::from("derived text".repeat(100))].into(),
+            );
             Arc::downgrade(cache.entries.get(&key).unwrap())
         };
         clear_message_cache();

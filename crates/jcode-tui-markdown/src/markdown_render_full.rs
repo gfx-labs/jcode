@@ -18,6 +18,11 @@ pub fn thread_render_count() -> u64 {
 }
 
 pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<Line<'static>> {
+    // Line-only consumers cannot attach a click target to a compact label.
+    with_compact_links(false, || render_markdown_with_links(text, max_width).lines)
+}
+
+pub fn render_markdown_with_links(text: &str, max_width: Option<usize>) -> RenderedMarkdown {
     let render_start = Instant::now();
     let text = jcode_render_core::normalize_latex_math(text);
     let text = escape_currency_dollars(&text);
@@ -52,6 +57,9 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     let mut blockquote_starts = Vec::new();
     let mut list_stack: Vec<ListRenderState> = Vec::new();
     let mut link_targets: Vec<String> = Vec::new();
+    let mut link_starts = Vec::new();
+    let mut links = Vec::new();
+    let compact_links = compact_links();
     let mut in_image = false;
     let mut image_url: Option<String> = None;
     let mut image_alt = String::new();
@@ -64,6 +72,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
     let mut in_table = false;
     let mut table_row: Vec<String> = Vec::new();
     let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut table_links: Vec<TableLinkSpan> = Vec::new();
     // Per-column alignment from the delimiter row. Carried so a numeric column
     // the author right-aligned is not silently re-read as left-aligned.
     let mut table_alignments: Vec<jcode_render_core::Alignment> = Vec::new();
@@ -216,6 +225,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         &mut lines,
                         &state.item_line_starts,
                         state.max_marker_digits,
+                        &mut links,
                     );
                 }
                 exit_centered_structured_block(&mut centered_blocks, lines.len());
@@ -229,16 +239,41 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             }
 
             Event::Start(Tag::Link { dest_url, .. }) => {
+                if in_table {
+                    link_starts.push((
+                        table_rows.len(),
+                        UnicodeWidthStr::width(current_cell.as_str()),
+                    ));
+                } else {
+                    ensure_blockquote_prefix(&mut current_spans, blockquote_depth);
+                    link_starts.push((lines.len(), current_spans.iter().map(Span::width).sum()));
+                }
                 link_targets.push(dest_url.to_string());
             }
             Event::End(TagEnd::Link) => {
                 if let Some(url) = link_targets.pop()
-                    && !url.is_empty()
+                    && let Some(start) = link_starts.pop()
                 {
-                    current_spans.push(Span::styled(
-                        format!(" ({})", url),
-                        Style::default().fg(md_dim_color()),
-                    ));
+                    if in_table {
+                        if !compact_links && !url.is_empty() {
+                            current_cell.push_str(&format!(" ({url})"));
+                        }
+                        table_links.push(TableLinkSpan {
+                            row: start.0,
+                            column: table_row.len(),
+                            start_col: start.1,
+                            end_col: UnicodeWidthStr::width(current_cell.as_str()),
+                            target: url.clone().into(),
+                        });
+                    } else if !compact_links && !url.is_empty() {
+                        current_spans.push(Span::styled(
+                            format!(" ({})", url),
+                            Style::default().fg(md_dim_color()),
+                        ));
+                    }
+                    if !in_table {
+                        finish_link(&mut links, &lines, &current_spans, start, url);
+                    }
                 }
             }
 
@@ -904,12 +939,22 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 enter_centered_structured_block(&mut centered_blocks, lines.len());
                 in_table = true;
                 table_rows.clear();
+                table_links.clear();
             }
             Event::End(TagEnd::Table) => {
                 // Render the collected table
                 if !table_rows.is_empty() {
-                    let rendered = render_table_aligned(&table_rows, max_width, &table_alignments);
-                    lines.extend(rendered);
+                    let rendered = render_table_aligned_with_links(
+                        &table_rows,
+                        max_width,
+                        &table_alignments,
+                        &table_links,
+                    );
+                    links.extend(rendered.links.into_iter().map(|mut link| {
+                        link.line += lines.len();
+                        link
+                    }));
+                    lines.extend(rendered.lines);
                     exit_centered_structured_block(&mut centered_blocks, lines.len());
                     if blockquote_depth == 0
                         && list_stack.is_empty()
@@ -948,6 +993,15 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 current_cell.clear();
             }
             Event::End(TagEnd::TableCell) => {
+                let trim = UnicodeWidthStr::width(current_cell.as_str())
+                    - UnicodeWidthStr::width(current_cell.trim_start());
+                for link in table_links
+                    .iter_mut()
+                    .filter(|link| link.row == table_rows.len() && link.column == table_row.len())
+                {
+                    link.start_col = link.start_col.saturating_sub(trim);
+                    link.end_col = link.end_col.saturating_sub(trim);
+                }
                 table_row.push(current_cell.trim().to_string());
                 current_cell.clear();
             }
@@ -1050,12 +1104,16 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
     finalize_centered_structured_blocks(&mut centered_blocks, lines.len());
 
-    normalize_block_separators(&mut lines);
+    normalize_block_separators_with_links(&mut lines, &mut links);
 
     if center_code_blocks()
         && let Some(width) = max_width
     {
+        let widths: Vec<_> = lines.iter().map(Line::width).collect();
         center_structured_block_ranges(&mut lines, width, &centered_blocks.ranges);
+        for (line, before) in widths.into_iter().enumerate() {
+            adjust_link_padding(&mut links, line, before, lines[line].width());
+        }
     }
 
     THREAD_RENDER_COUNT.with(|c| c.set(c.get() + 1));
@@ -1076,5 +1134,5 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
         crate::math_copy::record_inline_math_for_line(line);
     }
 
-    lines
+    RenderedMarkdown { lines, links }
 }

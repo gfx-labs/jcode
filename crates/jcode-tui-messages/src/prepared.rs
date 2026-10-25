@@ -74,6 +74,8 @@ pub struct MessageBoundary {
 
 #[derive(Clone)]
 pub struct PreparedMessages {
+    /// Clickable ranges in wrapped display coordinates, retained with the rendered lines.
+    pub link_spans: Vec<jcode_tui_markdown::LinkSpan>,
     pub wrapped_lines: Vec<Line<'static>>,
     pub wrapped_plain_lines: Arc<Vec<String>>,
     pub wrapped_copy_offsets: Arc<Vec<usize>>,
@@ -295,6 +297,16 @@ impl PreparedChatFrame {
             .wrapped_plain_lines
             .get(local)
             .map(String::as_str)
+    }
+
+    pub fn link_target(&self, abs_line: usize, column: usize) -> Option<&str> {
+        let (section, local) = self.line_section(abs_line)?;
+        section
+            .prepared
+            .link_spans
+            .iter()
+            .find(|link| link.line == local && link.start_col <= column && column < link.end_col)
+            .map(|link| link.target.as_ref())
     }
 
     pub fn wrapped_copy_offset(&self, abs_line: usize) -> Option<usize> {
