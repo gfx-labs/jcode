@@ -18,6 +18,9 @@ registry package. No dependencies were added. Local changes are limited to:
 - `src/event/source/unix/parser.rs`: recognize complete image probe replies and
   tmux passthrough envelopes before key decoding, preserve paste contents and
   unmatched input, and cover the recorded reply stream at every read split.
+  CSI input is framed through its final byte before decoding; unsupported CSI
+  sequences are discarded as a unit instead of exposing their suffix as keys.
+  X10 mouse, Linux function keys and bracketed paste retain their payload parsing.
 
 A lone Escape or ambiguous Alt-key prefix waits up to 100ms for a continuation.
 Once a reply prefix is recognized, its bytes remain buffered across reads,
@@ -32,5 +35,5 @@ the exact package directory reported by `cargo metadata` before applying the
 workspace patch. To run the owner-boundary regression:
 
 ```sh
-cargo test --manifest-path vendor/crossterm/Cargo.toml --lib terminal_probe_replies_preserve_input_across_reads
+cargo test --manifest-path vendor/crossterm/Cargo.toml --lib event::source::unix::parser::tests
 ```

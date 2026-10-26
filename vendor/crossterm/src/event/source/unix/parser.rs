@@ -71,13 +71,27 @@ impl Parser {
 
     fn decode(&mut self, byte: u8, more: bool) {
         self.buffer.push(byte);
+        // Unknown CSI parameters must not reset the decoder before the final byte.
+        // X10 mouse, Linux function keys, and bracketed paste have trailing payloads.
+        let framed_csi = self.buffer.starts_with(b"\x1b[")
+            && self.buffer.len() > 2
+            && !self.buffer.starts_with(b"\x1b[M")
+            && !self.buffer.starts_with(b"\x1b[[")
+            && !self.buffer.starts_with(b"\x1b[200~");
+        if framed_csi && !(0x40..=0x7e).contains(&byte) {
+            return;
+        }
         match parse_event(&self.buffer, more) {
             Ok(Some(event)) => {
                 self.internal_events.push_back(event);
                 self.buffer.clear();
                 self.last_candidate_byte = None;
             }
-            Ok(None) => {}
+            Ok(None) if !framed_csi => {}
+            Ok(None) => {
+                self.buffer.clear();
+                self.last_candidate_byte = None;
+            }
             Err(_) => {
                 self.buffer.clear();
                 self.last_candidate_byte = None;
@@ -229,7 +243,52 @@ fn numbers(bytes: &[u8]) -> Option<Vec<u16>> {
 #[cfg(all(test, feature = "bracketed-paste"))]
 mod tests {
     use super::*;
-    use crate::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use crate::event::{
+        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+
+    #[test]
+    fn terminal_csi_frames_do_not_leak_as_text() {
+        let wire = b"\x1b[>0;276;0c\x1b[=1;1u\x1b[?2026;2$y\x1b[<35;32;44M\x1b[99;5u\x1b[A\x1b[[A\x1b[M !!\x1b[200~[>literal\x1b[201~ok";
+        let expected = vec![
+            InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 31,
+                row: 43,
+                modifiers: KeyModifiers::NONE,
+            })),
+            InternalEvent::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ))),
+            InternalEvent::Event(Event::Key(KeyCode::Up.into())),
+            InternalEvent::Event(Event::Key(KeyCode::F(1).into())),
+            InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })),
+            InternalEvent::Event(Event::Paste("[>literal".into())),
+            InternalEvent::Event(Event::Key(KeyCode::Char('o').into())),
+            InternalEvent::Event(Event::Key(KeyCode::Char('k').into())),
+        ];
+        for split in 0..=wire.len() {
+            let mut parser = Parser::default();
+            parser.advance(&wire[..split], false);
+            let mut events: Vec<_> = parser.by_ref().collect();
+            parser.advance(&wire[split..], false);
+            events.extend(parser);
+            assert_eq!(events, expected, "split {split}");
+        }
+        let mut parser = Parser::default();
+        let mut events = Vec::new();
+        for byte in wire {
+            parser.advance(&[*byte], false);
+            events.extend(parser.by_ref());
+        }
+        assert_eq!(events, expected, "one byte per read");
+    }
 
     // Reply bytes from the affected terminal, before crossterm decoded them as keys.
     const RECORDED: &[u8] = b"\x1b_Gi=31;OK\x1b\\\x1b[?62;4c\x1b[6;16;8t\x1b[0n";
