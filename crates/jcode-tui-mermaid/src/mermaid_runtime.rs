@@ -380,29 +380,76 @@ fn fast_picker() -> Picker {
 
 /// Build a picker via the authoritative stdio capability probe.
 ///
-/// The probe reports the protocol the *outer* terminal actually supports, which
-/// is the only way to get crisp graphics inside a multiplexer that masks the
-/// outer terminal's identity. ratatui-image has no public font-size setter, and
-/// its `from_query_stdio` uses a placeholder 10x20 cell when the terminal does
-/// not answer the cell-size query, which breaks HiDPI scaling. So we keep our
-/// own font-size-correct `fast_picker()` as the base and only adopt the
-/// probe's *protocol* decision. Any probe failure leaves the env-based fast
-/// picker untouched.
+/// Crossterm owns all terminal input, including query replies. The upstream
+/// `from_query_stdio` starts a competing stdin reader that can survive timeout
+/// and discards user input. Keep input queued in crossterm instead, and retain
+/// its reply parser for delayed replies after startup.
+#[cfg(unix)]
+fn probe_picker() -> Picker {
+    let picker = fast_picker();
+    let query = Parser::query(
+        detect_multiplexer_from_env() == Multiplexer::Tmux,
+        ratatui_image::picker::cap_parser::QueryStdioOptions::default(),
+    );
+    match crossterm::event::query_terminal(query.as_bytes(), std::time::Duration::from_secs(2)) {
+        Ok(replies) => {
+            let picker = picker_from_terminal_replies(picker, &replies);
+            crate::log_info(&format!(
+                "Mermaid picker stdio probe detected protocol: {:?}, font size: {:?}",
+                picker.protocol_type(),
+                picker.font_size()
+            ));
+            picker
+        }
+        Err(err) => {
+            crate::log_warn(&format!(
+                "Mermaid picker probe failed ({}); using fast picker fallback",
+                err
+            ));
+            picker
+        }
+    }
+}
+
+#[cfg(unix)]
+fn picker_from_terminal_replies(
+    mut fallback: Picker,
+    replies: &[crossterm::event::TerminalResponse],
+) -> Picker {
+    use crossterm::event::TerminalResponse;
+    if replies.is_empty() {
+        return fallback;
+    }
+    // Both terminals lack Kitty placeholders, and Konsole's Sixel is unreliable.
+    let blacklisted = ["WEZTERM_EXECUTABLE", "KONSOLE_VERSION"]
+        .iter()
+        .any(|name| std::env::var(name).is_ok_and(|value| !value.is_empty()));
+    let protocol = if !blacklisted && replies.contains(&TerminalResponse::Kitty(true)) {
+        ProtocolType::Kitty
+    } else if !blacklisted && replies.iter().any(|reply| {
+        matches!(reply, TerminalResponse::PrimaryDeviceAttributes(attributes) if attributes.contains(&4))
+    }) {
+        ProtocolType::Sixel
+    } else if fallback.protocol_type() == ProtocolType::Iterm2 && !real_iterm2_without_opt_in() {
+        ProtocolType::Iterm2
+    } else {
+        ProtocolType::Halfblocks
+    };
+    // Preserve the existing ioctl-derived font size, including its HiDPI fallback.
+    fallback.set_protocol_type(protocol);
+    fallback
+}
+
+// Windows console events do not expose a Unix byte stream to the reply parser.
+#[cfg(not(unix))]
 fn probe_picker() -> Picker {
     let mut picker = fast_picker();
     match Picker::from_query_stdio() {
         Ok(probed) => {
             let mut protocol = probed.protocol_type();
             if protocol == ProtocolType::Iterm2 && real_iterm2_without_opt_in() {
-                crate::log_info(
-                    "Probe reported iTerm2 images, but iTerm2 image output is disabled;                      falling back to halfblocks",
-                );
                 protocol = ProtocolType::Halfblocks;
             }
-            crate::log_info(&format!(
-                "Mermaid picker stdio probe detected protocol: {:?}",
-                protocol
-            ));
             picker.set_protocol_type(protocol);
         }
         Err(err) => {

@@ -6,6 +6,7 @@ edition = "2024"
 autobins = false
 
 [workspace]
+exclude = ["vendor/crossterm"]
 members = [
     ".",
     "crates/jcode-agent-runtime",
@@ -634,3 +635,6 @@ jcode-provider-core = { path = "crates/jcode-provider-core" }
 jcode-tui = { path = "crates/jcode-tui", default-features = false, features = ["test-support"] }
 
 [build-dependencies]
+
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }
