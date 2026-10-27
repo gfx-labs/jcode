@@ -383,6 +383,11 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
     let terminal = init_tui_terminal(inherited_terminal)?;
     crate::tui::mermaid::install_jcode_mermaid_hooks();
     crate::tui::markdown::install_jcode_markdown_hooks();
+    if inherited_terminal && inherited_modes.is_some_and(|modes| modes.keyboard_enhanced) {
+        // tmux rewrites probe replies as keys while enhanced keyboard mode is active.
+        tui::adopt_keyboard_enhancement_ownership();
+        tui::disable_keyboard_enhancement();
+    }
     crate::tui::mermaid::init_picker();
 
     let perf_policy = crate::perf::tui_policy();
@@ -397,17 +402,10 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
         focus_change: perf_policy.enable_focus_change,
     };
     let modes = if inherited_terminal {
-        // The previous process intentionally preserved these modes across exec.
-        // Reassert idempotent modes because terminals, multiplexers, or an older
-        // process may have cleared them during the handoff. Do not push Kitty's
-        // stack-based keyboard enhancement flags again: the exec handoff left the
-        // previous process's entry on the stack, so record that this process
-        // now owns it and a later normal exit must pop it. Without adopting,
-        // every cleanup gate would skip the pop and leave the shell in CSI u
-        // mode after the restarted process exits.
+        // Restore the keyboard entry suspended for the capability probe.
         let modes = inherited_modes.unwrap_or(fallback_modes);
         if modes.keyboard_enhanced {
-            tui::adopt_keyboard_enhancement_ownership();
+            tui::enable_keyboard_enhancement();
         }
         crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
         if modes.focus_change {
