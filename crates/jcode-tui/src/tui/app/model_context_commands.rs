@@ -247,7 +247,7 @@ pub(in crate::tui::app) fn handle_model_command(app: &mut App, trimmed: &str) ->
             }
             _ => {
                 app.push_display_message(DisplayMessage::error(
-                    "Usage: /fast [on|ultra|off|status|default ...]".to_string(),
+                    "Usage: /fast [on|ultrafast|off|status|default ...]".to_string(),
                 ));
                 return true;
             }

@@ -1533,7 +1533,7 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
                 }
                 _ => {
                     app.push_display_message(DisplayMessage::error(
-                        "Usage: /fast [on|ultra|off|status|default ...]",
+                        "Usage: /fast [on|ultrafast|off|status|default ...]",
                     ));
                     return Ok(());
                 }
