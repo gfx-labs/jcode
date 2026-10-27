@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     images::init_picker();
     if !images::native_image_protocol_available() {
-        return Err(format!("No native image protocol detected ({:?}). In a terminal that hides capabilities, try JCODE_MERMAID_PICKER_PROBE=1.", images::protocol_type()).into());
+        return Err(format!("No native image protocol detected ({:?}). Capability probing is enabled by default; check that JCODE_MERMAID_PICKER_PROBE is not disabled.", images::protocol_type()).into());
     }
     let hash = images::register_external_image(&path, image.width(), image.height());
     enable_raw_mode()?;

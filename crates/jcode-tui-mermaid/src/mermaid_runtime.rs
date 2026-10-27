@@ -215,34 +215,24 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
 /// * `probe_override` is the parsed value of `JCODE_MERMAID_PICKER_PROBE`
 ///   (`Some(true)`/`Some(false)` when set explicitly, `None` otherwise) and
 ///   always wins so users can force either behavior.
-/// * When the override is absent, startup stays on the environment-based fast
-///   path. The upstream stdio probe can block for two seconds when a terminal
-///   does not answer, which made an optional image capability dominate the TUI
-///   critical path. Users behind multiplexers that hide the outer terminal can
-///   still opt into the authoritative probe with
-///   `JCODE_MERMAID_PICKER_PROBE=1`.
+/// * Without an explicit override, query terminal capabilities through the shared
+///   event reader. Set `JCODE_MERMAID_PICKER_PROBE=0` to skip the bounded query.
 pub(super) fn decide_picker_init_mode(
     probe_override: Option<bool>,
     _env_protocol: Option<ProtocolType>,
     _multiplexer: Multiplexer,
 ) -> PickerInitMode {
-    if probe_override == Some(true) {
-        PickerInitMode::Probe
-    } else {
+    if probe_override == Some(false) {
         PickerInitMode::Fast
+    } else {
+        PickerInitMode::Probe
     }
 }
 
-/// Parse only the explicit `JCODE_MERMAID_PICKER_PROBE` override into a mode,
-/// ignoring env/multiplexer detection. `Some(true)` probes; unset or any other
-/// value keeps the historical fast default. Used for the force-on/off path and
-/// as a focused unit-test seam.
+/// Parse the explicit override using the same policy as picker initialization.
 #[cfg(test)]
 pub(super) fn picker_init_mode_from_probe_env(raw: Option<&str>) -> PickerInitMode {
-    match raw.and_then(parse_env_bool) {
-        Some(true) => PickerInitMode::Probe,
-        _ => PickerInitMode::Fast,
-    }
+    decide_picker_init_mode(raw.and_then(parse_env_bool), None, Multiplexer::None)
 }
 
 pub(super) fn infer_protocol_from_env(
@@ -483,10 +473,9 @@ pub(crate) fn prewarm_svg_font_db_async() {
 }
 
 /// Initialize the global picker.
-/// By default jcode uses environment-based detection and never blocks startup
-/// on terminal capability responses. Set JCODE_MERMAID_PICKER_PROBE=1 to run an
-/// authoritative stdio probe when a multiplexer masks the outer terminal, or
-/// =0 to explicitly retain the fast path. Cache eviction runs once before image
+/// Query terminal capabilities by default, with a bounded wait for replies.
+/// Set JCODE_MERMAID_PICKER_PROBE=0 to use environment-based detection instead.
+/// Cache eviction runs once before image
 /// rendering can begin so it cannot delete a file between materialization and
 /// in-memory cache registration.
 pub fn init_picker() {
@@ -1048,37 +1037,38 @@ mod tests {
     }
 
     #[test]
-    fn decide_mode_defaults_to_fast_path() {
-        // Env already identified a graphics terminal: stay fast.
-        assert_eq!(
-            decide_picker_init_mode(None, Some(ProtocolType::Kitty), Multiplexer::None),
-            PickerInitMode::Fast
-        );
-        // An env miss must not turn an optional capability query into a
-        // two-second startup stall. Multiplexer users can opt in explicitly.
-        assert_eq!(
-            decide_picker_init_mode(None, None, Multiplexer::Herdr),
-            PickerInitMode::Fast
-        );
-        assert_eq!(
-            decide_picker_init_mode(None, None, Multiplexer::None),
-            PickerInitMode::Fast
-        );
+    fn decide_mode_defaults_to_probe() {
+        for (protocol, mux) in [
+            (Some(ProtocolType::Kitty), Multiplexer::None),
+            (None, Multiplexer::Herdr),
+            (None, Multiplexer::None),
+        ] {
+            assert_eq!(
+                decide_picker_init_mode(None, protocol, mux),
+                PickerInitMode::Probe
+            );
+        }
     }
 
     #[test]
-    fn probe_env_helper_back_compat() {
-        // Unset / disabled keeps the historical fast default.
-        assert_eq!(picker_init_mode_from_probe_env(None), PickerInitMode::Fast);
-        assert_eq!(
-            picker_init_mode_from_probe_env(Some("0")),
-            PickerInitMode::Fast
-        );
-        // Explicit enable still probes.
-        assert_eq!(
-            picker_init_mode_from_probe_env(Some("1")),
-            PickerInitMode::Probe
-        );
+    fn probe_env_requires_explicit_disable() {
+        for raw in [
+            None,
+            Some(""),
+            Some("invalid"),
+            Some("1"),
+            Some("true"),
+            Some("yes"),
+            Some("on"),
+        ] {
+            assert_eq!(picker_init_mode_from_probe_env(raw), PickerInitMode::Probe);
+        }
+        for raw in ["0", "false", "no", "off", " OFF "] {
+            assert_eq!(
+                picker_init_mode_from_probe_env(Some(raw)),
+                PickerInitMode::Fast
+            );
+        }
     }
 
     #[test]
