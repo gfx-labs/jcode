@@ -734,8 +734,11 @@ pub(in crate::tui::app) fn handle_server_event(
             // the same segment-aware StreamBuffer as normal text so provider
             // bursts trickle in smoothly and ordering is preserved without
             // flushing the backlog.
-            // Surface active reasoning in the status line while deltas flow.
-            // The next TextDelta moves it back to Streaming.
+            // Surface active reasoning in the status line. The server emits a
+            // `ConnectionPhase::Streaming` when reasoning starts (to kick off the
+            // client TPS timer), so the status arrives here as `Streaming`; flip it
+            // to `Thinking` while reasoning deltas flow. The next `TextDelta` moves
+            // it back to `Streaming`.
             if !matches!(app.status, ProcessingStatus::RunningTool(_)) {
                 let thinking_start = *app.thinking_start.get_or_insert_with(Instant::now);
                 if !matches!(app.status, ProcessingStatus::Thinking(_)) {
@@ -1081,6 +1084,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 _ => crate::message::ConnectionPhase::Connecting,
             };
             app.status = if matches!(cp, crate::message::ConnectionPhase::Streaming) {
+                app.resume_streaming_tps();
                 app.connection_phase_started = None;
                 ProcessingStatus::Streaming
             } else {

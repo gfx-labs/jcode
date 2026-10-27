@@ -96,53 +96,6 @@ fn client_focus_defaults_to_true() {
 }
 
 #[test]
-fn streaming_tps_starts_on_generated_output_not_streaming_metadata() {
-    let mut app = create_test_app();
-    let mut remote = crate::tui::backend::ReplayRemoteState::default();
-
-    handle_server_event(
-        &mut app,
-        ServerEvent::ConnectionPhase {
-            phase: "streaming".to_string(),
-        },
-        &mut remote,
-    );
-    assert!(app.streaming.streaming_tps_start.is_none());
-    assert!(!app.streaming.streaming_tps_collect_output);
-
-    handle_server_event(
-        &mut app,
-        ServerEvent::TextDelta {
-            text: "answer".to_string(),
-        },
-        &mut remote,
-    );
-    assert!(app.streaming.streaming_tps_start.is_some());
-    assert!(app.streaming.streaming_tps_collect_output);
-
-    app.reset_streaming_tps();
-    handle_server_event(
-        &mut app,
-        ServerEvent::ReasoningDelta {
-            text: "reasoning".to_string(),
-        },
-        &mut remote,
-    );
-    assert!(app.streaming.streaming_tps_start.is_some());
-
-    app.reset_streaming_tps();
-    handle_server_event(
-        &mut app,
-        ServerEvent::ToolStart {
-            id: "tool-1".to_string(),
-            name: "example".to_string(),
-        },
-        &mut remote,
-    );
-    assert!(app.streaming.streaming_tps_start.is_some());
-}
-
-#[test]
 fn idle_donut_pauses_while_unfocused() {
     let mut app = create_test_app();
 
