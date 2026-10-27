@@ -46,6 +46,9 @@ class TmuxProbeReload(unittest.TestCase):
             with self.subTest(delivery=delivery):
                 self.check_delivery(delivery)
 
+    def test_reload_reuses_detected_capabilities(self):
+        self.check_delivery("reload")
+
     def check_delivery(self, delivery):
         binary = str(Path(os.environ["JCODE_TEST_BINARY"]).resolve())
         with tempfile.TemporaryDirectory(
@@ -76,6 +79,7 @@ class TmuxProbeReload(unittest.TestCase):
                     JCODE_MERMAID_PICKER_PROBE="1",
                     JCODE_DEBUG_CMD_PATH=str(command),
                     JCODE_DEBUG_RESPONSE_PATH=str(response),
+                    JCODE_MIGRATE_BINARY=binary,
                 )
                 os.execvpe("tmux", [
                     "tmux", "-S", socket, "-f", str(config), "new-session",
@@ -109,6 +113,8 @@ class TmuxProbeReload(unittest.TestCase):
         requested = False
         input_result = None
         expected = "user-keystrokes"
+        reload_at = None
+        reload_acknowledged = False
         while time.monotonic() < deadline:
             if select.select([fd], [], [], 0.02)[0]:
                 try:
@@ -136,7 +142,19 @@ class TmuxProbeReload(unittest.TestCase):
                     fragment += 1
                     fragment_at = now
                 extra_sent = fragment == len(REPLY)
-            ready = delivery == "immediate" or extra_sent
+            if delivery == "reload" and age > 0.7 and reload_at is None:
+                command.write_text("reload\n")
+                reload_at = now
+            if delivery == "reload" and reload_at is not None:
+                if not reload_acknowledged and response.exists():
+                    self.assertIn("reload triggered", response.read_text())
+                    response.unlink()
+                    reload_acknowledged = True
+                if not reload_acknowledged or now - reload_at < 3:
+                    continue
+                self.assertEqual(captured.count(b"_Gi=31"), 1,
+                                 "Reload sent another terminal capability probe")
+            ready = delivery in ("immediate", "reload") or extra_sent
             if ready and age > 2.5 and not typed:
                 os.write(fd, expected.encode())
                 typed = True

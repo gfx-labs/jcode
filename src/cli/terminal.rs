@@ -12,6 +12,7 @@ pub struct TuiRuntimeState {
 
 const INHERITED_MODES_ENV: &str = "JCODE_TUI_INHERITED_MODES";
 const INHERITED_THEME_ENV: &str = "JCODE_TUI_INHERITED_THEME";
+const INHERITED_PICKER_ENV: &str = "JCODE_TUI_INHERITED_PICKER";
 
 // Crossterm's Windows implementation enables Win32 console mouse input but does
 // not emit the VT mouse-tracking modes. Windows Terminal and other ConPTY hosts
@@ -388,13 +389,17 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
         tui::adopt_keyboard_enhancement_ownership();
         tui::disable_keyboard_enhancement();
     }
-    crate::tui::mermaid::init_picker();
+    let inherited_picker = std::env::var(INHERITED_PICKER_ENV).ok();
+    crate::tui::mermaid::init_picker_with_handoff(
+        inherited_picker.as_deref().filter(|_| inherited_terminal),
+    );
 
     let perf_policy = crate::perf::tui_policy();
     // These private handoff values apply only to this exec boundary. Avoid
     // leaking them into tools or unrelated child jcode processes.
     crate::env::remove_var(INHERITED_MODES_ENV);
     crate::env::remove_var(INHERITED_THEME_ENV);
+    crate::env::remove_var(INHERITED_PICKER_ENV);
 
     let fallback_modes = InheritedTerminalModes {
         mouse_capture: perf_policy.enable_mouse_capture,
@@ -534,6 +539,11 @@ fn export_tui_exec_handoff(state: &TuiRuntimeState) {
     crate::env::set_var(INHERITED_MODES_ENV, modes.encode());
     let theme = crate::tui::theme_detect::current_theme_label();
     crate::env::set_var(INHERITED_THEME_ENV, theme);
+    if let Some(picker) = crate::tui::mermaid::picker_handoff() {
+        crate::env::set_var(INHERITED_PICKER_ENV, picker);
+    } else {
+        crate::env::remove_var(INHERITED_PICKER_ENV);
+    }
     crate::logging::info(&format!(
         "EVENT event=TUI_TERMINAL_MODES phase=exec_handoff pid={} raw_mode={} modes={} theme={}",
         std::process::id(),

@@ -479,7 +479,16 @@ pub(crate) fn prewarm_svg_font_db_async() {
 /// rendering can begin so it cannot delete a file between materialization and
 /// in-memory cache registration.
 pub fn init_picker() {
+    init_picker_with_handoff(None);
+}
+
+/// Reuse capability detection only across an exec that retained this terminal.
+pub fn init_picker_with_handoff(handoff: Option<&str>) {
     PICKER.get_or_init(|| {
+        if let Some(picker) = handoff.and_then(picker_from_handoff) {
+            crate::log_info("Mermaid picker restored from terminal exec handoff");
+            return Some(picker);
+        }
         let env_protocol = infer_protocol_from_env(
             std::env::var("TERM").ok().as_deref(),
             std::env::var("TERM_PROGRAM").ok().as_deref(),
@@ -514,6 +523,42 @@ pub fn init_picker() {
     // image file after it is written but before it is registered in RENDER_CACHE,
     // delete it, and leave stale in-memory metadata that suppresses recovery.
     CACHE_EVICTED.get_or_init(evict_old_cache);
+}
+
+/// Private exec state, not a persistent terminal capability cache.
+pub fn picker_handoff() -> Option<String> {
+    let picker = PICKER.get()?.as_ref()?;
+    let protocol = match picker.protocol_type() {
+        ProtocolType::Kitty => "kitty",
+        ProtocolType::Sixel => "sixel",
+        ProtocolType::Iterm2 => "iterm2",
+        ProtocolType::Halfblocks => "halfblocks",
+    };
+    let (width, height) = picker.font_size();
+    Some(format!("1:{protocol}:{width}:{height}"))
+}
+
+fn picker_from_handoff(value: &str) -> Option<Picker> {
+    let mut fields = value.split(':');
+    if fields.next()? != "1" {
+        return None;
+    }
+    let protocol = match fields.next()? {
+        "kitty" => ProtocolType::Kitty,
+        "sixel" => ProtocolType::Sixel,
+        "iterm2" => ProtocolType::Iterm2,
+        "halfblocks" => ProtocolType::Halfblocks,
+        _ => return None,
+    };
+    let width: u16 = fields.next()?.parse().ok()?;
+    let height: u16 = fields.next()?.parse().ok()?;
+    if width == 0 || height == 0 || fields.next().is_some() {
+        return None;
+    }
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize((width, height));
+    picker.set_protocol_type(protocol);
+    Some(picker)
 }
 
 /// Force the global picker into Kitty protocol for deterministic benchmarks and
