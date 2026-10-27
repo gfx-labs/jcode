@@ -148,7 +148,7 @@ impl Tool for JevDecisionTool {
             "properties": {
                 "intent": {
                     "type": "string",
-                    "description": "Short label: what this decision is for."
+                    "description": "Required short label shown in the UI: what this decision is for."
                 },
                 "instructions": {
                     "type": "string",

@@ -219,6 +219,18 @@ fn auto_poke_feature_defaults_on_and_parses_false() {
 }
 
 #[test]
+fn todo_gate_digest_defaults_off_and_requires_explicit_opt_in() {
+    assert!(!Config::default().features.todo_gate_digest);
+    let omitted: Config = toml::from_str("[features]\nauto_poke = true\n").unwrap();
+    assert!(!omitted.features.todo_gate_digest);
+    let enabled: Config = toml::from_str("[features]\ntodo_gate_digest = true\n").unwrap();
+    assert!(enabled.features.todo_gate_digest);
+    assert!(enabled.features.auto_poke);
+    let disabled: Config = toml::from_str("[features]\ntodo_gate_digest = false\n").unwrap();
+    assert!(!disabled.features.todo_gate_digest);
+}
+
+#[test]
 fn auto_poke_toggle_key_defaults_parses_and_reports_disabled() {
     assert_eq!(Config::default().keybindings.auto_poke_toggle, "ctrl+p");
 
@@ -1359,6 +1371,18 @@ fn unknown_update_channel_value_falls_back_to_stable_instead_of_failing_parse() 
 
 #[test]
 fn known_update_channel_values_still_parse() {
+    let cfg: Config = toml::from_str("[features]\nupdate_channel = \"preview\"\n").unwrap();
+    assert_eq!(cfg.features.update_channel, super::UpdateChannel::Preview);
+    let encoded = toml::to_string(&cfg).unwrap();
+    let decoded: Config = toml::from_str(&encoded).unwrap();
+    assert_eq!(
+        decoded.features.update_channel,
+        super::UpdateChannel::Preview
+    );
+    assert_eq!(
+        super::UpdateChannel::default(),
+        super::UpdateChannel::Stable
+    );
     let cfg: Config = toml::from_str("[features]\nupdate_channel = \"main\"\n")
         .expect("main update_channel should parse");
     assert_eq!(cfg.features.update_channel, super::UpdateChannel::Main);
@@ -1373,6 +1397,10 @@ fn update_channel_parse_accepts_known_aliases_and_rejects_unknown() {
     use super::UpdateChannel;
     assert_eq!(UpdateChannel::parse("stable"), Some(UpdateChannel::Stable));
     assert_eq!(UpdateChannel::parse("release"), Some(UpdateChannel::Stable));
+    assert_eq!(
+        UpdateChannel::parse(" Preview "),
+        Some(UpdateChannel::Preview)
+    );
     assert_eq!(UpdateChannel::parse("main"), Some(UpdateChannel::Main));
     assert_eq!(UpdateChannel::parse("nightly"), Some(UpdateChannel::Main));
     assert_eq!(UpdateChannel::parse("edge"), Some(UpdateChannel::Main));

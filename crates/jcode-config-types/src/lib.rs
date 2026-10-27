@@ -301,6 +301,8 @@ pub enum UpdateChannel {
     /// Only update from tagged GitHub Releases (default).
     #[default]
     Stable,
+    /// Opt in to published v1.0.0-preview.N prereleases.
+    Preview,
     /// Update from latest commit on main branch (bleeding edge).
     Main,
 }
@@ -310,6 +312,7 @@ impl UpdateChannel {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "stable" | "release" => Some(Self::Stable),
+            "preview" => Some(Self::Preview),
             "main" | "nightly" | "edge" => Some(Self::Main),
             _ => None,
         }
@@ -336,6 +339,7 @@ impl std::fmt::Display for UpdateChannel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stable => write!(f, "stable"),
+            Self::Preview => write!(f, "preview"),
             Self::Main => write!(f, "main"),
         }
     }
@@ -377,14 +381,26 @@ pub struct CompactionConfig {
     /// Compaction mode: reactive (default), proactive, or semantic
     pub mode: CompactionMode,
 
+    /// [reactive] Context fraction that starts background compaction.
+    pub reactive_threshold: f32,
+
+    /// [reactive] Alternative token threshold, whichever is reached first.
+    /// Zero disables the token alternative.
+    pub reactive_threshold_tokens: usize,
+
     /// [proactive] Number of turns to look ahead when projecting token growth
     pub lookahead_turns: usize,
 
     /// [proactive] EWMA alpha for token growth smoothing (0.0-1.0, higher = more recency bias)
     pub ewma_alpha: f32,
 
-    /// [proactive/semantic] Minimum context fill level before any proactive check fires (0.0-1.0)
+    /// [proactive/semantic] Minimum context fill level (0.0-1.0), alternatively
+    /// satisfied by proactive_floor_tokens when that alternative is enabled.
     pub proactive_floor: f32,
+
+    /// [proactive/semantic] Alternative minimum token count. Either this count
+    /// or proactive_floor must be reached. Zero disables the token alternative.
+    pub proactive_floor_tokens: usize,
 
     /// [proactive/semantic] Minimum number of token snapshots needed before proactive check
     pub min_samples: usize,
@@ -419,9 +435,12 @@ impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             mode: CompactionMode::Reactive,
+            reactive_threshold: 0.80,
+            reactive_threshold_tokens: 400_000,
             lookahead_turns: 15,
             ewma_alpha: 0.3,
             proactive_floor: 0.40,
+            proactive_floor_tokens: 150_000,
             min_samples: 3,
             stall_window: 5,
             min_turns_between_compactions: 10,
@@ -1251,6 +1270,10 @@ pub struct FeatureConfig {
     /// incomplete todos). `/poke on` / `/poke off` still override this per session
     /// (default: true)
     pub auto_poke: bool,
+    /// Opt in to one aggregate todo weak-point follow-up per completion cycle.
+    /// Requires auto-poke; independent of the display-only completion report.
+    /// Disabled by default for every user.
+    pub todo_gate_digest: bool,
     /// Inject timestamps into user messages and tool results sent to the model (default: true)
     pub message_timestamps: bool,
     /// Persist auto-recalled memory injections into normal session history instead of sending
@@ -1262,7 +1285,7 @@ pub struct FeatureConfig {
     /// classified as misses. Harness changes without a documented cause raise a
     /// warning, while explained misses are informational (default: true).
     pub kv_cache_miss_notices: bool,
-    /// Update channel: "stable" (releases only) or "main" (latest commits)
+    /// Update channel: "stable" (default), "preview" (v1 previews), or "main" (latest commits).
     pub update_channel: UpdateChannel,
 }
 
@@ -1274,6 +1297,7 @@ impl Default for FeatureConfig {
             swarm: true,
             mermaid: true,
             auto_poke: true,
+            todo_gate_digest: false,
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
@@ -1386,7 +1410,7 @@ impl Default for ProviderConfig {
             default_model: None,
             default_provider: None,
             openai_reasoning_effort: Some("low".to_string()),
-            anthropic_reasoning_effort: None,
+            anthropic_reasoning_effort: Some("low".to_string()),
             anthropic_cache_ttl_1h: true,
             openai_transport: None,
             openai_service_tier: Some("priority".to_string()),
@@ -1708,6 +1732,28 @@ pub struct SessionNamesConfig {
 #[cfg(test)]
 mod reasoning_display_defaults_tests {
     use super::*;
+
+    #[test]
+    fn anthropic_effort_defaults_to_low() {
+        let config = ProviderConfig::default();
+        assert_eq!(config.anthropic_reasoning_effort.as_deref(), Some("low"));
+        let parsed: ProviderConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(parsed.anthropic_reasoning_effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn proactive_floor_defaults_and_legacy_config() {
+        let config = CompactionConfig::default();
+        assert_eq!(config.reactive_threshold, 0.80);
+        assert_eq!(config.reactive_threshold_tokens, 400_000);
+        assert_eq!(config.proactive_floor, 0.40);
+        assert_eq!(config.proactive_floor_tokens, 150_000);
+        let parsed: CompactionConfig = serde_json::from_str(r#"{"proactive_floor":0.15}"#).unwrap();
+        assert_eq!(parsed.proactive_floor, 0.15);
+        assert_eq!(parsed.proactive_floor_tokens, 150_000);
+        assert_eq!(parsed.reactive_threshold, 0.80);
+        assert_eq!(parsed.reactive_threshold_tokens, 400_000);
+    }
 
     #[test]
     fn explicit_reasoning_display_is_distinguishable_from_the_legacy_fallback() {

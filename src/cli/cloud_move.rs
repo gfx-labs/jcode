@@ -23,7 +23,8 @@
 //! commands, invoked over `ssh <host>` (or `--transport` for tests).
 //! Jcode-owned OpenAI/Claude OAuth accounts travel separately over
 //! SSH, never in the repository/session tarball. Moving is consent to copy those
-//! accounts to the chosen host. External logins and API keys stay local.
+//! accounts to the chosen host. External logins and API keys stay local unless
+//! explicitly requested through the restricted cloud environment transfer.
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -36,9 +37,19 @@ use crate::auth::router_transfer;
 use crate::auth::transfer::{self, CloudCredentialTransfer, TransferProvider};
 use crate::{session, storage};
 
+#[path = "cloud_group.rs"]
+mod group;
+pub(crate) use group::run_migrate;
+
 #[cfg(test)]
 #[path = "cloud_move_repo_tests.rs"]
 mod repo_tests;
+
+#[path = "cloud_replace.rs"]
+mod replace;
+
+#[path = "cloud_env.rs"]
+pub(super) mod environment;
 
 #[cfg(all(test, unix))]
 #[path = "cloud_move_latency_tests.rs"]
@@ -737,6 +748,11 @@ impl Target {
 #[derive(Debug, Serialize)]
 pub(crate) struct MoveReport {
     pub session_id: String,
+    /// Empty for legacy single-session transfers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_session_ids: Vec<String>,
     pub host: String,
     pub epoch: u64,
     pub repo_root: Option<String>,
@@ -835,6 +851,8 @@ pub(crate) fn run_move(
 ) -> Result<MoveReport> {
     let host = target.resolve_host()?;
     let session_id = resolve_session_id(session_ref)?;
+    group::reject_member_return(&session_id)?;
+    let _migration_lock = group::lock_sessions(std::slice::from_ref(&session_id))?;
     if let Some(lease) = storage::read_session_lease(&session_id)
         && let Some(away) = lease.away_host
     {
@@ -1094,6 +1112,8 @@ pub(crate) fn run_move(
 
     let report = MoveReport {
         session_id: session_id.clone(),
+        members: Vec::new(),
+        excluded_session_ids: Vec::new(),
         host: host.clone(),
         epoch,
         repo_root: repo.as_ref().map(|r| r.root.clone()),
@@ -1167,6 +1187,16 @@ pub(crate) fn run_move(
     {
         mark_memory_sent(&host, &memory, &bytes);
     }
+    if let Some(repo) = &repo {
+        // Ownership has moved. Environment hydration must not turn a successful
+        // migration into an apparent failure that invites a second migration.
+        if environment::sync_saved(Path::new(&repo.root), target).is_err() {
+            step(
+                "environment",
+                "saved environment requirements need attention on the cloud host; the agent can retry through cloud_environment",
+            );
+        }
+    }
     step("done", &format!("session now lives on `{host}`"));
     Ok(report)
 }
@@ -1205,6 +1235,8 @@ pub(crate) fn run_return(
     refs_only: bool,
 ) -> Result<ReturnReport> {
     let session_id = resolve_session_id(session_ref)?;
+    group::reject_member_return(&session_id)?;
+    let _migration_lock = group::lock_sessions(std::slice::from_ref(&session_id))?;
     let lease = storage::read_session_lease(&session_id)
         .with_context(|| format!("session {session_id} was never moved"))?;
     let host = match (&lease.away_host, &target.host) {
@@ -1387,7 +1419,12 @@ pub(crate) fn run_receive() -> Result<()> {
     std::io::stdin().read_to_end(&mut data)?;
     std::fs::write(&tarball, &data)?;
     untar(&tarball, stage)?;
+    if stage.join("group.json").exists() {
+        return group::receive(staging);
+    }
     let manifest: MoveManifest = read_json(&stage.join("manifest.json"))?;
+    let _migration_lock = group::lock_sessions(std::slice::from_ref(&manifest.session_id))?;
+    group::reject_member_return(&manifest.session_id)?;
     if manifest.format_version != FORMAT_VERSION {
         bail!(
             "move format {} not supported by this jcode (expects {FORMAT_VERSION}); update jcode on the cloud host",
@@ -1435,6 +1472,11 @@ pub(crate) fn run_receive() -> Result<()> {
 /// Take ownership of a staged move: install transcript, todos and memory.
 pub(crate) fn run_activate(session_id: &str, epoch: u64) -> Result<()> {
     let dir = inbox_dir()?.join(format!("{session_id}.{epoch}"));
+    if dir.join("group.json").exists() || group::is_group_root(session_id, epoch)? {
+        return group::activate(session_id, epoch);
+    }
+    let _migration_lock = group::lock_sessions(&[session_id.to_owned()])?;
+    group::reject_member_return(session_id)?;
     if !dir.is_dir() {
         // A retried activation whose first attempt succeeded but lost its
         // SSH connection finds the move already installed. Report success.
@@ -1479,6 +1521,8 @@ pub(crate) fn run_activate(session_id: &str, epoch: u64) -> Result<()> {
 
 /// Hand the session back: stop owning it here, snapshot repo, stream tarball.
 pub(crate) fn run_export(session_id: &str, epoch: u64) -> Result<()> {
+    group::reject_member_return(session_id)?;
+    let _migration_lock = group::lock_sessions(&[session_id.to_owned()])?;
     let lease = storage::read_session_lease(session_id)
         .with_context(|| format!("session {session_id} is not a migrated session on this host"))?;
     // A retried export after a dropped connection finds this host already
@@ -2268,6 +2312,19 @@ pub(crate) fn run_cli(command: super::args::CloudCommand) -> Result<()> {
             .filter(|s| !s.trim().is_empty()),
     };
     match command {
+        C::GroupProtocol => {
+            println!("{}", serde_json::json!({ "version": 1 }));
+            Ok(())
+        }
+        C::Replace {
+            target,
+            yes,
+            dry_run,
+            json,
+        } => replace::run(&target_of(target), yes, dry_run, json),
+        C::ReplaceReceive { dry_run } => replace::receive(dry_run),
+        C::Env { action } => environment::run_cli(action),
+        C::Ephemeral { action } => super::cloud_ephemeral::run_cli(action),
         C::Sessions { .. } => unreachable!("handled by the cloud sessions dispatcher"),
         C::Prepare { target, json } => {
             let host = prepare_host(&target_of(target))?;
@@ -2280,6 +2337,8 @@ pub(crate) fn run_cli(command: super::args::CloudCommand) -> Result<()> {
         }
         C::Move {
             session,
+            include_sessions,
+            session_only,
             target,
             allow_active,
             dry_run,
@@ -2287,7 +2346,17 @@ pub(crate) fn run_cli(command: super::args::CloudCommand) -> Result<()> {
             json,
         } => {
             let target = target_of(target);
-            let report = run_move(session.as_deref(), &target, allow_active, dry_run)?;
+            let report = if session_only {
+                run_move(session.as_deref(), &target, allow_active, dry_run)?
+            } else {
+                run_migrate(
+                    session.as_deref(),
+                    &target,
+                    allow_active,
+                    dry_run,
+                    &include_sessions,
+                )?
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if report.dry_run {
@@ -2407,6 +2476,8 @@ pub(crate) fn run_cli(command: super::args::CloudCommand) -> Result<()> {
         C::Activate { session, epoch } => run_activate(&session, epoch),
         C::Export { session, epoch } => run_export(&session, epoch),
         C::CancelReturn { session, epoch } => {
+            group::reject_member_return(&session)?;
+            let _migration_lock = group::lock_sessions(std::slice::from_ref(&session))?;
             let lease =
                 storage::read_session_lease(&session).context("missing cloud session lease")?;
             if lease.epoch != epoch || lease.away_host.as_deref() != Some("returned") {
@@ -2434,14 +2505,15 @@ fn exec_attach(
     let exe = std::env::current_exe()?;
     let mut command = Command::new(exe);
     command.arg("--ssh").arg(host);
-    if let Some(binary) = &target.remote_binary {
-        command.arg("--ssh-binary").arg(binary);
-    }
+    command.arg("--ssh-binary").arg(target.remote_binary());
     if let Some(root) = repo_root {
         command.arg("--remote-working-dir").arg(root);
         command.env("JCODE_SSH_LOCAL_WORKING_DIR", root);
     }
     command.arg("--resume").arg(session_id);
+    // The bridge still validates the original local lease and expiry. Attaching
+    // does not create a new grant or extend the time granted by the migration.
+    command.env("JCODE_CLOUD_ENV_SESSION", session_id);
     let error = crate::platform::replace_process(&mut command);
     bail!("failed to attach to `{host}`: {error}")
 }
@@ -2558,7 +2630,7 @@ fn append_arrival(sess: &mut session::Session, dangling: &[String], host: &str, 
     sess.add_message_with_display_role(crate::message::Role::User, blocks, role);
 }
 
-fn arrival_notice(manifest: &MoveManifest) -> String {
+fn arrival_context(manifest: &MoveManifest) -> Vec<String> {
     let mut lines = vec![format!(
         "This session was moved from `{}` to cloud host `{}` at {} (migration epoch {}). You are now running on the cloud host. The conversation, todos and project memory came along.",
         manifest.source_host, manifest.target_host, manifest.created_at, manifest.epoch
@@ -2601,7 +2673,15 @@ fn arrival_notice(manifest: &MoveManifest) -> String {
             manifest.mcp_servers.join(", ")
         ));
     }
+    lines
+}
+
+fn arrival_notice(manifest: &MoveManifest) -> String {
+    let mut lines = arrival_context(manifest);
     lines.push("There is no local display, desktop, browser or ssh-agent on this host. Keep working on the task exactly where you left off. The user can bring the session back with /local (`jcode cloud return`). Git will merge your work with any local edits.".to_string());
+    lines.push(crate::cloud_environment::migration_guidance(
+        &manifest.session_id,
+    ));
     lines.join("\n")
 }
 
@@ -2788,6 +2868,12 @@ pub(crate) fn take_stashed_handoff() -> Option<crate::tui::CloudHandoff> {
 
 /// Replace this client with one attached where the session now lives.
 pub(crate) fn exec_handoff(handoff: crate::tui::CloudHandoff) -> Result<()> {
+    let mut command = handoff_command(handoff)?;
+    let error = crate::platform::replace_process(&mut command);
+    bail!("failed to reattach after cloud move: {error}")
+}
+
+fn handoff_command(handoff: crate::tui::CloudHandoff) -> Result<Command> {
     let exe = std::env::current_exe()?;
     let mut command = Command::new(&exe);
     // Never inherit the previous SSH attach identity.
@@ -2802,11 +2888,19 @@ pub(crate) fn exec_handoff(handoff: crate::tui::CloudHandoff) -> Result<()> {
         "JCODE_SSH_CONFIG",
         "JCODE_SOCKET",
         "JCODE_CLOUD_HANDOFF_PREVIEW_SESSION",
+        "JCODE_CLOUD_ENV_SESSION",
+        "JCODE_CLOUD_CONTINUE_MESSAGE",
     ] {
         command.env_remove(var);
     }
+    let just_migrated = matches!(&handoff, crate::tui::CloudHandoff::Remote { .. });
     match handoff {
         crate::tui::CloudHandoff::Remote {
+            session_id,
+            host,
+            working_dir,
+        }
+        | crate::tui::CloudHandoff::RemoteResume {
             session_id,
             host,
             working_dir,
@@ -2822,10 +2916,13 @@ pub(crate) fn exec_handoff(handoff: crate::tui::CloudHandoff) -> Result<()> {
             command.arg("--resume").arg(&session_id);
             // Only an explicit handoff may preview the matching local transcript.
             command.env("JCODE_CLOUD_HANDOFF_PREVIEW_SESSION", &session_id);
-            command.env(
-                "JCODE_CLOUD_CONTINUE_MESSAGE",
-                "[jcode cloud] This session just moved to the cloud host. Read the migration notice above, verify the environment you need is here, then continue the task exactly where you left off.",
-            );
+            if just_migrated {
+                command.env("JCODE_CLOUD_ENV_SESSION", &session_id);
+                command.env(
+                    "JCODE_CLOUD_CONTINUE_MESSAGE",
+                    "[jcode cloud] This session just moved to the cloud host. Read the migration notice above, verify the environment you need is here, then continue the task exactly where you left off.",
+                );
+            }
         }
         crate::tui::CloudHandoff::Local { session_id } => {
             if let Some(root) = storage::read_session_lease(&session_id).and_then(|l| l.repo_root) {
@@ -2834,6 +2931,55 @@ pub(crate) fn exec_handoff(handoff: crate::tui::CloudHandoff) -> Result<()> {
             command.arg("--resume").arg(&session_id);
         }
     }
-    let error = crate::platform::replace_process(&mut command);
-    bail!("failed to reattach after cloud move: {error}")
+    Ok(command)
+}
+
+#[cfg(test)]
+mod resume_handoff_tests {
+    use super::*;
+
+    #[test]
+    fn cloud_resume_handoff_does_not_continue_or_grant_local_resources() {
+        let command = handoff_command(crate::tui::CloudHandoff::RemoteResume {
+            session_id: "session_cloud_123".into(),
+            host: "dev-cloud".into(),
+            working_dir: Some("/workspace/project".into()),
+        })
+        .unwrap();
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args.windows(2).any(|pair| pair == ["--ssh", "dev-cloud"]));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--resume", "session_cloud_123"])
+        );
+        for name in [
+            "JCODE_CLOUD_CONTINUE_MESSAGE",
+            "JCODE_CLOUD_ENV_SESSION",
+            "JCODE_SOCKET",
+        ] {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(key, value)| key == name && value.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_migration_handoff_still_continues_the_moved_task() {
+        let command = handoff_command(crate::tui::CloudHandoff::Remote {
+            session_id: "session_cloud_123".into(),
+            host: "dev-cloud".into(),
+            working_dir: None,
+        })
+        .unwrap();
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "JCODE_CLOUD_CONTINUE_MESSAGE" && value.is_some())
+        );
+    }
 }

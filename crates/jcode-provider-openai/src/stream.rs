@@ -477,6 +477,17 @@ pub fn parse_openai_response_event(
         }
     };
 
+    if matches!(
+        event.kind.as_str(),
+        "response.completed" | "response.incomplete"
+    ) && let Some(response) = event.response.as_ref()
+    {
+        jcode_logging::info(&format!(
+            "OPENAI_CACHE_RESPONSE: {}",
+            cache_response_evidence(response)
+        ));
+    }
+
     match event.kind.as_str() {
         "response.created" => {
             return event.response.as_ref().and_then(extract_service_tier);
@@ -495,6 +506,13 @@ pub fn parse_openai_response_event(
         }
         "response.reasoning.done" | "response.output_item.added" => {
             if let Some(item) = &event.item {
+                if item.get("type").and_then(Value::as_str) == Some("web_search_call") {
+                    return Some(StreamEvent::ProviderNative {
+                        provider: jcode_message_types::provider_native::PROVIDER_NATIVE_OPENAI
+                            .to_string(),
+                        item: item.clone(),
+                    });
+                }
                 if item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
                     return Some(StreamEvent::ThinkingStart);
                 }
@@ -674,6 +692,45 @@ pub fn parse_openai_response_event(
     }
 
     None
+}
+
+// Keep this explicitly allowlisted. Never log the response body: it can contain
+// user text, tool arguments, encrypted reasoning, and provider-private fields.
+fn cache_response_evidence(response: &Value) -> Value {
+    let identifier = |field: &str| {
+        response.get(field).and_then(Value::as_str).filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-._/".contains(&c))
+        })
+    };
+    let usage = response.get("usage");
+    let diagnostic = response.get("prompt_cache_diagnostics");
+    let allowed_diagnostic = |field: &str, allowed: &[&str]| {
+        diagnostic
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_str)
+            .filter(|value| allowed.contains(value))
+            .map(str::to_owned)
+    };
+    serde_json::json!({
+        "response_id_hash": response.get("id").and_then(Value::as_str)
+            .map(|id| jcode_provider_core::fingerprint::stable_hash_json(&Value::String(id.to_owned()))),
+        "model": identifier("model"),
+        "service_tier": identifier("service_tier"),
+        "input_tokens": usage.and_then(|value| value.get("input_tokens")).and_then(Value::as_u64),
+        "cached_tokens": usage.and_then(|value| extract_input_token_detail(value, "cached_tokens")),
+        "cache_write_tokens": usage.and_then(|value| extract_input_token_detail(value, "cache_write_tokens")),
+        "diagnostic_type": allowed_diagnostic("type", &["cache_hit", "cache_miss", "comparison_response_not_found", "unavailable"]),
+        "diagnostic_reason": allowed_diagnostic("reason", &[
+            "model_changed", "prompt_cache_key_changed", "service_tier_changed", "tools_changed",
+            "text_format_changed", "reasoning_effort_changed", "verbosity_changed", "context_compacted", "input_changed",
+        ]),
+        "comparison_reusable_tokens": diagnostic.and_then(|value| value.get("comparison_reusable_tokens")).and_then(Value::as_u64),
+        "cache_missed_tokens": diagnostic.and_then(|value| value.get("cache_missed_tokens")).and_then(Value::as_u64),
+    })
 }
 
 fn extract_service_tier(response: &Value) -> Option<StreamEvent> {

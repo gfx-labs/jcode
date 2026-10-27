@@ -366,6 +366,9 @@ async fn await_swarm_progress(
         tokio::time::interval_at(tokio::time::Instant::now() + refresh_period, refresh_period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // Detached plan drivers must not label the foreground agent as waiting.
+    let _wait_guard = (!reporter.is_background())
+        .then(|| crate::wait_registry::register(&ctx.session_id, "Waiting for swarm members"));
     let response = loop {
         tokio::select! {
             result = &mut await_members => break result,
@@ -1418,6 +1421,7 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput) 
         effort: params.effort.clone(),
         label: None,
         service_tier: params.service_tier.clone(),
+        lane_id: None,
     };
 
     match send_request(spawn_request).await {
@@ -1658,8 +1662,7 @@ impl CommunicateTool {
     }
 
     fn new_for_working_dir(working_dir: Option<&std::path::Path>) -> Self {
-        const BASE_DESCRIPTION: &str =
-            "Coordinate agents: spawn workers with a prompt, message them, and manage swarm plans.";
+        const BASE_DESCRIPTION: &str = "Coordinate agents: spawn workers for todo lanes, message them, and manage swarm plans.";
         let swarm_prompt = crate::prompt::load_swarm_prompt(working_dir);
         let description = if swarm_prompt.is_empty() {
             BASE_DESCRIPTION.to_string()
@@ -1673,7 +1676,7 @@ impl CommunicateTool {
 }
 
 /// Swarm actions advertised to models. Real usage is dominated by messaging,
-/// reports, listing and spawning; the plan/task-graph actions (propose_plan,
+/// listing and spawning; the plan/task-graph actions (propose_plan,
 /// assign_task, assign_next, fill_slots, run_plan, resync_plan, ...) are
 /// subsumed by `launch` and lane-owning `spawn`. Unlisted actions still
 /// execute for old transcripts and scripts, they are just not offered.
@@ -1681,7 +1684,6 @@ const ADVERTISED_SWARM_ACTIONS: &[&str] = &[
     "launch",
     "spawn",
     "message",
-    "report",
     "status",
     "plan_status",
     "list",
@@ -1865,23 +1867,11 @@ impl Tool for CommunicateTool {
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message body: DM, channel post, or report body."
+                    "description": "Message body. Targets to_session or channel; omitting both broadcasts (coordinator only)."
                 },
                 "tldr": {
                     "type": "string",
                     "description": "One-line summary for long bodies."
-                },
-                "status": {
-                    "type": "string",
-                    "description": "For report: usually ready, blocked, failed, or completed. Defaults to ready."
-                },
-                "validation": {
-                    "type": "string",
-                    "description": "For action=report: tests or validation performed."
-                },
-                "follow_up": {
-                    "type": "string",
-                    "description": "For action=report: blockers or follow-up work."
                 },
                 "to_session": {
                     "type": "string",
@@ -1902,7 +1892,7 @@ impl Tool for CommunicateTool {
                 "label": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required for spawn: worker lane name."
+                    "description": "Required for spawn: lane name. That todo lane is the source of truth."
                 },
                 "phase": {
                     "type": "integer",
@@ -1915,7 +1905,7 @@ impl Tool for CommunicateTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Initial task/instructions for spawn. Spawning without it creates an idle agent."
+                    "description": "Optional extra context for spawn. The assigned todo lane is already prepopulated and sent to the worker before startup, so do not repeat its tasks here."
                 },
                 "initial_message": {
                     "type": "string",
@@ -1965,7 +1955,7 @@ impl Tool for CommunicateTool {
                 "timeout_minutes": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Optional timeout for await_members."
+                    "description": "Optional timeout for await_members. Returns a durable dependency ID for todo.waiting_on, which pauses dependent todos until completion or timeout."
                 },
                 "background": {
                     "type": "boolean",
@@ -2495,7 +2485,7 @@ impl Tool for CommunicateTool {
                 // phase), created from the prompt when it does not exist. The
                 // worker's own todo list is that lane and syncs only it.
                 let prompt = params.spawn_initial_message();
-                let lane_id = {
+                let (lane_id, seeded_count) = {
                     let todos = crate::todo::load_todos(&ctx.session_id).unwrap_or_default();
                     let title = prompt
                         .as_deref()
@@ -2519,7 +2509,9 @@ impl Tool for CommunicateTool {
                     if updated != todos {
                         crate::todo::save_todos(&ctx.session_id, &updated)?;
                     }
-                    lane_id
+                    let seeded_count =
+                        crate::todo::stages::lane_todos_for_worker(&updated, &lane_id).len();
+                    (lane_id, seeded_count)
                 };
                 let request = Request::CommSpawn {
                     id: REQUEST_ID,
@@ -2532,23 +2524,18 @@ impl Tool for CommunicateTool {
                     effort: params.effort.clone(),
                     label: Some(label),
                     service_tier: params.service_tier.clone(),
+                    lane_id: Some(lane_id.clone()),
                 };
 
                 match send_request(request).await {
                     Ok(ServerEvent::CommSpawnResponse { new_session_id, .. })
                         if !new_session_id.is_empty() =>
                     {
-                        crate::server::swarm_todo_link::link_assignment(
-                            &ctx.session_id,
-                            &lane_id,
-                            "",
-                            &new_session_id,
-                        );
                         Ok(ToolOutput::new(format!(
-                            "Spawned new agent: {new_session_id}"
+                            "Spawned new agent: {new_session_id}\nLane {lane_id}: {seeded_count} todo item(s) prepopulated before startup and synced to your lane. The worker received its lane tasks automatically."
                         ))
                         .with_metadata(
-                            serde_json::json!({"session_id": new_session_id, "lane": lane_id}),
+                            serde_json::json!({"session_id": new_session_id, "lane": lane_id, "seeded_todo_count": seeded_count, "lane_synced": true}),
                         ))
                     }
                     Ok(response) => {
@@ -2666,6 +2653,8 @@ impl Tool for CommunicateTool {
                 }
             }
 
+            // Compatibility for old transcripts and scripts only. Worker output is
+            // collected automatically, so this action is not advertised to models.
             "report" => {
                 let message = params
                     .message
@@ -3137,8 +3126,10 @@ impl Tool for CommunicateTool {
                                 "\n\n(You can keep working; this wait runs in the background.)"
                             };
                             return Ok(ToolOutput::new(format!(
-                                "{}{}",
-                                summary, compatibility_note
+                                "{}{}\n\n{}",
+                                summary,
+                                compatibility_note,
+                                super::BACKGROUND_WAIT_GUIDANCE
                             )));
                         }
                         let reports = fetch_awaited_member_reports(&ctx, &members).await;
@@ -3156,7 +3147,7 @@ impl Tool for CommunicateTool {
 
             _ => Err(anyhow::anyhow!(
                 "Unknown action '{}'. Valid actions: share, share_append, read, message, broadcast, dm, channel, list, list_channels, channel_members, \
-                 propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, report, plan_status, summary, read_context, \
+                 propose_plan, approve_plan, reject_plan, spawn, stop, assign_role, status, plan_status, summary, read_context, \
                  resync_plan, assign_task, assign_next, fill_slots, run_plan, cleanup, start, start_task, wake, resume, retry, reassign, replace, salvage, subscribe_channel, unsubscribe_channel, await_members. \
                  To read messages addressed to you, use action='read'.",
                 params.action

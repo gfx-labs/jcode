@@ -46,7 +46,11 @@ pub(super) async fn resolve_target_subscribe_working_dir(
         return Ok(());
     };
     if !sessions.read().await.contains_key(target) && !crate::session::session_exists(target) {
-        return Err(format!("Unknown session '{target}'"));
+        let cause = crate::session::Session::load_startup_stub(target)
+            .err()
+            .map(|error| format!(": {error:#}"))
+            .unwrap_or_default();
+        return Err(format!("Unknown session '{target}'{cause}"));
     }
     if working_dir.is_some() {
         return Ok(());

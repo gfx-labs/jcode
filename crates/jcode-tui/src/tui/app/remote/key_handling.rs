@@ -547,7 +547,9 @@ async fn handle_remote_key_internal(
     }
     {
         use crate::tui::TuiState as _;
-        if app.swarm_panel_focused() && app.handle_swarm_panel_key(code, modifiers) {
+        if app.handle_swarm_agent_shortcut(code, modifiers)
+            || (app.swarm_panel_focused() && app.handle_swarm_panel_key(code, modifiers))
+        {
             return Ok(());
         }
     }
@@ -1094,7 +1096,10 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             if crate::tui::is_ssh_remote()
                 && matches!(
                     app_mod::commands_cloud::parse_cloud_command(trimmed),
-                    Some(app_mod::commands_cloud::CloudCommand::Move { .. })
+                    Some(
+                        app_mod::commands_cloud::CloudCommand::Move { .. }
+                            | app_mod::commands_cloud::CloudCommand::MoveSelected { .. }
+                    )
                 )
             {
                 app.push_display_message(DisplayMessage::error(
@@ -1104,7 +1109,10 @@ pub(in crate::tui::app) async fn submit_remote_enter_input(
             }
             if matches!(
                 app_mod::commands_cloud::parse_cloud_command(trimmed),
-                Some(app_mod::commands_cloud::CloudCommand::Move { .. })
+                Some(
+                    app_mod::commands_cloud::CloudCommand::Move { .. }
+                        | app_mod::commands_cloud::CloudCommand::MoveSelected { .. }
+                )
             ) {
                 // A fresh session is not on disk until its first message, and
                 // `jcode cloud move` loads it from disk. The daemon holds the

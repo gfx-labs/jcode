@@ -41,12 +41,24 @@ fn copy_badge_alt_label_from_config(configured: &str) -> String {
     }
 }
 
-pub(crate) fn copy_badge_alt_badge() -> String {
-    format!("[{}]", copy_badge_alt_label())
+pub(crate) fn shortcut_badge_spans(
+    key: char,
+    alt_style: Style,
+    shift_style: Style,
+    key_style: Style,
+) -> [Span<'static>; 5] {
+    let dim = Style::default().fg(dim_color());
+    [
+        Span::styled("[", dim),
+        Span::styled(copy_badge_alt_label(), alt_style),
+        Span::styled("⇧", shift_style),
+        Span::styled(key.to_ascii_uppercase().to_string(), key_style),
+        Span::styled("]", dim),
+    ]
 }
 
 /// Explicit label rendered before the shortcut badges so the copy affordance
-/// reads clearly (e.g. "Copy [Alt] [⇧] [S]") instead of relying solely on the
+/// reads clearly (e.g. "Copy [Alt⇧S]") instead of relying solely on the
 /// hotkey glyphs.
 pub(crate) const COPY_BADGE_LABEL: &str = "Copy";
 
@@ -55,18 +67,62 @@ fn copy_badge_shortcut_width(key_label: &str) -> usize {
     // the first badge, plus the explicit "Copy" label ahead of the hotkeys.
     UnicodeWidthStr::width(
         format!(
-            " {COPY_BADGE_LABEL} {} [⇧] [{key_label}]",
-            copy_badge_alt_badge()
+            " {COPY_BADGE_LABEL} [{}⇧{key_label}]",
+            copy_badge_alt_label()
         )
         .as_str(),
     )
 }
 
-/// Display width reserved for the inline expand-edit badge (`[Alt] [⇧] [E] …`).
+/// Display width reserved for the compact inline expand-edit badge (`[Alt⇧E] …`).
 /// The badge text differs between the collapsed (` expand`) and just-activated
 /// (` ✓ Expanded`) states, so callers pass the suffix that will actually render.
 pub(crate) fn expand_badge_reserved_width(badge_text: &str) -> usize {
-    UnicodeWidthStr::width(format!(" {} [⇧] [E]{badge_text}", copy_badge_alt_badge()).as_str())
+    UnicodeWidthStr::width(format!(" [{}⇧E]{badge_text}", copy_badge_alt_label()).as_str())
+}
+
+fn expand_badge_spans(
+    alt_label: &str,
+    alt_active: bool,
+    shift_active: bool,
+    key_active: bool,
+    expanded: bool,
+) -> [Span<'static>; 7] {
+    let dim = Style::default().fg(dim_color());
+    let modifier = |active| {
+        if active {
+            Style::default().fg(queued_color()).bold()
+        } else {
+            dim
+        }
+    };
+    let key_style = if key_active {
+        Style::default().fg(accent_color()).bold()
+    } else {
+        dim
+    };
+    let (label, label_style) = if expanded {
+        (" ✓ Expanded", Style::default().fg(ai_color()).bold())
+    } else {
+        (" expand", dim)
+    };
+    [
+        Span::styled(" ", dim),
+        Span::styled("[", dim),
+        Span::styled(alt_label.to_owned(), modifier(alt_active)),
+        Span::styled("⇧", modifier(shift_active)),
+        Span::styled("E", key_style),
+        Span::styled("]", dim),
+        Span::styled(label, label_style),
+    ]
+}
+
+fn expand_badge_target_line(active: &ActiveFileDiffContext, inline: bool) -> usize {
+    if inline {
+        active.end_line.saturating_sub(1).max(active.start_line)
+    } else {
+        active.start_line
+    }
 }
 
 fn lower_bound(values: &[usize], target: usize) -> usize {
@@ -185,6 +241,10 @@ pub(crate) fn trim_line_trailing_spaces(line: &mut Line<'static>) {
 /// must be cut, end it with a dim ellipsis so the truncation is visible
 /// instead of silently swallowing words.
 pub(crate) fn truncate_line_for_copy_badge(line: &mut Line<'static>, max_content_width: usize) {
+    if max_content_width == 0 {
+        line.spans.clear();
+        return;
+    }
     if line.width() <= max_content_width {
         trim_line_trailing_spaces(line);
         return;
@@ -739,6 +799,28 @@ pub(super) fn draw_messages(
         }
     }
 
+    // A todo completion report that just arrived pulses its text color briefly.
+    if policy.enable_decorative_animations
+        && let Some((msg_idx, t)) =
+            super::todo_completion_flash::update(app.display_messages(), now_ms)
+        && let Some(body) = prepared
+            .sections
+            .iter()
+            .find(|section| section.kind == PreparedSectionKind::Body)
+        && let Some(end) = body.prepared.message_boundaries.get(msg_idx)
+    {
+        let start = msg_idx
+            .checked_sub(1)
+            .and_then(|i| body.prepared.message_boundaries.get(i))
+            .map_or(0, |b| b.wrapped_len);
+        let (start, end) = (body.line_start + start, body.line_start + end.wrapped_len);
+        for abs_idx in start.max(scroll)..end.min(visible_end) {
+            if let Some(line) = visible_lines.get_mut(abs_idx - scroll) {
+                super::todo_completion_flash::apply(line, t);
+            }
+        }
+    }
+
     if let Some(active) = &active_file_context {
         let highlight_style = Style::default().fg(file_link_color()).bold();
         let accent_style = Style::default().fg(file_link_color());
@@ -758,54 +840,43 @@ pub(super) fn draw_messages(
         }
     }
 
-    let expand_edit_badge_visible = active_inline_edit_context.as_ref().is_some_and(|active| {
-        active.expandable
-            && (!app.diff_mode().is_full_inline() || expand_feedback_active)
-            && active.start_line >= scroll
-            && active.start_line < visible_end
-    });
-    let visible_expand_badge_line = expand_edit_badge_visible
-        .then(|| {
-            active_inline_edit_context
-                .as_ref()
-                .map(|active| active.start_line)
-        })
-        .flatten();
-    super::set_visible_expand_edit_badge(expand_edit_badge_visible, visible_expand_badge_line);
+    super::set_visible_expand_edit_badge(false, None);
     super::set_visible_expand_edit_badge_rect(None);
 
     let expand_badge_line = if expand_feedback_active {
-        copy_badge_ui.expand_feedback_line.or_else(|| {
-            active_inline_edit_context
-                .as_ref()
-                .map(|active| active.start_line)
-        })
+        active_inline_edit_context
+            .as_ref()
+            .map(|active| expand_badge_target_line(active, app.diff_mode().is_inline()))
+            .or(copy_badge_ui.expand_feedback_line)
     } else {
         active_inline_edit_context
             .as_ref()
             .filter(|active| active.expandable && !app.diff_mode().is_full_inline())
-            .map(|active| active.start_line)
+            .map(|active| expand_badge_target_line(active, app.diff_mode().is_inline()))
     };
 
-    if let Some(mut badge_line) = expand_badge_line {
+    let badge_text = if expand_feedback_active {
+        " ✓ Expanded"
+    } else {
+        " expand"
+    };
+    let reserved = expand_badge_reserved_width(badge_text);
+    // Never wrap shortcut chrome or expose an invisible click target.
+    if let Some(mut badge_line) =
+        expand_badge_line.filter(|_| reserved <= content_area.width as usize)
+    {
         if expand_feedback_active && visible_end > scroll {
             badge_line = badge_line.clamp(scroll, visible_end.saturating_sub(1));
         }
         if badge_line >= scroll && badge_line < visible_end {
             let rel_idx = badge_line - scroll;
             if let Some(line) = visible_lines.get_mut(rel_idx) {
-                let badge_text = if expand_feedback_active {
-                    " ✓ Expanded"
-                } else {
-                    " expand"
-                };
-                let reserved = expand_badge_reserved_width(badge_text);
                 let max_content_width = (content_area.width as usize).saturating_sub(reserved);
                 truncate_line_for_copy_badge(line, max_content_width);
 
                 // Reserve the badge's width in the info-widget margin profile so a
                 // floating widget (e.g. the KV cache panel) docks far enough left to
-                // clear the appended `[Alt] [⇧] [E] expand` block instead of being
+                // clear the appended `[Alt⇧E] expand` block instead of being
                 // squeezed into a too-narrow slot that wraps/collides with it. The
                 // margin row for `visible_lines[rel_idx]` is offset by the synthetic
                 // top band (pinned todos + prompt preview), matching the
@@ -815,36 +886,14 @@ pub(super) fn draw_messages(
                     *width = (*width).saturating_sub(reserved as u16);
                 }
 
-                let alt_style = if copy_badge_ui.alt_is_active(copy_badge_now) {
-                    Style::default().fg(queued_color()).bold()
-                } else {
-                    Style::default().fg(dim_color())
-                };
-                let shift_style = if copy_badge_ui.shift_is_active(copy_badge_now) {
-                    Style::default().fg(queued_color()).bold()
-                } else {
-                    Style::default().fg(dim_color())
-                };
-                let key_style = if copy_badge_ui.key_is_active('e', copy_badge_now) {
-                    Style::default().fg(accent_color()).bold()
-                } else {
-                    Style::default().fg(dim_color())
-                };
-
                 let badge_start = line.width().saturating_add(1);
-                line.spans.push(Span::raw(" "));
-                line.spans
-                    .push(Span::styled(copy_badge_alt_badge(), alt_style));
-                line.spans.push(Span::raw(" "));
-                line.spans.push(Span::styled("[⇧]", shift_style));
-                line.spans.push(Span::raw(" "));
-                line.spans.push(Span::styled("[E]", key_style));
-                let badge_text_style = if expand_feedback_active {
-                    Style::default().fg(ai_color()).bold()
-                } else {
-                    Style::default().fg(dim_color())
-                };
-                line.spans.push(Span::styled(badge_text, badge_text_style));
+                line.spans.extend(expand_badge_spans(
+                    &copy_badge_alt_label(),
+                    copy_badge_ui.alt_is_active(copy_badge_now),
+                    copy_badge_ui.shift_is_active(copy_badge_now),
+                    copy_badge_ui.key_is_active('e', copy_badge_now),
+                    expand_feedback_active,
+                ));
 
                 let final_width = line.width();
                 let aligned_x = match line.alignment.unwrap_or(Alignment::Left) {
@@ -862,6 +911,7 @@ pub(super) fn draw_messages(
                     width: final_width.saturating_sub(badge_start) as u16,
                     height: 1,
                 }));
+                super::set_visible_expand_edit_badge(true, Some(badge_line));
             }
         }
     }
@@ -925,14 +975,7 @@ pub(super) fn draw_messages(
             line.spans.push(Span::raw(" "));
 
             line.spans
-                .push(Span::styled(copy_badge_alt_badge(), alt_style));
-            line.spans.push(Span::raw(" "));
-            line.spans.push(Span::styled("[⇧]", shift_style));
-            line.spans.push(Span::raw(" "));
-            line.spans.push(Span::styled(
-                format!("[{}]", key.to_ascii_uppercase()),
-                key_style,
-            ));
+                .extend(shortcut_badge_spans(key, alt_style, shift_style, key_style));
 
             let final_width = line.width();
             let aligned_x = match line.alignment.unwrap_or(Alignment::Left) {
@@ -1032,6 +1075,9 @@ pub(super) fn draw_messages(
             .partition_point(|region| region.abs_line_idx < visible_end);
 
         for region in &prepared.image_regions[visible_image_start..visible_image_end] {
+            if region.height == 0 {
+                continue;
+            }
             let abs_idx = region.abs_line_idx;
             let hash = region.hash;
             let total_height = region.height;
@@ -1226,6 +1272,9 @@ pub(super) fn draw_messages(
                 .image_regions
                 .partition_point(|region| region.abs_line_idx < prefetch_end);
             for region in &prepared.image_regions[band_start..band_end] {
+                if region.height == 0 {
+                    continue;
+                }
                 // Only inline raster images use the prewarm pipeline; mermaid
                 // crops build their own state at draw time. In pinned mode the
                 // raster images still render in the flow, so always prefetch.
@@ -1468,20 +1517,62 @@ fn windowed_min(widths: &[u16], window: usize) -> Vec<u16> {
     out
 }
 
-/// Lines for the pinned todo band. Background tasks render in the
-/// `background` info widget, not here.
+/// Passive worker status lives in the todo lanes. The focused swarm panel
+/// remains available for keyboard navigation and its transcript controls.
+pub(crate) fn pinned_todos_show_workers(app: &dyn TuiState, width: u16) -> bool {
+    crate::config::config().display.pin_todos
+        && app.pinned_todos_payload().is_some()
+        && app.inline_swarm_gallery_active()
+        && !app.inline_swarm_members().is_empty()
+        && !pinned_todo_band_lines_for_payload(
+            app.pinned_todos_payload(),
+            app.pinned_todos_expanded(),
+            app.diff_mode(),
+            width,
+            3,
+        )
+        .0
+        .is_empty()
+}
+
 pub(crate) fn pinned_todo_band_lines(
     app: &dyn TuiState,
     width: u16,
     viewport_height: u16,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    pinned_todo_band_lines_for_payload(
+    let (mut lines, more) = pinned_todo_band_lines_for_payload(
         app.pinned_todos_payload(),
         app.pinned_todos_expanded(),
         app.diff_mode(),
         width,
         viewport_height,
-    )
+    );
+    if width > 0
+        && viewport_height >= 3
+        && let Some(status) = app.justrust_status()
+    {
+        let color = match status.tone {
+            crate::tui::justrust_status::Tone::Active => ratatui::style::Color::Cyan,
+            crate::tui::justrust_status::Tone::Success => ratatui::style::Color::Green,
+            crate::tui::justrust_status::Tone::Failure => ratatui::style::Color::Red,
+        };
+        let label_color = if status.own_session {
+            ratatui::style::Color::Cyan
+        } else {
+            ratatui::style::Color::Magenta
+        };
+        let (label, rest) = status.text.split_once(' ').unwrap_or((&status.text, ""));
+        let line = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label.to_owned(), Style::default().fg(label_color)),
+            Span::styled(format!(" {rest}"), Style::default().fg(color)),
+        ]);
+        lines.push(super::truncate_line_with_ellipsis_to_width(
+            &line,
+            width as usize,
+        ));
+    }
+    (lines, more)
 }
 
 /// Pinned todo band for an arbitrary todo payload. Shared by the live chat

@@ -237,6 +237,8 @@ pub struct RemoteConnection {
     writer: Arc<Mutex<WriteHalf>>,
     _dummy_peer: Option<Stream>,
     session_id: Option<String>,
+    cloud_authority: Option<std::sync::Weak<std::sync::atomic::AtomicBool>>,
+    cloud_callbacks: Vec<tokio::task::AbortHandle>,
     client_instance_id: Option<String>,
     next_request_id: u64,
     // Bootstrap Done acknowledgments are not completions of a detached turn.
@@ -294,6 +296,10 @@ pub(crate) trait RemoteEventState {
     fn get_tool_input(&self, id: &str) -> serde_json::Value;
     fn handle_tool_exec(&mut self, id: &str, name: &str);
     fn handle_tool_done(&mut self, id: &str, name: &str, output: &str) -> String;
+    // Replays deliberately do not use wall-clock time: playback speed is arbitrary.
+    fn take_tool_duration(&mut self, _id: &str) -> Option<f32> {
+        None
+    }
     fn clear_pending(&mut self);
     fn call_output_tokens_seen(&mut self) -> &mut u64;
     fn reset_call_output_tokens_seen(&mut self);
@@ -309,6 +315,66 @@ pub(crate) struct ReplayRemoteState {
 }
 
 impl RemoteConnection {
+    pub(crate) fn bind_cloud_authority(&mut self, live: &Arc<std::sync::atomic::AtomicBool>) {
+        self.cloud_authority = Some(Arc::downgrade(live));
+    }
+
+    fn revoke_cloud_authority(&mut self) {
+        if let Some(live) = self.cloud_authority.take().and_then(|live| live.upgrade()) {
+            live.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+        for task in self.cloud_callbacks.drain(..) {
+            task.abort();
+        }
+    }
+    pub(crate) fn track_cloud_callback(&mut self, task: &tokio::task::JoinHandle<()>) {
+        self.cloud_callbacks.retain(|task| !task.is_finished());
+        self.cloud_callbacks.push(task.abort_handle());
+    }
+    pub(crate) async fn configure_cloud_tools(
+        &mut self,
+        tools: crate::protocol::SessionToolConfig,
+    ) -> Result<()> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::ConfigureTools { id, tools })
+            .await
+    }
+
+    pub(crate) fn cloud_callback_sender(
+        &mut self,
+    ) -> impl FnOnce(String, String, Option<String>) + Send + 'static {
+        let writer = Arc::clone(&self.writer);
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        move |call_id, output, error| {
+            tokio::spawn(async move {
+                let request = Request::ToolResult {
+                    id,
+                    call_id,
+                    output,
+                    error,
+                };
+                if let Ok(json) = serde_json::to_string(&request) {
+                    let mut writer = writer.lock().await;
+                    let _ = writer.write_all(format!("{json}\n").as_bytes()).await;
+                }
+            });
+        }
+    }
+
+    pub(crate) fn cloud_expiry_revoke(
+        live: Arc<std::sync::atomic::AtomicBool>,
+        deadline: tokio::time::Instant,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            // ConfigureTools is rejected mid-turn. Revoke local access now,
+            // then let the app issue its one-shot cleanup after becoming idle.
+            live.store(false, std::sync::atomic::Ordering::SeqCst);
+        })
+    }
+
     /// Connect to the server
     pub async fn connect() -> Result<Self> {
         Self::connect_with_session(None, None, false, None, false, None).await
@@ -343,6 +409,8 @@ impl RemoteConnection {
             writer: Arc::new(Mutex::new(writer)),
             _dummy_peer: None,
             session_id: None,
+            cloud_authority: None,
+            cloud_callbacks: Vec::new(),
             client_instance_id: client_instance_id.map(str::to_string),
             // A reattached turn carries the old connection's request id on
             // local sockets as well as SSH. Keep its Done distinct from this
@@ -583,6 +651,11 @@ impl RemoteConnection {
 
     /// Clear the server-side conversation and replace it with a fresh session.
     pub async fn clear(&mut self) -> Result<u64> {
+        let had_cloud_authority = self.cloud_authority.is_some();
+        self.revoke_cloud_authority();
+        if had_cloud_authority {
+            self.configure_cloud_tools(Default::default()).await?;
+        }
         let id = self.next_request_id;
         self.next_request_id += 1;
         self.send_request(Request::Clear { id }).await?;
@@ -724,6 +797,13 @@ impl RemoteConnection {
 
     /// Resume a specific session by ID
     pub async fn resume_session(&mut self, session_id: &str) -> Result<()> {
+        if self.session_id.as_deref() != Some(session_id) {
+            let had_cloud_authority = self.cloud_authority.is_some();
+            self.revoke_cloud_authority();
+            if had_cloud_authority {
+                self.configure_cloud_tools(Default::default()).await?;
+            }
+        }
         let request = Request::ResumeSession {
             id: self.next_request_id,
             session_id: session_id.to_string(),
@@ -1437,6 +1517,8 @@ impl RemoteConnection {
             writer: Arc::new(Mutex::new(writer)),
             _dummy_peer: Some(b),
             session_id: None,
+            cloud_authority: None,
+            cloud_callbacks: Vec::new(),
             client_instance_id: None,
             next_request_id: 1,
             control_done_ids: Default::default(),
@@ -1544,6 +1626,10 @@ impl RemoteEventState for RemoteConnection {
 
     fn handle_tool_done(&mut self, id: &str, name: &str, output: &str) -> String {
         Self::handle_tool_done(self, id, name, output)
+    }
+
+    fn take_tool_duration(&mut self, id: &str) -> Option<f32> {
+        self.tool_diff.take_tool_duration(id)
     }
 
     fn clear_pending(&mut self) {

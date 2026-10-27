@@ -36,6 +36,122 @@ fn todo_payload() -> String {
     .to_string()
 }
 
+#[test]
+fn justrust_status_is_below_todos_and_never_wraps() {
+    let _render_lock = viewport_snapshot_test_lock();
+    with_pinned_todos_config(|| {
+        let mut state = TestState {
+            pinned_todos_payload: Some(todo_payload()),
+            justrust_status: Some(crate::tui::justrust_status::StatusRow {
+                text: "justrust [remote/hosted] test 编译器 · 51s · 7.8/96 cores".into(),
+                tone: crate::tui::justrust_status::Tone::Active,
+                own_session: false,
+            }),
+            ..Default::default()
+        };
+        for width in [1, 8, 16, 40, 80, 160] {
+            let (lines, _) = viewport::pinned_todo_band_lines(&state, width, 24);
+            assert!(lines.iter().all(|line| line.width() <= width as usize));
+            if width >= 80 {
+                assert!(lines.last().unwrap().to_string().contains("justrust"));
+                assert!(
+                    lines[..lines.len() - 1]
+                        .iter()
+                        .any(|line| line.to_string().contains("Pinned regression task"))
+                );
+            }
+        }
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &state))
+            .unwrap();
+        let text = terminal_text(&terminal);
+        assert_eq!(text.matches("justrust").count(), 1, "{text}");
+        assert!(text.find("Pinned regression task").unwrap() < text.find("justrust").unwrap());
+
+        state.pinned_todos_payload = None;
+        let (lines, _) = viewport::pinned_todo_band_lines(&state, 100, 24);
+        assert_eq!(lines.len(), 1, "a build row does not require todos");
+        for (own_session, expected) in [(false, Color::Magenta), (true, Color::Cyan)] {
+            let status = state.justrust_status.as_mut().unwrap();
+            status.own_session = own_session;
+            status.tone = crate::tui::justrust_status::Tone::Failure;
+            let (lines, _) = viewport::pinned_todo_band_lines(&state, 100, 24);
+            let label = lines[0]
+                .spans
+                .iter()
+                .find(|span| span.content == "justrust")
+                .unwrap();
+            assert_eq!(label.style.fg, Some(expected));
+            assert_eq!(lines[0].spans.last().unwrap().style.fg, Some(Color::Red));
+        }
+        state.justrust_status = None;
+        assert!(
+            viewport::pinned_todo_band_lines(&state, 100, 24)
+                .0
+                .is_empty()
+        );
+    });
+}
+
+#[test]
+fn pinned_todos_share_top_band_with_swarm_only_on_wide_terminals() {
+    let _render_lock = viewport_snapshot_test_lock();
+    with_pinned_todos_config(|| {
+        let member = crate::protocol::SwarmMemberStatus {
+            session_id: "test-worker".into(),
+            friendly_name: Some("placement-worker".into()),
+            status: "running".into(),
+            detail: Some("Checking layout".into()),
+            task_label: None,
+            role: None,
+            is_headless: Some(true),
+            live_attachments: None,
+            status_age_secs: Some(1),
+            output_tail: None,
+            report_back_to_session_id: None,
+            todo_progress: None,
+            todo_items: Vec::new(),
+            runtime: Default::default(),
+        };
+        let state = TestState {
+            pinned_todos_payload: Some(todo_payload()),
+            swarm_members: vec![member],
+            ..Default::default()
+        };
+        for width in [80, 119, 120, 160, 240] {
+            let (lines, _) = viewport::pinned_todo_band_lines(&state, width, 36);
+            let text = lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(
+                text.contains("placement-worker"),
+                width >= 120,
+                "{width}: {text}"
+            );
+            assert!(lines.iter().all(|line| line.width() <= width as usize));
+            if width >= 120 {
+                let row = lines
+                    .iter()
+                    .find(|line| line.to_string().contains("placement-worker"))
+                    .unwrap();
+                let text = row.to_string();
+                let prefix = text.split("placement-worker").next().unwrap();
+                assert!(unicode_width::UnicodeWidthStr::width(prefix) >= width as usize / 2);
+            }
+        }
+        clear_flicker_frame_history_for_tests();
+        let mut terminal = Terminal::new(TestBackend::new(160, 36)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &state))
+            .unwrap();
+        let text = terminal_text(&terminal);
+        assert_eq!(text.matches("placement-worker").count(), 1, "{text}");
+    });
+}
+
 fn hidden_todo(payload: &str) -> DisplayMessage {
     DisplayMessage {
         role: "tool".into(),

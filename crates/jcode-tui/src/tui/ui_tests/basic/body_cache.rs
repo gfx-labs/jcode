@@ -403,6 +403,42 @@ fn test_build_body_from_base_keeps_current_mermaid_pending_base() {
 }
 
 #[test]
+fn test_prepare_body_swarm_await_wake_is_not_a_numbered_prompt() {
+    let report = "🐝 **Swarm await finished**\n\nAll members done.\n\nMember statuses:\n  ✓ jaguar (ready)\n\nRecent outputs:\n\n--- jaguar (ready) ---\n[Tool: bash · Inspect graph rules]\nworker transcript";
+    let base_state = TestState {
+        display_messages: vec![DisplayMessage::user("first prompt")],
+        messages_version: 1,
+        ..Default::default()
+    };
+    let state = TestState {
+        display_messages: vec![
+            DisplayMessage::user("first prompt"),
+            DisplayMessage::user(report),
+            DisplayMessage::user("second prompt"),
+        ],
+        messages_version: 2,
+        ..Default::default()
+    };
+    for width in [24, 80, 140] {
+        let base = Arc::new(super::prepare::prepare_body(&base_state, width, false));
+        let incremental = super::prepare::prepare_body_incremental(&state, width, base, 1);
+        let full = super::prepare::prepare_body(&state, width, false);
+        for prepared in [&*incremental, &full] {
+            let text = prepared
+                .wrapped_lines
+                .iter()
+                .map(extract_line_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("🐝 ✓ 1/1"), "{text}");
+            assert!(!text.contains("worker transcript"), "{text}");
+            assert!(!text.contains("Swarm await finished"), "{text}");
+            assert_eq!(prepared.user_prompt_texts.len(), 2);
+        }
+    }
+}
+
+#[test]
 fn test_prepare_body_incremental_reuses_unique_prepared_arc() {
     let width = 80;
     let base_state = TestState {
@@ -825,7 +861,8 @@ fn test_prepare_body_anchors_tool_image_after_tool_message() {
     );
     let region = &prepared.image_regions[0];
     assert_eq!(region.render, jcode_tui_messages::ImageRegionRender::Fit);
-    assert!(region.width > 2);
+    assert!(region.width > 0);
+    assert!(region.height > 0, "tool images are shown by default");
 
     // The region must sit between the tool message and the assistant reply.
     let plain = &prepared.wrapped_plain_lines;
@@ -929,7 +966,7 @@ fn test_prepare_body_collapses_anchored_images_when_inline_images_hidden() {
 
     let prepared = super::prepare::prepare_body(&state, 80, false);
     assert!(
-        prepared.image_regions.is_empty(),
+        prepared.image_regions.iter().all(|region| region.height == 0),
         "collapsed images must not emit drawable regions"
     );
     let text = prepared.wrapped_plain_lines.join("\n");
@@ -1253,5 +1290,47 @@ fn test_prepare_body_with_math_never_blocks_on_a_stalled_tex_toolchain() {
         std::env::remove_var("JCODE_DVIPNG_COMMAND");
         std::env::remove_var("JCODE_PDFLATEX_COMMAND");
         std::env::remove_var("JCODE_PDFTOCAIRO_COMMAND");
+    }
+}
+
+#[test]
+fn test_cache_miss_footer_attaches_in_full_and_incremental_layout() {
+    let base_state = TestState {
+        display_messages: vec![
+            DisplayMessage::user("question"),
+            DisplayMessage::assistant("answer"),
+        ],
+        messages_version: 1,
+        ..Default::default()
+    };
+    let mut messages = base_state.display_messages.clone();
+    messages.push(DisplayMessage::system(
+        "ℹ️ KV cache miss [low read]: ~4K tokens resent",
+    ));
+    messages.push(DisplayMessage::user("next question"));
+    let grown_state = TestState {
+        display_messages: messages,
+        messages_version: 2,
+        ..Default::default()
+    };
+    for width in [20, 80] {
+        let base = Arc::new(super::prepare::prepare_body(&base_state, width, false));
+        let incremental = super::prepare::prepare_body_incremental(&grown_state, width, base, 2);
+        let full = super::prepare::prepare_body(&grown_state, width, false);
+        let plain = |prepared: &super::PreparedMessages| {
+            prepared
+                .wrapped_lines
+                .iter()
+                .map(super::line_plain_text)
+                .collect::<Vec<_>>()
+        };
+        let full_lines = plain(&full);
+        assert_eq!(plain(&incremental), full_lines);
+        let footer = full_lines
+            .iter()
+            .position(|line| line.starts_with("╰ "))
+            .unwrap();
+        assert_eq!(full_lines[footer - 1].trim(), "answer");
+        assert!(full_lines[footer + 1].trim().is_empty());
     }
 }

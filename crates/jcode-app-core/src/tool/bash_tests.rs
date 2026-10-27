@@ -156,6 +156,110 @@ fn make_ctx(stdin_tx: Option<mpsc::UnboundedSender<StdinInputRequest>>) -> ToolC
     }
 }
 
+#[test]
+fn cloud_environment_hydrates_commands_without_transcript_values() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir(repo.join("subdir")).unwrap();
+    let original_home = std::env::var_os("JCODE_HOME");
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => crate::env::set_var("JCODE_HOME", value),
+                None => crate::env::remove_var("JCODE_HOME"),
+            }
+        }
+    }
+    let _restore = RestoreHome(original_home);
+    crate::env::set_var("JCODE_HOME", &state);
+    let name = "CLOUD_TEST_RESOURCE_TOKEN";
+    let secret = "opaque-sentinel-do-not-return";
+    let original_value = std::env::var_os(name);
+    crate::cloud_environment::save_environment(&repo, name, secret).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for persistent in [false, true] {
+            let mut ctx = make_ctx(None);
+            ctx.working_dir = Some(repo.join("subdir"));
+            if persistent {
+                ctx.execution_mode = crate::tool::ToolExecutionMode::AgentTurn;
+                ctx.graceful_shutdown_signal = Some(jcode_agent_runtime::InterruptSignal::new());
+            }
+            let result = BashTool::new().execute(json!({
+                "command": "test \"${CLOUD_TEST_RESOURCE_TOKEN:+present}\" = present && printf resource-ready"
+            }), ctx).await.unwrap();
+            assert_eq!(result.output.lines().next(), Some("resource-ready"));
+            assert!(!result.output.contains(secret));
+        }
+        let mut ctx = make_ctx(None);
+        ctx.working_dir = Some(repo.join("subdir"));
+        let result = BashTool::new().execute(json!({
+            "command": "test \"${CLOUD_TEST_RESOURCE_TOKEN:+present}\" = present && printf resource-ready",
+            "run_in_background": true,
+            "notify": false,
+            "wake": false
+        }), ctx).await.unwrap();
+        let id = result.metadata.as_ref().unwrap()["task_id"].as_str().unwrap();
+        let mut completed = false;
+        for _ in 0..100 {
+            if let Some(status) = crate::background::global().status(id).await
+                && status.status != BackgroundTaskStatus::Running
+            {
+                assert_eq!(status.status, BackgroundTaskStatus::Completed);
+                completed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(completed, "background command did not finish");
+        let output = crate::background::global().output(id).await.unwrap();
+        assert!(output.contains("resource-ready"));
+        assert!(!output.contains(secret));
+    });
+    assert_eq!(
+        std::env::var_os(name),
+        original_value,
+        "daemon environment must not change"
+    );
+}
+
+#[tokio::test]
+async fn background_handoff_names_reason_task_and_productive_wait_without_bg_tutorial() {
+    let result = BashTool::new()
+        .execute(
+            json!({"command": "printf done", "run_in_background": true, "wake": true}),
+            make_ctx(None),
+        )
+        .await
+        .expect("background command should start");
+    assert!(
+        result
+            .output
+            .contains("Command started in background as requested.")
+    );
+    assert!(result.output.contains(BACKGROUND_WAIT_GUIDANCE));
+    assert!(
+        result
+            .output
+            .contains("The agent will be woken when the task completes.")
+    );
+    assert!(!result.output.contains("action=\"wait\""));
+    assert!(!result.output.contains("To check progress"));
+    let metadata = result.metadata.expect("background metadata");
+    let id = metadata["task_id"].as_str().expect("task id");
+    assert!(result.output.contains(&format!("Task ID: {id}")));
+    crate::background::global()
+        .wait(id, Duration::from_secs(5), false)
+        .await;
+}
+
 fn make_agent_ctx(signal: jcode_agent_runtime::InterruptSignal) -> ToolContext {
     ToolContext {
         session_id: "test-session".to_string(),
@@ -318,6 +422,8 @@ async fn test_command_timeout_with_stdin_channel() {
         result.output
     );
     let metadata = result.metadata.expect("expected background metadata");
+    assert!(result.output.contains(BACKGROUND_WAIT_GUIDANCE));
+    assert!(!result.output.contains("Use `bg`"));
     assert_eq!(metadata["background"], true);
     assert_eq!(metadata["timeout_promoted"], true);
     assert_eq!(metadata["foreground_timeout_ms"], 1000);

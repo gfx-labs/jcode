@@ -181,7 +181,9 @@ pub(super) fn compute_image_regions(
             // follows so a wrapped/truncated placeholder can never claim
             // non-blank lines below it.
             let available = (1 + blank_run[idx + 1]).min(u16::MAX as usize) as u16;
-            let height = rows.max(1).min(available);
+            // Zero-height markers anchor collapsed tool-image labels for
+            // click-to-expand without creating a drawable image region.
+            let height = rows.min(available);
             image_regions.push(ImageRegion {
                 abs_line_idx: idx,
                 end_line: idx + height as usize,
@@ -1372,9 +1374,7 @@ fn render_message_into(
     let align = default_message_alignment(role, centered);
 
     if (acc.body_has_content || !acc.lines.is_empty())
-        && role != "tool"
-        && role != "meta"
-        && role != "swarm"
+        && super::messages::needs_message_separator(msg)
     {
         acc.push_blank();
     }

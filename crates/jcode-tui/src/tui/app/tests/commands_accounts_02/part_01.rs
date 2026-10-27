@@ -1085,6 +1085,9 @@ fn test_improve_status_summarizes_current_todos() {
                     confidence: Some(crate::todo::ConfidenceState::from_legacy_score(82)),
                     completion_confidence: None,
                     confidence_history: Vec::new(),
+                    external_blocker: None,
+                    completely_blocked: None,
+                    waiting_on: Vec::new(),
                 },
                 crate::todo::TodoItem {
                     stage: None,
@@ -1099,6 +1102,9 @@ fn test_improve_status_summarizes_current_todos() {
                     confidence: None,
                     completion_confidence: None,
                     confidence_history: Vec::new(),
+                    external_blocker: None,
+                    completely_blocked: None,
+                    waiting_on: Vec::new(),
                 },
             ],
         )
@@ -1194,6 +1200,9 @@ fn test_improve_resume_uses_saved_mode_and_current_todos() {
                 confidence: None,
                 completion_confidence: None,
                 confidence_history: Vec::new(),
+                external_blocker: None,
+                completely_blocked: None,
+                waiting_on: Vec::new(),
             }],
         )
         .expect("save todos");

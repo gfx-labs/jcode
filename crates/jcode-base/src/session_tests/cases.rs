@@ -1604,6 +1604,131 @@ fn test_summarize_tool_calls_includes_tool_only_assistant_messages() {
 }
 
 #[test]
+fn failed_wake_error_survives_roundtrip_without_provider_context_pollution() {
+    let mut session = Session::create(None, None);
+    session.add_message_with_display_role(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "wake worker".into(),
+            cache_control: None,
+        }],
+        Some(StoredDisplayRole::System),
+    );
+    let wake_time = session.messages[0].timestamp.unwrap();
+    let error =
+        "request failed: invalid_request_error: No tool call found for function call output";
+    session.record_replay_display_message("error", None, error);
+    session.replay_events[0].timestamp = wake_time + chrono::Duration::seconds(1);
+
+    let reloaded: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+    assert_eq!(reloaded.messages.len(), 1);
+    let rendered = render_messages(&reloaded);
+    assert_eq!(rendered.len(), 2);
+    assert_eq!(rendered[0].content, "wake worker");
+    assert_eq!(rendered[1].role, "error");
+    assert_eq!(rendered[1].content, error);
+    assert_eq!(rendered[1].stored_index, None);
+
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "next turn".into(),
+            cache_control: None,
+        }],
+    );
+    session.messages[1].timestamp = Some(wake_time + chrono::Duration::seconds(2));
+    session.record_replay_display_message("error", None, "second failure");
+    session.replay_events[1].timestamp = wake_time + chrono::Duration::seconds(3);
+    // Unrelated replay records must not get duplicated into ordinary history.
+    session.record_replay_display_message("system", None, "replay-only notice");
+    let rendered = render_messages(&session);
+    assert_eq!(
+        rendered
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["wake worker", error, "next turn", "second failure"]
+    );
+    assert_eq!(session.messages.len(), 2);
+}
+
+#[test]
+fn failed_wake_errors_follow_compacted_history_window() {
+    let mut session = Session::create(None, None);
+    let start = chrono::Utc::now();
+    for turn in 0..20 {
+        for response in 0..5 {
+            let index = session.messages.len();
+            session.add_message(
+                if response == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                vec![ContentBlock::Text {
+                    text: format!("turn {turn} message {response}"),
+                    cache_control: None,
+                }],
+            );
+            session.messages[index].timestamp =
+                Some(start + chrono::Duration::seconds(index as i64));
+        }
+        if matches!(turn, 0 | 18) {
+            session.record_replay_display_message("error", None, format!("failure {turn}"));
+            session.replay_events.last_mut().unwrap().timestamp = start
+                + chrono::Duration::seconds(session.messages.len() as i64 - 1)
+                + chrono::Duration::milliseconds(500);
+        }
+    }
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "current wake".into(),
+            cache_control: None,
+        }],
+    );
+    session.messages[100].timestamp = Some(start + chrono::Duration::seconds(100));
+    session.record_replay_display_message("error", None, "current failure");
+    session.replay_events.last_mut().unwrap().timestamp = start + chrono::Duration::seconds(101);
+    session.compaction = Some(StoredCompactionState {
+        summary_text: "older context".into(),
+        openai_encrypted_content: None,
+        covers_up_to_turn: 20,
+        original_turn_count: 20,
+        compacted_count: 100,
+    });
+    let (limited, _, info) = render_messages_and_images_with_compacted_history(&session, 10);
+    assert!(info.unwrap().remaining_messages > 0);
+    assert!(!limited.iter().any(|message| message.content == "failure 0"));
+    let visible_failure = limited
+        .iter()
+        .position(|message| message.content == "failure 18")
+        .unwrap();
+    assert_eq!(limited[visible_failure - 1].content, "turn 18 message 4");
+    assert_eq!(limited[visible_failure + 1].content, "turn 19 message 0");
+    assert_eq!(limited.last().unwrap().content, "current failure");
+    assert_eq!(limited[limited.len() - 2].content, "current wake");
+
+    let (expanded, _, info) =
+        render_messages_and_images_with_compacted_history(&session, usize::MAX);
+    assert_eq!(info.unwrap().remaining_messages, 0);
+    assert_eq!(
+        expanded
+            .iter()
+            .filter(|message| message.role == "error")
+            .count(),
+        3
+    );
+    let old_failure = expanded
+        .iter()
+        .position(|message| message.content == "failure 0")
+        .unwrap();
+    assert_eq!(expanded[old_failure - 1].content, "turn 0 message 4");
+    assert_eq!(expanded[old_failure + 1].content, "turn 1 message 0");
+    assert_eq!(session.messages.len(), 101);
+}
+
+#[test]
 fn test_render_messages_honors_system_display_role_override() {
     let mut session = Session::create_with_id(
         "session_display_role_test".to_string(),
