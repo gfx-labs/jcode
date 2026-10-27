@@ -44,6 +44,13 @@ impl Parser {
                 }
                 continue;
             }
+            if self.candidate == b"\x1b" && byte == 0x1b {
+                // The second Escape may begin a mouse report or another key sequence.
+                self.replay(false);
+                self.candidate.push(byte);
+                self.last_candidate_byte = Some(Instant::now());
+                continue;
+            }
             self.candidate.push(byte);
             self.last_candidate_byte = Some(Instant::now());
             match classify(&self.candidate) {
@@ -246,6 +253,30 @@ mod tests {
     use crate::event::{
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
+
+    #[test]
+    fn escape_key_preserves_following_mouse_report() {
+        let wire = b"\x1b\x1b[<35;23;33Mok";
+        let expected = vec![
+            InternalEvent::Event(Event::Key(KeyCode::Esc.into())),
+            InternalEvent::Event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 22,
+                row: 32,
+                modifiers: KeyModifiers::NONE,
+            })),
+            InternalEvent::Event(Event::Key(KeyCode::Char('o').into())),
+            InternalEvent::Event(Event::Key(KeyCode::Char('k').into())),
+        ];
+        for split in 0..=wire.len() {
+            let mut parser = Parser::default();
+            parser.advance(&wire[..split], false);
+            let mut events: Vec<_> = parser.by_ref().collect();
+            parser.advance(&wire[split..], false);
+            events.extend(parser);
+            assert_eq!(events, expected, "split {split}");
+        }
+    }
 
     #[test]
     fn terminal_csi_frames_do_not_leak_as_text() {

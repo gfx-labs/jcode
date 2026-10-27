@@ -21,6 +21,8 @@ registry package. No dependencies were added. Local changes are limited to:
   CSI input is framed through its final byte before decoding; unsupported CSI
   sequences are discarded as a unit instead of exposing their suffix as keys.
   X10 mouse, Linux function keys and bracketed paste retain their payload parsing.
+  Consecutive Escape bytes preserve the first key and the second sequence prefix,
+  so pressing Escape beside a mouse report does not expose the report as text.
 
 A lone Escape or ambiguous Alt-key prefix waits up to 100ms for a continuation.
 Once a reply prefix is recognized, its bytes remain buffered across reads,
