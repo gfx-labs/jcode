@@ -247,7 +247,8 @@ fn websocket_delta_removes_only_matched_previous_response_output() {
 fn websocket_delta_preserves_unmatched_nontext_assistant_content() {
     let previous = serde_json::json!({"type":"message", "role":"assistant", "content":[{"type":"refusal", "refusal":"previous"}]});
     let injected = serde_json::json!({"type":"message", "role":"assistant", "content":[{"type":"refusal", "refusal":"different"}]});
-    let (delta, skipped) = persistent_ws_incremental_items(&[injected.clone()], 0, &[previous]);
+    let (delta, skipped) =
+        persistent_ws_incremental_items(std::slice::from_ref(&injected), 0, &[previous]);
     assert_eq!(delta, vec![injected]);
     assert_eq!(skipped, 0);
 }
@@ -307,8 +308,11 @@ fn websocket_delta_preserves_modified_custom_tool_calls() {
         let replay = serde_json::json!({
             "type":"function_call", "call_id":id, "name":name, "arguments":arguments,
         });
-        let (delta, skipped) =
-            persistent_ws_incremental_items(&[replay.clone()], 0, std::slice::from_ref(&output));
+        let (delta, skipped) = persistent_ws_incremental_items(
+            std::slice::from_ref(&replay),
+            0,
+            std::slice::from_ref(&output),
+        );
         assert_eq!(delta, vec![replay]);
         assert_eq!(skipped, 0);
     }
@@ -547,7 +551,8 @@ async fn configured_swarm_root_effort_resolves_without_changing_stored_mode() {
         "gpt-5.6".to_string(),
         vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
     );
-    for mode in ["swarm"] {
+    {
+        let mode = "swarm";
         provider.set_reasoning_effort(mode).unwrap();
         for (configured, expected) in [
             ("low", "low"),
@@ -580,7 +585,8 @@ async fn configured_swarm_root_effort_resolves_without_changing_stored_mode() {
         "gpt-5.6".to_string(),
         vec!["none".into(), "low".into(), "max".into()],
     );
-    for mode in ["swarm"] {
+    {
+        let mode = "swarm";
         let effort = provider.api_reasoning_effort_with_swarm_root(Some(mode), Some("none"));
         let request = OpenAIProvider::build_response_request(
             "gpt-5.6",
@@ -640,7 +646,8 @@ fn configured_swarm_root_effort_reads_real_config() {
         "gpt-5.6".into(),
         vec!["none".into(), "low".into(), "max".into()],
     );
-    for (mode, expected) in [("swarm", "low")] {
+    {
+        let (mode, expected) = ("swarm", "low");
         provider.set_reasoning_effort(mode).unwrap();
         let effort = provider.api_reasoning_effort(provider.reasoning_effort().as_deref());
         let request = OpenAIProvider::build_response_request(

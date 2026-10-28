@@ -229,6 +229,12 @@ async fn persistent_prefix_append_only_reuses_socket_and_refreshes_hashes_each_t
             } else {
                 serde_json::json!([
                     {
+                        "type": "function_call",
+                        "call_id": format!("call_append_{i}"),
+                        "name": "bash",
+                        "arguments": "{\"command\":\"pwd\"}"
+                    },
+                    {
                         "type": "function_call_output",
                         "call_id": format!("call_append_{i}"),
                         "output": format!("result {i}")

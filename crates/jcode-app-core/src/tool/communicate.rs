@@ -1863,7 +1863,7 @@ impl Tool for CommunicateTool {
                 "action": {
                     "type": "string",
                     "enum": ADVERTISED_SWARM_ACTIONS,
-                    "description": "Swarm operation. spawn requires label. list_models lists available model routes."
+                    "description": "launch: lanes. spawn requires label. message: agent/channel, coordinator-only broadcast. list_models."
                 },
                 "message": {
                     "type": "string",
@@ -1892,7 +1892,7 @@ impl Tool for CommunicateTool {
                 "label": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Required for spawn: lane name. That todo lane is the source of truth."
+                    "description": "Required for spawn: lane name, the source of truth. Existing lane tasks are prepopulated and synced."
                 },
                 "phase": {
                     "type": "integer",
@@ -1905,7 +1905,7 @@ impl Tool for CommunicateTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Optional extra context for spawn. The assigned todo lane is already prepopulated and sent to the worker before startup, so do not repeat its tasks here."
+                    "description": "Optional extra context for spawn. Lane tasks are prepopulated: do not repeat its tasks."
                 },
                 "initial_message": {
                     "type": "string",
@@ -1925,10 +1925,6 @@ impl Tool for CommunicateTool {
                     "enum": ["visible", "headless", "inline", "auto"],
                     "description": "Omit to use the user's configured mode. Set only when the user asks for one."
                 },
-                "model": {
-                    "type": "string",
-                    "description": "Model for new workers, e.g. 'openai-api:gpt-5.6-luna'. 'inherit' uses yours. See list_models."
-                },
                 "effort": {
                     "type": "string",
                     "description": "Reasoning effort for newly spawned workers. Overrides the configured default."
@@ -1937,6 +1933,10 @@ impl Tool for CommunicateTool {
                     "type": "string",
                     "enum": ["priority", "ultrafast", "flex", "off"],
                     "description": "OpenAI service tier for spawned workers."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Model for new workers, e.g. 'openai-api:gpt-5.6-luna'. 'inherit' uses yours. See list_models."
                 },
                 "session_ids": {
                     "type": "array",
@@ -1955,7 +1955,7 @@ impl Tool for CommunicateTool {
                 "timeout_minutes": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Optional timeout for await_members. Returns a durable dependency ID for todo.waiting_on, which pauses dependent todos until completion or timeout."
+                    "description": "await_members timeout. Returned dependency ID pauses todo.waiting_on until completion or timeout."
                 },
                 "background": {
                     "type": "boolean",

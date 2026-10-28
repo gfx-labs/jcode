@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Preview publication safety and workflow regression tests, no network writes."""
 import json
+import os
+import subprocess
+import textwrap
 from pathlib import Path
 import sys
 import tempfile
@@ -204,6 +207,43 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertIn('needs: publish', workflow)
         self.assertIn('gh workflow run discord-release.yml', workflow)
         self.assertNotIn('gh workflow run release.yml', workflow)
+
+    def test_native_build_preserves_empty_and_nonempty_options(self):
+        workflow = (ROOT / ".github/workflows/preview.yml").read_text()
+        native = workflow.split("      - name: Build native preview\n", 1)[1]
+        body = textwrap.dedent(native.split("        run: |\n", 1)[1]
+                               .split("      - name:", 1)[0])
+        # Bash 3.2 treats an empty array as unset under nounset. This path must
+        # use the portable positional-parameter expansion for an empty list.
+        self.assertIn('bin jcode "$@"', body)
+        for extra, expected in (("", []),
+                                ("--no-default-features --features pdf",
+                                 ["--no-default-features", "--features", "pdf"])):
+            with self.subTest(extra=extra):
+                result = subprocess.run(
+                    ["bash", "-c", 'justrust() { printf "%s\\n" "$@"; }\n' + body],
+                    env={**os.environ, "TARGET": "aarch64-apple-darwin",
+                         "EXTRA_ARGS": extra},
+                    text=True, capture_output=True, check=True)
+                self.assertEqual(result.stdout.splitlines(),
+                                 ["build", "--local", "--locked", "--release",
+                                  "--target", "aarch64-apple-darwin", "-p",
+                                  "jcode", "--bin", "jcode"] + expected)
+
+    def test_windows_build_uses_native_shell_and_propagates_failure(self):
+        workflow = (ROOT / ".github/workflows/preview.yml").read_text()
+        native = workflow.split("      - name: Build native preview\n", 1)[1]
+        self.assertIn("if: matrix.compat != true && runner.os != 'Windows'",
+                      native.split("        run: |", 1)[0])
+        windows = workflow.split(
+            "      - name: Build Windows preview with MSVC environment\n", 1)[1]
+        windows = windows.split("      - name:", 1)[0]
+        self.assertIn("if: runner.os == 'Windows'", windows)
+        self.assertIn("shell: pwsh", windows)
+        self.assertIn("$extraArgs = @()", windows)
+        self.assertIn("$env:EXTRA_ARGS -split '\\s+'", windows)
+        self.assertIn("--target $env:TARGET -p jcode --bin jcode @extraArgs", windows)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", windows)
 
     def test_stable_pipeline_excludes_preview_at_trigger_and_job(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()

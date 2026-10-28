@@ -244,7 +244,8 @@ fn agents_md_same_canonical_file_is_loaded_only_as_project_instructions() {
     let agents_md = project_dir.path().join("AGENTS.md");
     std::fs::write(&agents_md, "shared instructions").unwrap();
 
-    let (content, info) = load_agents_md_files_from_dirs(project_dir.path(), Some(&agents_md), None);
+    let (content, info) =
+        load_agents_md_files_from_dirs(project_dir.path(), Some(&agents_md), None);
     let content = content.expect("project instructions");
 
     assert!(info.has_project_agents_md);
@@ -331,11 +332,8 @@ fn agents_md_missing_global_file_keeps_project_instructions() {
     let missing_global_agents_md = global_dir.path().join("missing-AGENTS.md");
     std::fs::write(project_dir.path().join("AGENTS.md"), "project only").unwrap();
 
-    let (content, info) = load_agents_md_files_from_dirs(
-        project_dir.path(),
-        Some(&missing_global_agents_md),
-        None,
-    );
+    let (content, info) =
+        load_agents_md_files_from_dirs(project_dir.path(), Some(&missing_global_agents_md), None);
     let content = content.expect("project instructions");
 
     assert!(info.has_project_agents_md);
@@ -404,12 +402,16 @@ fn global_jcode_md_loads_additively_with_global_agents_md() {
     );
     assert!(split_info.has_global_agents_md);
     assert!(split_info.has_global_jcode_md);
-    assert!(split
-        .static_part
-        .contains("# Global Instructions (~/AGENTS.md)"));
-    assert!(split
-        .static_part
-        .contains("# Global Jcode Instructions (~/JCODE.md)"));
+    assert!(
+        split
+            .static_part
+            .contains("# Global Instructions (~/AGENTS.md)")
+    );
+    assert!(
+        split
+            .static_part
+            .contains("# Global Jcode Instructions (~/JCODE.md)")
+    );
 }
 
 #[test]
@@ -697,12 +699,12 @@ fn test_swarm_prompt_prefers_project_then_global_then_default() {
 }
 
 #[test]
-fn test_default_swarm_prompt_mentions_model_and_list_models() {
-    assert!(DEFAULT_SWARM_PROMPT.contains("list_models"));
-    assert!(DEFAULT_SWARM_PROMPT.contains("model"));
+fn test_default_swarm_prompt_defines_lane_ownership_and_parallel_work() {
+    assert!(DEFAULT_SWARM_PROMPT.contains("named todo lane is the source of truth"));
+    assert!(DEFAULT_SWARM_PROMPT.contains("prepopulated into the worker"));
     assert!(!DEFAULT_SWARM_PROMPT.contains("Pass `effort`"));
-    assert!(DEFAULT_SWARM_PROMPT.contains("Spawn workers to implement"));
-    assert!(DEFAULT_SWARM_PROMPT.contains("Do not spawn reviewers, auditors"));
+    assert!(DEFAULT_SWARM_PROMPT.contains("Spawn workers when work can be parallelized"));
+    assert!(DEFAULT_SWARM_PROMPT.contains("Avoid reviewers, auditors"));
     assert!(DEFAULT_SWARM_PROMPT.contains("Only the root session may spawn agents"));
     assert!(!DEFAULT_SWARM_PROMPT.contains("swarm-deep"));
 }
