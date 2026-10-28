@@ -52,9 +52,10 @@ test. It uses the repository's compile-time-oriented release profile
 (`opt-level = 1`, `codegen-units = 256`), not the release CI's opt-level 3 override.
 Crane builds a separate dependency artifact derivation with the same
 feature selection as the final binary. Rust source edits can reuse that cache.
-Changes to Cargo manifests, the lockfile, features, toolchain, or native build
-inputs can require rebuilding dependencies. Each feature variant has its own
-dependency cache. The first build still needs to compile uncached dependencies.
+Changes to Cargo manifests, the lockfile, features, toolchain, vendored dependency
+sources, or native build inputs can require rebuilding dependencies. Each feature
+variant has its own dependency cache. The first build still needs to compile
+uncached dependencies.
 Vendoring the lockfile can fetch crates that the selected feature set will not
 compile.
 

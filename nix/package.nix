@@ -14,6 +14,10 @@
 }:
 let
   manifest = builtins.fromTOML (builtins.readFile ../Cargo.toml);
+  crosstermSource = lib.cleanSourceWith {
+    src = "${src}/vendor/crossterm";
+    name = "jcode-crossterm";
+  };
   commonArgs = {
     inherit src;
     pname = "jcode";
@@ -33,6 +37,12 @@ let
   };
   cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
     buildPhaseCargoCommand = "cargoWithProfile build ${commonArgs.cargoExtraArgs}";
+    # Registry crates depend on this path patch's real API, not a workspace stub.
+    extraDummyScript = ''
+      rm -rf "$out/vendor/crossterm"
+      mkdir -p "$out/vendor/crossterm"
+      cp -R ${crosstermSource}/. "$out/vendor/crossterm/"
+    '';
   });
 in
 craneLib.buildPackage (commonArgs // {
