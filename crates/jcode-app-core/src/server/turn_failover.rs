@@ -1,5 +1,5 @@
 //! Server-side account router for clients that cannot run the TUI's
-//! client-side countdown (Jcode Desktop and SDK clients via the harness API).
+//! client-side countdown (ACP, Jcode Desktop and SDK clients via the harness API).
 //!
 //! The TUI catches a usage/rate-limit failure, picks the next pool-approved
 //! route with the shared ranking, and resends after a cancellable countdown.
