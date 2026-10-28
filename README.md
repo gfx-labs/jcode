@@ -51,6 +51,8 @@
 curl -fsSL https://jcode.sh/install | bash
 ```
 
+For a Nix-managed installation on Linux or macOS, see [Nix packages](docs/nix.md).
+
 <div align="center">
 
 ## Benches
