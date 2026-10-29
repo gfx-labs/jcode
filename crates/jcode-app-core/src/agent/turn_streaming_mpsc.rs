@@ -1640,6 +1640,8 @@ impl Agent {
                     self.publish_inline_tail();
                 }
                 let tool_start = Instant::now();
+                let foreground_budget =
+                    Duration::from_secs(crate::config::config().tools.auto_background_after_secs);
 
                 // Spawn independently so automatic and Alt+B handoffs keep it running.
                 let registry_clone = self.registry.clone();
@@ -1672,7 +1674,7 @@ impl Agent {
                             Err(e) => Err(anyhow::anyhow!("Tool task panicked: {}", e)),
                         });
                     }
-                    automatic = wait_for_tool_handoff(&bg_signal, &shutdown_signal, auto_background_allowed(&tc.name, &tc.input)) => {
+                    automatic = wait_for_tool_handoff(&bg_signal, &shutdown_signal, auto_background_allowed(&tc.name, &tc.input), foreground_budget) => {
                         automatic_background = automatic;
                         if self.is_graceful_shutdown() && allow_reload_handoff {
                             tool_result = match tokio::time::timeout(
@@ -1829,9 +1831,12 @@ impl Agent {
                         .await;
 
                     let reason = if automatic_background {
-                        "automatically after 3 seconds"
+                        format!(
+                            "automatically after {} seconds",
+                            foreground_budget.as_secs()
+                        )
                     } else {
-                        "by the user"
+                        "by the user".to_string()
                     };
                     let bg_msg = format!(
                         "Tool '{}' was moved to background {} (task_id: {}).\n\n{}",

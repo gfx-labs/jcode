@@ -827,10 +827,12 @@ impl McpToolsMode {
     }
 }
 
-/// Controls which tools are sent to the model.
+/// Controls tool exposure and execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolConfig {
+    /// Seconds before a running tool is automatically backgrounded; zero hands off immediately.
+    pub auto_background_after_secs: u64,
     /// Tool profile: "full" (default), "acp", "minimal"/"lite", or "none".
     pub profile: String,
     /// Explicit allow-list. When set, only these tools are exposed.
@@ -860,6 +862,7 @@ pub struct ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
+            auto_background_after_secs: 3,
             profile: String::new(),
             enabled: Vec::new(),
             disabled: Vec::new(),

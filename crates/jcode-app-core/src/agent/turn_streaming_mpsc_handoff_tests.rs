@@ -18,7 +18,7 @@ impl crate::tool::Tool for WaitProbe {
         _: serde_json::Value,
         _: ToolContext,
     ) -> Result<crate::tool::ToolOutput> {
-        tokio::time::sleep(Duration::from_secs(8)).await;
+        tokio::time::sleep(Duration::from_secs(20)).await;
         Ok(crate::tool::ToolOutput::new("wait finished"))
     }
 }
@@ -46,7 +46,7 @@ async fn nonstreaming_background_wait_returns_original_result_after_budget() {
     .await
     .unwrap();
     assert_eq!(result.output, "wait finished");
-    assert_eq!(start.elapsed(), Duration::from_secs(8));
+    assert_eq!(start.elapsed(), Duration::from_secs(20));
 }
 
 #[tokio::test(start_paused = true)]
@@ -62,31 +62,31 @@ async fn background_wait_is_not_automatically_backgrounded() {
     let shutdown = InterruptSignal::new();
     tokio::select! {
         biased;
-        _ = wait_for_tool_handoff(&bg, &shutdown, auto_background_allowed("bg", &input)) => {
+        _ = wait_for_tool_handoff(&bg, &shutdown, auto_background_allowed("bg", &input), Duration::from_secs(15)) => {
             panic!("bg wait was backgrounded while waiting for its dependency");
         }
         _ = tokio::time::sleep(Duration::from_secs(30)) => {}
     }
     // Reloads still interrupt a wait safely, without waiting for its deadline.
     shutdown.fire();
-    assert!(!wait_for_tool_handoff(&bg, &shutdown, false).await);
+    assert!(!wait_for_tool_handoff(&bg, &shutdown, false, Duration::from_secs(15)).await);
 }
 
 #[tokio::test(start_paused = true)]
-async fn slow_tool_handoff_occurs_after_three_seconds_without_cancelling_work() {
+async fn slow_tool_handoff_occurs_after_fifteen_seconds_without_cancelling_work() {
     let bg = InterruptSignal::new();
     let shutdown = InterruptSignal::new();
     let mut work = tokio::spawn(async {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(20)).await;
         42
     });
     let start = tokio::time::Instant::now();
     tokio::select! {
         biased;
         _ = &mut work => panic!("slow work completed before handoff"),
-        automatic = wait_for_tool_handoff(&bg, &shutdown, true) => assert!(automatic),
+        automatic = wait_for_tool_handoff(&bg, &shutdown, true, Duration::from_secs(15)) => assert!(automatic),
     }
-    assert_eq!(start.elapsed(), Duration::from_secs(3));
+    assert_eq!(start.elapsed(), Duration::from_secs(15));
     assert!(!work.is_finished());
     assert_eq!(work.await.unwrap(), 42);
 }
@@ -97,8 +97,8 @@ async fn fast_tool_finishes_in_foreground() {
     let shutdown = InterruptSignal::new();
     tokio::select! {
         biased;
-        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-        _ = wait_for_tool_handoff(&bg, &shutdown, true) => panic!("fast tool backgrounded"),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {},
+        _ = wait_for_tool_handoff(&bg, &shutdown, true, Duration::from_secs(15)) => panic!("fast tool backgrounded"),
     }
 }
 
@@ -113,7 +113,7 @@ async fn manual_background_and_shutdown_do_not_wait_for_budget() {
             bg.fire();
         }
         let start = tokio::time::Instant::now();
-        assert!(!wait_for_tool_handoff(&bg, &shutdown, true).await);
+        assert!(!wait_for_tool_handoff(&bg, &shutdown, true, Duration::from_secs(15)).await);
         assert_eq!(start.elapsed(), Duration::ZERO);
     }
 }

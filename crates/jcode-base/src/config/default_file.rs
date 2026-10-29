@@ -423,6 +423,9 @@ use_default_dirs = true
 max_bytes_per_dir = 262144
 
 [tools]
+# Seconds before automatic background handoff; zero hands off immediately.
+# Explicit background requests remain immediate; this is not a command timeout.
+auto_background_after_secs = 3
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
 # acp keeps core coding tools plus batch for generic ACP clients.
@@ -947,6 +950,21 @@ mod tests {
             ReasoningDisplayMode::Full,
             "the shipped user config must keep the full reasoning trace visible"
         );
+    }
+
+    #[test]
+    fn automatic_background_duration_defaults_and_roundtrips() {
+        let legacy: Config = toml::from_str("").unwrap();
+        assert_eq!(legacy.tools.auto_background_after_secs, 3);
+        for seconds in [0, 15] {
+            let configured: Config = toml::from_str(&format!(
+                "[tools]\nauto_background_after_secs = {seconds}\n"
+            ))
+            .unwrap();
+            let encoded = toml::to_string(&configured).unwrap();
+            let restored: Config = toml::from_str(&encoded).unwrap();
+            assert_eq!(restored.tools.auto_background_after_secs, seconds);
+        }
     }
 
     #[test]

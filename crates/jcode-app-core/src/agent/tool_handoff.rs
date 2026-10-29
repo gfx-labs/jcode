@@ -1,7 +1,5 @@
 use super::*;
 
-const TOOL_FOREGROUND_BUDGET: Duration = Duration::from_secs(3);
-
 pub(super) fn auto_background_allowed(name: &str, input: &serde_json::Value) -> bool {
     !(name == "bg" && input.get("action").and_then(|value| value.as_str()) == Some("wait"))
 }
@@ -14,17 +12,19 @@ pub(in crate::agent) async fn execute_with_background(
     ctx: ToolContext,
 ) -> Result<crate::tool::ToolOutput> {
     let auto_background = auto_background_allowed(&name, &input);
+    let foreground_budget =
+        Duration::from_secs(crate::config::config().tools.auto_background_after_secs);
     let session_id = ctx.session_id.clone();
     let tool_name = name.clone();
     let mut work = tokio::spawn(async move { registry.execute(&tool_name, input, ctx).await });
     tokio::select! {
         biased;
         result = &mut work => result.map_err(|e| anyhow::anyhow!("Tool task panicked: {}", e))?,
-        _ = tokio::time::sleep(TOOL_FOREGROUND_BUDGET), if auto_background => {
+        _ = tokio::time::sleep(foreground_budget), if auto_background => {
             let info = crate::background::global().adopt(&name, &session_id, work).await;
             Ok(crate::tool::ToolOutput::new(format!(
-                "Tool '{}' was moved to background automatically after 3 seconds (task_id: {}).\n\n{}",
-                name, info.task_id, crate::tool::BACKGROUND_WAIT_GUIDANCE
+                "Tool '{}' was moved to background automatically after {} seconds (task_id: {}).\n\n{}",
+                name, foreground_budget.as_secs(), info.task_id, crate::tool::BACKGROUND_WAIT_GUIDANCE
             )))
         }
     }
@@ -35,12 +35,13 @@ pub(super) async fn wait_for_tool_handoff(
     bg: &InterruptSignal,
     shutdown: &InterruptSignal,
     auto_background: bool,
+    foreground_budget: Duration,
 ) -> bool {
     tokio::select! {
         biased;
         _ = shutdown.notified() => false,
         _ = bg.notified() => false,
-        _ = tokio::time::sleep(TOOL_FOREGROUND_BUDGET), if auto_background => true,
+        _ = tokio::time::sleep(foreground_budget), if auto_background => true,
     }
 }
 
