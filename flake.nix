@@ -37,6 +37,11 @@
           inherit jcode;
           jcode-minimal = jcode.override { features = [ ]; };
           jcode-bedrock = jcode.override { features = [ "pdf" "bedrock" ]; };
+          jcode-per-crate = import ./nix/per-crate.nix {
+            inherit pkgs;
+            craneLib = crane.mkLib pkgs;
+            src = source;
+          };
         });
 
       apps = forAllSystems (system: {
