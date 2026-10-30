@@ -32,6 +32,8 @@ pub(super) struct SessionJournalMeta {
     pub(super) reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) spawn_openai_service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) context_cap: Option<usize>,
     pub(super) subagent_model: Option<String>,
     #[serde(default)]
     pub(super) agent_model_overrides: super::AgentModelOverrides,
@@ -100,6 +102,7 @@ pub(super) fn metadata_requires_snapshot(
         || prev.provider_key != current.provider_key
         || prev.reasoning_effort != current.reasoning_effort
         || prev.spawn_openai_service_tier != current.spawn_openai_service_tier
+        || prev.context_cap != current.context_cap
         || prev.subagent_model != current.subagent_model
         || prev.agent_model_overrides != current.agent_model_overrides
         || prev.improve_mode != current.improve_mode

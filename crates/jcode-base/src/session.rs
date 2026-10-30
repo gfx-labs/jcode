@@ -139,6 +139,9 @@ pub struct Session {
     /// sessions (including user-created forks) leave this unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_openai_service_tier: Option<String>,
+    /// Per-session context ceiling. Missing values follow the global cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_cap: Option<usize>,
     /// Optional fixed model to use for subagents launched from this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_model: Option<String>,
@@ -240,6 +243,8 @@ struct SessionStartupStub {
     reasoning_effort: Option<String>,
     #[serde(default)]
     spawn_openai_service_tier: Option<String>,
+    #[serde(default)]
+    context_cap: Option<usize>,
     #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]
@@ -358,6 +363,7 @@ impl Session {
         session.route_api_method = stub.route_api_method;
         session.reasoning_effort = stub.reasoning_effort;
         session.spawn_openai_service_tier = stub.spawn_openai_service_tier;
+        session.context_cap = stub.context_cap;
         session.subagent_model = stub.subagent_model;
         session.agent_model_overrides = stub.agent_model_overrides;
         session.improve_mode = stub.improve_mode;
@@ -398,6 +404,7 @@ impl Session {
         session.route_api_method = snapshot.route_api_method;
         session.reasoning_effort = snapshot.reasoning_effort;
         session.spawn_openai_service_tier = snapshot.spawn_openai_service_tier;
+        session.context_cap = snapshot.context_cap;
         session.subagent_model = snapshot.subagent_model;
         session.agent_model_overrides = snapshot.agent_model_overrides;
         session.improve_mode = snapshot.improve_mode;
@@ -540,6 +547,7 @@ impl Session {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             spawn_openai_service_tier: self.spawn_openai_service_tier.clone(),
+            context_cap: self.context_cap,
             subagent_model: self.subagent_model.clone(),
             agent_model_overrides: self.agent_model_overrides.clone(),
             improve_mode: self.improve_mode,
@@ -744,6 +752,7 @@ impl Session {
         self.model = meta.model;
         self.reasoning_effort = meta.reasoning_effort;
         self.spawn_openai_service_tier = meta.spawn_openai_service_tier;
+        self.context_cap = meta.context_cap;
         self.subagent_model = meta.subagent_model;
         self.agent_model_overrides = meta.agent_model_overrides;
         self.improve_mode = meta.improve_mode;
@@ -788,6 +797,7 @@ impl Session {
             route_api_method: None,
             reasoning_effort: None,
             spawn_openai_service_tier: None,
+            context_cap: None,
             subagent_model: None,
             agent_model_overrides: AgentModelOverrides::new(),
             improve_mode: None,
@@ -854,6 +864,7 @@ impl Session {
             route_api_method: None,
             reasoning_effort: None,
             spawn_openai_service_tier: None,
+            context_cap: None,
             subagent_model: None,
             agent_model_overrides: AgentModelOverrides::new(),
             improve_mode: None,
@@ -1788,6 +1799,8 @@ struct RemoteStartupSessionSnapshot {
     reasoning_effort: Option<String>,
     #[serde(default)]
     spawn_openai_service_tier: Option<String>,
+    #[serde(default)]
+    context_cap: Option<usize>,
     #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]

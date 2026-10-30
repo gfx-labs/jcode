@@ -41,9 +41,9 @@ use super::comm_sync::{
 use super::provider_control::{
     handle_cycle_model, handle_invalidate_anthropic_usage, handle_invalidate_openai_usage,
     handle_notify_auth_changed, handle_refresh_models, handle_set_compaction_mode,
-    handle_set_model, handle_set_premium_mode, handle_set_reasoning_effort, handle_set_route,
-    handle_set_service_tier, handle_set_transport, handle_switch_anthropic_account,
-    handle_switch_openai_account, try_available_models_catalog,
+    handle_set_context_cap, handle_set_model, handle_set_premium_mode, handle_set_reasoning_effort,
+    handle_set_route, handle_set_service_tier, handle_set_transport,
+    handle_switch_anthropic_account, handle_switch_openai_account, try_available_models_catalog,
 };
 use super::{
     AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileTouchService,
@@ -2020,6 +2020,23 @@ pub(super) async fn handle_client(
                 );
             }
 
+            Request::SetContextCap {
+                id,
+                max_context_tokens,
+                session_id,
+            } => {
+                let target_agent = sessions.read().await.get(&session_id).cloned();
+                if let Some(target_agent) = target_agent {
+                    handle_set_context_cap(id, session_id, max_context_tokens, &target_agent, &client_event_tx).await;
+                } else {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message: "target session not found".to_string(),
+                        retry_after_secs: None,
+                    });
+                }
+            }
+
             Request::SetReasoningEffort {
                 id,
                 effort,
@@ -2052,6 +2069,18 @@ pub(super) async fn handle_client(
 
             Request::SetCompactionMode { id, mode } => {
                 handle_set_compaction_mode(id, mode, &agent, &client_event_tx).await;
+            }
+
+            Request::SetSessionEnv { id, env } => {
+                let result = super::set_live_session_env(&sessions, &client_session_id, env).await;
+                let _ = client_event_tx.send(match result {
+                    Ok(()) => ServerEvent::Done { id },
+                    Err(_) => ServerEvent::Error {
+                        id,
+                        message: "Invalid session environment".to_string(),
+                        retry_after_secs: None,
+                    },
+                });
             }
 
             Request::SetSessionSaved { id, saved, label } => {
@@ -3531,7 +3560,7 @@ async fn start_processing_message(
     );
     let done_tx = processing_done_tx.clone();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
-    *state.task = crate::runtime_activity::spawn(async move {
+    *state.task = crate::runtime_activity::spawn_session(client_session_id, async move {
         let event_tx = tx.clone();
         let mut stop_reason = crate::protocol::TurnStopReason::Failure;
         let result = match std::panic::AssertUnwindSafe(crate::hooks::with_client_terminal_env(
