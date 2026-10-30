@@ -19,6 +19,7 @@ use crate::message::{
 };
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
 pub(super) use cache_support::{get_cached_message_lines, get_cached_message_render};
+use jcode_tui_style::theme::{error_color, warning_color};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
@@ -701,20 +702,11 @@ fn render_agentgrep_output_body(content: &str, row_width: usize) -> Vec<Line<'st
     out
 }
 
-fn kv_cache_footer_body(msg: &DisplayMessage) -> Option<&str> {
-    if msg.effective_role() != "system" {
-        return None;
-    }
-    let content = msg.content.trim();
-    let body = content
-        .trim_start_matches("⚠️")
-        .trim_start_matches("ℹ️")
-        .trim_start();
-    if !(body.starts_with("KV cache miss") || body.starts_with("KV cache refresh")) {
-        return None;
-    }
-    Some(body)
-}
+#[path = "ui_messages/kv_cache_footer.rs"]
+mod kv_cache_footer;
+#[cfg(test)]
+use kv_cache_footer::kv_cache_footer_summary;
+use kv_cache_footer::{kv_cache_footer_body, render_kv_cache_footer};
 
 /// Cache diagnostics belong to the preceding message, not a new transcript block.
 pub(super) fn is_kv_cache_footer(msg: &DisplayMessage) -> bool {
@@ -724,92 +716,6 @@ pub(super) fn is_kv_cache_footer(msg: &DisplayMessage) -> bool {
 /// Keep the same separator policy in full/incremental layout and overflow estimates.
 pub(super) fn needs_message_separator(msg: &DisplayMessage) -> bool {
     !matches!(msg.effective_role(), "tool" | "meta" | "swarm") && !is_kv_cache_footer(msg)
-}
-
-/// KV cache notices hang directly off the preceding response. Amber distinguishes
-/// misses from ordinary dim timing metadata, matching the cache widget.
-fn render_kv_cache_footer(msg: &DisplayMessage, width: u16) -> Option<Vec<Line<'static>>> {
-    let body = kv_cache_footer_body(msg)?;
-    let is_miss = body.starts_with("KV cache miss");
-    let summary = kv_cache_footer_summary(body);
-    let body = summary.as_deref().unwrap_or(body);
-    let prefix = if width >= 2 { "╰ " } else { "" };
-    let max = (width as usize).saturating_sub(unicode_width::UnicodeWidthStr::width(prefix));
-    let text = if unicode_width::UnicodeWidthStr::width(body) > max {
-        let mut out = String::new();
-        let mut used = 0;
-        for ch in body.chars() {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if used + w + 1 > max {
-                break;
-            }
-            used += w;
-            out.push(ch);
-        }
-        if max > 0 {
-            out.push('…');
-        }
-        out
-    } else {
-        body.to_string()
-    };
-    let color = if is_miss || msg.content.trim().starts_with("⚠️") {
-        Color::Rgb(255, 200, 100)
-    } else {
-        dim_color()
-    };
-    Some(vec![Line::from(vec![
-        Span::styled(prefix, Style::default().fg(dim_color())),
-        Span::styled(text, Style::default().fg(color)),
-    ])])
-}
-
-fn parse_kv_token_count(s: &str) -> Option<f64> {
-    let s = s.trim().trim_start_matches('~');
-    let (num, mult) = match s.chars().last()? {
-        'K' | 'k' => (&s[..s.len() - 1], 1e3),
-        'M' | 'm' => (&s[..s.len() - 1], 1e6),
-        _ => (s, 1.0),
-    };
-    num.replace(',', "").parse::<f64>().ok().map(|n| n * mult)
-}
-
-/// `19K KV cache miss · provider switch · 60% hit` from the full
-/// notice text. Returns None when the notice is not in a recognized shape.
-fn kv_cache_footer_summary(body: &str) -> Option<String> {
-    let kind = if body.starts_with("KV cache refresh") {
-        "KV cache refresh"
-    } else {
-        "KV cache miss"
-    };
-    let reason = body
-        .split_once('[')
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .map(|(r, _)| r.trim().to_string())?;
-    let missed = body
-        .split_once('~')
-        .and_then(|(_, rest)| rest.split_once(" tokens"))
-        .map(|(n, _)| n.trim().to_string());
-    let hit = body.split_once(" cached / ").and_then(|(before, after)| {
-        let cached = parse_kv_token_count(before.rsplit(' ').next()?)?;
-        let expected = parse_kv_token_count(after.split(' ').next()?)?;
-        (expected > 0.0).then(|| ((cached / expected) * 100.0).round().clamp(0.0, 100.0))
-    });
-    let lead = match missed {
-        Some(missed) => format!("{missed} {kind}"),
-        None => kind.to_string(),
-    };
-    let mut parts = vec![lead, reason];
-    if body
-        .split_once(']')
-        .is_some_and(|(_, tail)| tail.trim_start().starts_with("[prefix unchanged]"))
-    {
-        parts.push("prefix unchanged".to_string());
-    }
-    if let Some(hit) = hit {
-        parts.push(format!("{hit:.0}% hit"));
-    }
-    Some(parts.join(" · "))
 }
 
 pub(crate) fn render_system_message(
@@ -5050,15 +4956,74 @@ mod kv_cache_footer_tests {
     }
 
     #[test]
-    fn cache_miss_footer_is_amber_and_only_system_notices_attach() {
+    fn cache_miss_footer_colors_only_the_label_by_absolute_token_loss() {
+        for (amount, expected) in [
+            ("0", super::dim_color()),
+            ("4.2K", super::dim_color()),
+            ("9,999", super::dim_color()),
+            ("10K", super::warning_color()),
+            ("20.4k", super::warning_color()),
+            ("49,999", super::warning_color()),
+            ("50K", super::error_color()),
+            ("86.1K", super::error_color()),
+            ("1.2M", super::error_color()),
+            ("unknown", super::warning_color()),
+            ("NaN", super::warning_color()),
+            ("inf", super::warning_color()),
+            ("-1", super::warning_color()),
+        ] {
+            // Hit percentage is intentionally identical across severities.
+            let message = super::DisplayMessage::system(format!(
+                "ℹ️ KV cache miss [low read] [prefix unchanged]: 4K cached / 20K expected tokens: ~{amount} tokens resent"
+            ));
+            let lines = super::render_kv_cache_footer(&message, 160).unwrap();
+            assert_eq!(lines[0].spans[0].style.fg, Some(super::dim_color()));
+            assert_eq!(lines[0].spans[1].style.fg, Some(expected), "{amount}");
+            assert_eq!(lines[0].spans[1].content, format!("{amount} KV cache miss"));
+            assert_eq!(lines[0].spans[2].style.fg, Some(super::dim_color()));
+            assert_eq!(
+                lines[0].spans[2].content,
+                " · low read · prefix unchanged · 20% hit"
+            );
+            for width in 0..=100 {
+                let clipped = super::render_kv_cache_footer(&message, width).unwrap();
+                assert_eq!(clipped.len(), 1);
+                assert!(
+                    clipped[0].width() <= usize::from(width),
+                    "{amount}, {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_amount_stays_amber_and_refreshes_are_not_loss_severity() {
+        for body in [
+            "KV cache miss [low read]: provider reported no cache read",
+            "KV cache miss without structured evidence",
+        ] {
+            let message = super::DisplayMessage::system(body);
+            let lines = super::render_kv_cache_footer(&message, 120).unwrap();
+            assert_eq!(lines[0].spans[1].style.fg, Some(super::warning_color()));
+        }
+        for (icon, color) in [("ℹ️ ", super::dim_color()), ("⚠️ ", super::warning_color())]
+        {
+            let message = super::DisplayMessage::system(format!(
+                "{icon}KV cache refresh [compaction]: ~100K tokens resent"
+            ));
+            let lines = super::render_kv_cache_footer(&message, 120).unwrap();
+            assert_eq!(lines[0].spans[1].style.fg, Some(color));
+            assert_eq!(lines[0].spans[2].style.fg, Some(super::dim_color()));
+        }
+    }
+
+    #[test]
+    fn only_system_cache_notices_attach() {
         let body = "KV cache miss [low read]: ~4K tokens resent";
         let message = super::DisplayMessage::system(format!("ℹ️ {body}"));
         assert!(!super::needs_message_separator(&message));
         let lines = super::render_kv_cache_footer(&message, 80).unwrap();
-        assert_eq!(
-            lines[0].spans[1].style.fg,
-            Some(super::Color::Rgb(255, 200, 100))
-        );
+        assert_eq!(lines[0].spans[1].style.fg, Some(super::dim_color()));
         let assistant = super::DisplayMessage::assistant(body);
         assert!(super::needs_message_separator(&assistant));
         assert!(super::render_kv_cache_footer(&assistant, 80).is_none());

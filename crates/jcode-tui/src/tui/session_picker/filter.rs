@@ -31,6 +31,19 @@ impl SessionPicker {
 
     fn search_matched_session_refs(&mut self, query: &str) -> Vec<SessionRef> {
         let normalized = Self::normalized_search_query(query);
+        let mut transcript_search = std::mem::take(&mut self.transcript_search);
+        transcript_search.reset(
+            &normalized,
+            self.all_sessions
+                .iter()
+                .chain(self.all_orphan_sessions.iter())
+                .chain(
+                    self.all_server_groups
+                        .iter()
+                        .flat_map(|group| group.sessions.iter()),
+                ),
+        );
+        self.transcript_search = transcript_search;
         if normalized.is_empty() {
             self.cached_search_query.clear();
             self.cached_search_refs.clear();
@@ -51,14 +64,33 @@ impl SessionPicker {
         let matches = candidates
             .into_iter()
             .filter(|session_ref| {
-                self.session_by_ref(*session_ref)
-                    .is_some_and(|session| Self::session_matches_search(session, &normalized))
+                self.session_by_ref(*session_ref).is_some_and(|session| {
+                    Self::session_matches_search(session, &normalized)
+                        || self.transcript_search.contains(&session.id)
+                })
             })
             .collect::<Vec<_>>();
 
         self.cached_search_query = normalized;
         self.cached_search_refs = matches.clone();
         matches
+    }
+
+    /// Called once per rendered frame, so completed scans update results even
+    /// when the user is not typing. Never wait for the worker on the UI thread.
+    pub(super) fn poll_transcript_search(&mut self) {
+        if self.transcript_search.poll() {
+            let selected = self.selected_session().map(|session| session.id.clone());
+            let preview_scroll = self.scroll_offset;
+            let auto_scroll = self.auto_scroll_preview;
+            self.cached_search_query.clear();
+            self.cached_search_refs.clear();
+            self.rebuild_items();
+            if self.selected_session().map(|session| &session.id) == selected.as_ref() {
+                self.scroll_offset = preview_scroll;
+                self.auto_scroll_preview = auto_scroll;
+            }
+        }
     }
 
     fn filtered_session_refs(
@@ -164,6 +196,7 @@ impl SessionPicker {
             SessionFilterMode::CurrentDir => self.session_in_current_dir(session),
             SessionFilterMode::CatchUp => session.needs_catchup,
             SessionFilterMode::Saved => session.saved,
+            SessionFilterMode::Cloud => session.server_icon.as_deref() == Some("☁"),
             SessionFilterMode::Active => self.session_is_live(session),
             SessionFilterMode::ClaudeCode => Self::session_is_claude_code(session),
             SessionFilterMode::Codex => Self::session_is_codex(session),
@@ -277,6 +310,11 @@ impl SessionPicker {
 
             let mut grouped_sections: Vec<(String, String, String, Vec<SessionRef>)> = Vec::new();
             for (group_idx, group) in self.all_server_groups.iter().enumerate() {
+                // Cloud lease groups describe storage ownership, not a live
+                // server. Keep them in the chronological history below.
+                if group.icon == "☁" && !group.is_running {
+                    continue;
+                }
                 let visible = std::mem::take(&mut group_buckets[group_idx]);
                 if visible.is_empty() {
                     continue;
@@ -311,14 +349,31 @@ impl SessionPicker {
                         .all_orphan_sessions
                         .get(*idx)
                         .is_some_and(|session| !saved_ids.contains(&session.id)),
+                    SessionRef::Group {
+                        group_idx,
+                        session_idx,
+                    } => self
+                        .all_server_groups
+                        .get(*group_idx)
+                        .filter(|group| group.icon == "☁" && !group.is_running)
+                        .and_then(|group| group.sessions.get(*session_idx))
+                        .is_some_and(|session| !saved_ids.contains(&session.id)),
                     _ => false,
                 })
                 .collect();
             if !visible_orphans.is_empty() {
-                self.items.push(PickerItem::OrphanHeader {
-                    session_count: visible_orphans.len(),
-                });
-                self.item_to_session.push(None);
+                // Only separate history when an actual server section precedes
+                // it. A cloud-only group must not introduce artificial chrome.
+                if self
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, PickerItem::ServerHeader { .. }))
+                {
+                    self.items.push(PickerItem::OrphanHeader {
+                        session_count: visible_orphans.len(),
+                    });
+                    self.item_to_session.push(None);
+                }
 
                 for session_ref in visible_orphans {
                     self.push_visible_session(session_ref);

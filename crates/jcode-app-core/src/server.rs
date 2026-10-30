@@ -18,6 +18,7 @@ mod client_lifecycle_logging;
 mod client_lightweight_control;
 mod client_session;
 mod client_state;
+mod model_refresh;
 mod session_connections;
 pub(crate) use client_state::provider_oauth_email;
 mod client_writer;
@@ -1278,6 +1279,10 @@ impl Server {
         // only stops it from clearing a marker another process owns.
         publish_reload_socket_ready(reload_marker_policy(&self.socket_path));
         signal_ready_fd();
+
+        // Older snapshots predate the resume index. Backfill off the first-frame
+        // path. Lookups retain an authoritative fallback until it completes.
+        crate::recent_session_index::backfill_resume_metadata_in_background();
 
         // Persist auxiliary discovery metadata after the server is already live.
         self.spawn_registry_metadata_publisher(registry_info);
