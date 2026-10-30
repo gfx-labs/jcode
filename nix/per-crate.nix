@@ -40,7 +40,9 @@ let
       name = (builtins.fromTOML (builtins.readFile "${src}/${member}/Cargo.toml")).package.name;
       extra = lib.optionals (name == "jcode-build-meta") [ "Cargo.toml" ]
         ++ lib.optionals (name == "jcode-docs-data") [ "docs" "README.md" ]
-        ++ lib.optionals (name == "jcode-base") [ "docs/kagi-web-search.md" ];
+        ++ lib.optionals (name == "jcode-base") [ "docs/kagi-web-search.md" ]
+        ++ lib.optionals (name == "jcode-setup-hints" && pkgs.stdenv.hostPlatform.isDarwin)
+          [ "assets/app-icons/Jcode.icns" ];
     in {
       inherit name;
       value = _: {

@@ -49,6 +49,38 @@ Cache keys include source bytes. A fresh clone can differ from a Git-clean
 working tree containing CRLF files, so use consistently checked-out sources
 when comparing cache reuse between machines.
 
+## Experimental per-crate caching
+
+`nix build .#jcode-per-crate` builds the same PDF-enabled CLI using crate2nix,
+with a separate Nix derivation for each Rust crate. The default `.#jcode` package
+still uses Crane. The experimental package has been built and smoke-tested on
+x86_64 Linux; other platforms have not been validated.
+
+Workspace sources are filtered separately for each crate, including external
+files read by its build scripts. A change to one crate invalidates that crate
+and its dependents, not unrelated workspace crates. A source-only change in
+`jcode-tui-style` rebuilt 5 of 571 crate derivations, reusing the other 566.
+On the validation runner, that rebuild took 91 seconds after a 1,014-second
+cold build. The probe added a comment, so it measures recompilation scope, not
+runtime changes or general performance. This is whole-crate reuse, not Rust's
+within-crate incremental compilation.
+
+There are two tradeoffs:
+
+- The dependency graph is generated during Nix evaluation using the pinned
+  crate2nix package and Crane's vendored sources. This requires import from
+  derivation, and the first evaluation can fetch build inputs. Cold compilation
+  uses a different cache from the existing Crane package.
+- `--version` identifies these builds with `nix` rather than the Git hash.
+  Embedding a new revision in the shared `jcode-build-meta` crate would invalidate
+  nearly the whole workspace after every commit. The flake revision and Nix
+  store path identify the exact source snapshot instead.
+
+Like the default package, this variant builds only the CLI with PDF support,
+uses opt-level 1 and 256 codegen units, and disables automatic self-updates.
+It does not change an existing profile or running server unless installed and
+started explicitly.
+
 ## Existing servers
 
 Installing the package does not replace other launchers or restart a server.
