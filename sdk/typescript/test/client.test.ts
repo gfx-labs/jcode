@@ -120,15 +120,20 @@ test("run() collects a full turn and auto-approves permissions", async () => {
     },
   });
   const client = await JcodeClient.connect({ socketPath: server.socketPath });
-  const turn = await client.run("s1", "hi", { autoApprove: true });
-  assert.equal(turn.text, "hello world");
-  assert.equal(turn.reasoning, "think");
-  assert.deepEqual(turn.toolCalls, [
-    { callId: "c1", name: "bash", output: "ok", error: undefined },
-  ]);
-  assert.deepEqual(turn.usage, { input: 10, output: 4, cacheReadInput: undefined });
-  client.close();
-  await server.close();
+  try {
+    const turn = await client.run("s1", "hi", { autoApprove: true });
+    assert.equal(turn.text, "hello world");
+    assert.equal(turn.reasoning, "think");
+    assert.deepEqual(turn.toolCalls, [
+      { callId: "c1", name: "bash", output: "ok", error: undefined },
+    ]);
+    assert.deepEqual(turn.usage, {
+      input: 10, output: 4, cacheReadInput: undefined, effectiveBudget: undefined,
+    });
+  } finally {
+    client.close();
+    await server.close();
+  }
 });
 
 test("softInterrupt preserves images and the legacy text-only wire shape", async () => {
