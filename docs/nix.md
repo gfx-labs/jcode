@@ -1,7 +1,9 @@
 # Nix package
 
 Nix can build and install Jcode on Linux, including non-NixOS distributions, and
-macOS. Run these commands from this checkout:
+macOS. Enable the `nix-command` and `flakes` experimental features, or prefix
+commands with `nix --extra-experimental-features 'nix-command flakes'`.
+Run these commands from this checkout:
 
 ```sh
 nix build .#jcode
@@ -21,6 +23,31 @@ not `jcode update`, which still manages the separate `~/.jcode/builds` installat
 An existing `~/.local/bin/jcode` launcher may appear before the Nix profile on
 `PATH`. Check `type -a jcode` and run `~/.nix-profile/bin/jcode` explicitly when
 needed.
+
+## Installing a remotely built snapshot
+
+Build the same Git revision on the remote machine. Convert its output closure
+to content-addressed form before copying it, so the receiving store can verify
+it without adding a signing key or disabling signature checks:
+
+```sh
+# On the builder; substitute the output paths printed by each command.
+nix build .#jcode --no-link --print-out-paths
+nix store make-content-addressed /nix/store/<jcode-output>
+
+# On the receiving machine.
+nix copy --from ssh-ng://<builder> /nix/store/<content-addressed-output>
+nix profile add /nix/store/<content-addressed-output>
+```
+
+This installs a pinned snapshot, not a flake-tracking profile entry.
+`nix profile upgrade jcode` cannot update it. After rebuilding and copying a new
+snapshot, replace that entry with `nix profile remove jcode` followed by
+`nix profile add /nix/store/<new-output>`.
+
+Cache keys include source bytes. A fresh clone can differ from a Git-clean
+working tree containing CRLF files, so use consistently checked-out sources
+when comparing cache reuse between machines.
 
 ## Existing servers
 
