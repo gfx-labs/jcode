@@ -186,7 +186,8 @@ fn fingerprint_changes_with_oauth_identity_and_timeout() {
     timed.timeout_secs = Some(99);
     assert_ne!(fingerprint_config(&timed), base_fp);
     let mut identified = base;
-    identified.oauth = Some(serde_json::from_value(serde_json::json!({"client_id": "custom"})).unwrap());
+    identified.oauth =
+        Some(serde_json::from_value(serde_json::json!({"client_id": "custom"})).unwrap());
     assert_ne!(fingerprint_config(&identified), base_fp);
 }
 

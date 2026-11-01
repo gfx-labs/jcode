@@ -28,6 +28,29 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+type ResumeLockKey = (usize, String);
+
+fn resume_target_lock(sessions: &SessionAgents, session_id: &str) -> Arc<Mutex<()>> {
+    // The map identity isolates independent server/test instances. Every caller
+    // holds its sessions Arc while using the lock, so its address cannot be
+    // reused while a matching lock is alive. Weak values let idle gates expire.
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<ResumeLockKey, std::sync::Weak<Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = (Arc::as_ptr(sessions) as usize, session_id.to_owned());
+    if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 const RELOAD_RESTORE_MARKER_MAX_AGE: Duration = Duration::from_secs(60);
 
@@ -185,6 +208,7 @@ pub(super) async fn handle_clear_session(
         working_dir.as_deref(),
     );
     let new_id = new_agent.session_id().to_string();
+    crate::session_env::inherit_session_env(client_session_id, &new_id);
 
     if client_selfdev {
         new_agent.set_canary("self-dev");
@@ -200,6 +224,7 @@ pub(super) async fn handle_clear_session(
     {
         let mut sessions_guard = sessions.write().await;
         sessions_guard.remove(client_session_id);
+        crate::session_env::remove_session_env(client_session_id);
         sessions_guard.insert(new_id.clone(), Arc::clone(agent));
     }
     crate::runtime_memory_log::emit_event(
@@ -290,6 +315,7 @@ pub(super) async fn handle_clear_session(
     {
         let mut connections = client_connections.write().await;
         if let Some(info) = connections.get_mut(client_connection_id) {
+            crate::session::clear_window_closed(&new_id);
             info.session_id = new_id.clone();
             info.last_seen = Instant::now();
         }
@@ -582,6 +608,8 @@ pub(super) async fn handle_subscribe(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    sessions: &SessionAgents,
+    soft_interrupt_queues: &SessionInterruptQueues,
 ) {
     let subscribe_start = Instant::now();
     crate::logging::event_info(
@@ -888,6 +916,8 @@ pub(super) async fn handle_subscribe(
             plans: Arc::clone(swarm_plans),
             coordinators: Arc::clone(swarm_coordinators),
         },
+        sessions,
+        soft_interrupt_queues,
     )
     .await;
 
@@ -1343,6 +1373,7 @@ async fn remove_detached_source_if_unclaimed(
         .unwrap_or(false);
     if owns_source {
         sessions_guard.remove(old_session_id);
+        crate::session_env::remove_session_env(old_session_id);
     }
     owns_source
 }
@@ -1380,6 +1411,7 @@ async fn claim_live_target_agent(
     }
 
     let info = connections.get_mut(client_connection_id)?;
+    crate::session::clear_window_closed(session_id);
     info.session_id = session_id.to_string();
     info.client_instance_id = client_instance_id.map(str::to_string);
     info.last_seen = Instant::now();
@@ -1447,6 +1479,11 @@ pub(super) async fn handle_resume_session(
             ("allow_takeover", allow_session_takeover.to_string()),
         ],
     );
+    // Serialize the check as well as restoration: a waiter must re-check the
+    // published target instead of restoring a second runtime into its source.
+    // Never hold a sessions/connections/agent guard while acquiring this gate.
+    let resume_lock = resume_target_lock(sessions, &session_id);
+    let resume_guard = resume_lock.lock().await;
     let live_target_agent = claim_live_target_agent(
         &session_id,
         client_connection_id,
@@ -1458,6 +1495,7 @@ pub(super) async fn handle_resume_session(
     .await;
 
     if let Some(live_target_agent) = live_target_agent.as_ref() {
+        drop(resume_guard);
         let old_session_id = client_session_id.clone();
 
         let conflicting_live_client = {
@@ -1808,17 +1846,38 @@ pub(super) async fn handle_resume_session(
     }
 
     let restored_ms = resume_start.elapsed().as_millis();
-    // Persist the restore (status, env snapshot) off the History critical
-    // path, but never skip it: it runs once History is sent or on any error.
-    let persist_restored = || async {
+    // On restore failure this agent has not been published as the target yet.
+    if result.is_err() {
         let mut agent_guard = agent.lock().await;
         super::run_blocking_io(|| agent_guard.persist_restored_session());
-    };
-    if result.is_err() {
-        persist_restored().await;
     }
     match result {
         Ok(_prev_status) => {
+            // Snapshot everything needed by the remainder of attachment before
+            // publishing this agent. Recovery/background work can start a turn
+            // as soon as it is registered and hold its mutex for minutes. The
+            // socket reader must not wait for that turn after sending History.
+            let (model_changed, mcp_working_dir) = {
+                let guard = agent.lock().await;
+                (
+                    ServerEvent::ModelChanged {
+                        id,
+                        model: guard.provider_model(),
+                        provider_name: Some(guard.provider_name()),
+                        context_window: Some(guard.provider_context_window() as u64),
+                        error: None,
+                        resolved_credential: guard.active_resolved_credential(),
+                        provider_oauth_email: super::provider_oauth_email(
+                            guard.provider_handle().as_ref(),
+                        ),
+                        reasoning_effort: guard.provider_reasoning_effort(),
+                        provider_oauth_account_label: guard
+                            .provider_handle()
+                            .serving_oauth_account_label(),
+                    },
+                    guard.working_dir().map(PathBuf::from),
+                )
+            };
             let old_session_id = client_session_id.clone();
             *client_session_id = session_id.clone();
             let attach_start = Instant::now();
@@ -1832,6 +1891,11 @@ pub(super) async fn handle_resume_session(
             {
                 let mut sessions_guard = sessions.write().await;
                 sessions_guard.remove(&old_session_id);
+                if old_session_id != session_id {
+                    // Attaching existing history must not copy credentials from
+                    // the temporary source into the target session.
+                    crate::session_env::remove_session_env(&old_session_id);
+                }
                 sessions_guard.insert(session_id.clone(), Arc::clone(agent));
             }
             lap("sessions");
@@ -1850,6 +1914,7 @@ pub(super) async fn handle_resume_session(
             {
                 let mut connections = client_connections.write().await;
                 if let Some(info) = connections.get_mut(client_connection_id) {
+                    crate::session::clear_window_closed(&session_id);
                     info.session_id = session_id.clone();
                     info.client_instance_id = incoming_client_instance_id.clone();
                     info.last_seen = Instant::now();
@@ -1961,26 +2026,12 @@ pub(super) async fn handle_resume_session(
             .await;
             lap("event_sender");
 
-            // Captured before the history call, which takes the agent, so the restored
-            // route can still be reported to a client that has never been told.
-            let (
-                resumed_model,
-                resumed_provider_name,
-                resumed_context_window,
-                resumed_credential,
-                resumed_reasoning_effort,
-                resumed_oauth_account_label,
-            ) = {
-                let guard = agent.lock().await;
-                (
-                    guard.provider_model(),
-                    guard.provider_name(),
-                    guard.provider_context_window(),
-                    guard.active_resolved_credential(),
-                    guard.provider_reasoning_effort(),
-                    guard.provider_handle().serving_oauth_account_label(),
-                )
-            };
+            // The runtime and attachment bookkeeping are now published. Do not
+            // serialize history I/O, MCP discovery, or a recovery provider turn.
+            drop(resume_guard);
+
+            // Route metadata was captured before the restored agent became
+            // available to recovery workers.
 
             lap("agent_route");
             let attach_ms = attach_start.elapsed().as_millis();
@@ -2012,7 +2063,13 @@ pub(super) async fn handle_resume_session(
                 history_base,
             )
             .await;
-            persist_restored().await;
+            // Persist even if history delivery failed, but do not make inbound
+            // controls wait for a recovery turn that already owns the agent.
+            let persist_agent = Arc::clone(agent);
+            crate::runtime_activity::spawn(async move {
+                let mut guard = persist_agent.lock().await;
+                super::run_blocking_io(|| guard.persist_restored_session());
+            });
             history_result?;
             let history_sent_ms = resume_start.elapsed().as_millis();
             let _ = client_event_tx.send(ServerEvent::Done { id });
@@ -2030,6 +2087,8 @@ pub(super) async fn handle_resume_session(
                     plans: Arc::clone(swarm_plans),
                     coordinators: Arc::clone(swarm_coordinators),
                 },
+                sessions,
+                soft_interrupt_queues,
             )
             .await;
             // Report the restored route for the same reason: a resuming client
@@ -2037,25 +2096,9 @@ pub(super) async fn handle_resume_session(
             // from its own inert provider and fall back to the generic 200K
             // default. Measured: a route whose catalog entry carries 1000000
             // displayed 200000 after every resume.
-            let _ = client_event_tx.send(ServerEvent::ModelChanged {
-                id,
-                model: resumed_model,
-                provider_name: Some(resumed_provider_name),
-                context_window: Some(resumed_context_window as u64),
-                error: None,
-                resolved_credential: resumed_credential,
-                provider_oauth_email: super::provider_oauth_email(
-                    agent.lock().await.provider_handle().as_ref(),
-                ),
-                reasoning_effort: resumed_reasoning_effort,
-                provider_oauth_account_label: resumed_oauth_account_label,
-            });
+            let _ = client_event_tx.send(model_changed);
             // Resolve project-local MCP config against the restored session's
-            // working dir, not the server process cwd (issue #420).
-            let mcp_working_dir = {
-                let agent_guard = agent.lock().await;
-                agent_guard.working_dir().map(PathBuf::from)
-            };
+            // working dir captured before publication (issue #420).
             registry
                 .register_mcp_tools_for_dir(
                     Some(client_event_tx.clone()),

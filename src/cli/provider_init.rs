@@ -123,7 +123,7 @@ pub enum ProviderChoice {
     Cerebras,
     #[value(alias = "belvedir.ai", alias = "belvedir-ai")]
     Belvedir,
-    #[value(alias = "venice-ai", alias = "venice.ai")]
+    #[value(alias = "venice-ai", alias = "veniceai", alias = "venice.ai")]
     Venice,
     #[value(alias = "orca-router")]
     Orcarouter,

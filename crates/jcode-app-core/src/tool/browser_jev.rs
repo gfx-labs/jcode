@@ -33,6 +33,11 @@ impl JevTransport {
     }
 }
 
+#[cfg(test)]
+fn request_body(request: &DecisionRequest) -> Result<Value> {
+    request_body_for_model(request, &crate::jev::browser_jev_model_label())
+}
+
 fn request_body_for_model(request: &DecisionRequest, model: &str) -> Result<Value> {
     ensure!(
         !request.goal.trim().is_empty(),

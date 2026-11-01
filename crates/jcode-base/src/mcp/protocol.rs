@@ -277,32 +277,64 @@ pub struct McpConfiguredServer {
 impl McpServerConfig {
     /// Upstream remote transport selection, including legacy SSE.
     pub fn remote_transport(&self) -> Option<RemoteTransport> {
-        match self.transport.as_deref().map(str::trim).unwrap_or("").to_ascii_lowercase().as_str() {
-            "http" | "streamable-http" | "streamable_http" | "streamablehttp" => Some(RemoteTransport::StreamableHttp),
+        match self
+            .transport
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "http" | "streamable-http" | "streamable_http" | "streamablehttp" => {
+                Some(RemoteTransport::StreamableHttp)
+            }
             "sse" => Some(RemoteTransport::LegacySse),
-            "" if self.command.trim().is_empty() && self.url.as_deref().is_some_and(|u| !u.trim().is_empty()) => Some(RemoteTransport::StreamableHttp),
+            "" if self.command.trim().is_empty()
+                && self.url.as_deref().is_some_and(|u| !u.trim().is_empty()) =>
+            {
+                Some(RemoteTransport::StreamableHttp)
+            }
             _ => None,
         }
     }
 
-    pub fn is_remote(&self) -> bool { self.remote_transport().is_some() }
+    pub fn is_remote(&self) -> bool {
+        self.remote_transport().is_some()
+    }
 
     pub fn display_target(&self) -> String {
         if let Some(kind) = self.remote_transport() {
-            let target = self.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()).and_then(|mut url| {
-                if url.set_username("").is_err() || url.set_password(None).is_err() { return None; }
-                url.set_query(None);
-                url.set_fragment(None);
-                Some(url.to_string())
-            });
-            format!("{} {}", kind.label(), target.as_deref().unwrap_or("[invalid URL]"))
-        } else { format!("{} {:?}", self.command, self.args) }
+            let target = self
+                .url
+                .as_deref()
+                .and_then(|raw| url::Url::parse(raw).ok())
+                .and_then(|mut url| {
+                    if url.set_username("").is_err() || url.set_password(None).is_err() {
+                        return None;
+                    }
+                    url.set_query(None);
+                    url.set_fragment(None);
+                    Some(url.to_string())
+                });
+            format!(
+                "{} {}",
+                kind.label(),
+                target.as_deref().unwrap_or("[invalid URL]")
+            )
+        } else {
+            format!("{} {:?}", self.command, self.args)
+        }
     }
 
     /// A config entry is stdio when it has a command and is not explicitly a
     /// remote (http/sse) transport.
     pub fn is_stdio(&self) -> bool {
-        self.remote_transport().is_none() && self.transport.as_deref().is_none_or(|kind| kind.trim().is_empty() || kind.eq_ignore_ascii_case("stdio")) && !self.command.trim().is_empty()
+        self.remote_transport().is_none()
+            && self
+                .transport
+                .as_deref()
+                .is_none_or(|kind| kind.trim().is_empty() || kind.eq_ignore_ascii_case("stdio"))
+            && !self.command.trim().is_empty()
     }
 
     fn is_remote_transport(&self) -> bool {
@@ -333,7 +365,8 @@ impl McpServerConfig {
 
     /// Whether jcode can connect to this entry (stdio or native HTTP).
     pub fn is_runnable(&self) -> bool {
-        self.is_stdio() || (self.is_remote() && self.url.as_deref().is_some_and(|u| !u.trim().is_empty()))
+        self.is_stdio()
+            || (self.is_remote() && self.url.as_deref().is_some_and(|u| !u.trim().is_empty()))
     }
 
     /// Transport label for display.
@@ -857,8 +890,7 @@ impl McpConfig {
             if !keep {
                 crate::logging::info(&format!(
                     "MCP: Skipping server '{}': {}",
-                    name,
-                    "no command or url configured"
+                    name, "no command or url configured"
                 ));
             }
             keep

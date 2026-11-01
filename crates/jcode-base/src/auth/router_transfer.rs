@@ -362,6 +362,13 @@ fn merge_pool(source: &str, destination: Option<&str>) -> Result<String, RouterT
             merged.excluded.push(excluded);
         }
     }
+    for (key, priority) in destination.priorities {
+        // Source-owned accounts use the source override (or its automatic
+        // default). Only preserve overrides for accounts local to destination.
+        if !source.members.contains(&key) && !source.excluded.contains(&key) {
+            merged.priorities.entry(key).or_insert(priority);
+        }
+    }
     serde_json::to_string_pretty(&merged).map_err(|_| RouterTransferError::Malformed)
 }
 
@@ -433,7 +440,32 @@ pub fn import_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn pool_merge_keeps_destination_only_priorities_and_source_auto_resets() {
+        let merged = merge_pool(
+            r#"{"members":["openai:personal","openai:work"],"excluded":["antigravity"],"priorities":{"openai:work":1}}"#,
+            Some(r#"{"members":["cloud-only","openai:personal","openai:work"],"priorities":{"cloud-only":4,"openai:personal":9,"openai:work":0,"antigravity":0}}"#),
+        ).unwrap();
+        let pool: AccountPool = serde_json::from_str(&merged).unwrap();
+        assert_eq!(pool.priorities.get("cloud-only"), Some(&4));
+        assert_eq!(pool.priorities.get("openai:work"), Some(&1));
+        assert!(!pool.priorities.contains_key("openai:personal"));
+        assert!(!pool.priorities.contains_key("antigravity"));
+        assert!(pool.excluded.contains(&"antigravity".to_owned()));
+    }
+
+    #[cfg(unix)]
+    fn assert_mode(path: &std::path::Path, want: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            want
+        );
+    }
+
+    #[cfg(not(unix))]
+    fn assert_mode(_path: &std::path::Path, _want: u32) {}
 
     const SECRET: &str = "synthetic-router-key-not-real";
 
@@ -515,14 +547,8 @@ mod tests {
             std::fs::read_to_string(&env).unwrap(),
             format!("OPENAI_API_KEY={SECRET}\n")
         );
-        assert_eq!(
-            std::fs::metadata(&env).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            std::fs::metadata(&dst_config).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+        assert_mode(&env, 0o600);
+        assert_mode(&dst_config, 0o700);
         assert!(dst_config.join("groq.env").exists());
         assert!(!dst_config.join("unlisted.env").exists());
         assert!(!dst_config.join("config.toml").exists());
@@ -614,10 +640,7 @@ x = 1
         assert!(
             merged.contains("openai-oauth") && merged.contains("theme") && !merged.contains("leak")
         );
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        assert_mode(&path, 0o600);
     }
 
     #[test]
@@ -632,10 +655,13 @@ x = 1
             {"root":"jcode","name":"config.toml","data":hex::encode("x")}]});
         assert!(import_at(&home, &config, other.to_string().as_bytes()).is_err());
 
-        std::os::unix::fs::symlink("/dev/null", config.join("openai.env")).unwrap();
-        let ok = serde_json::json!({"version":1,"files":[
-            {"root":"config","name":"openai.env","data":hex::encode("A=1")}]});
-        assert!(import_at(&home, &config, ok.to_string().as_bytes()).is_err());
-        assert!(export_at(&home, &config, &env_file_names([])).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/dev/null", config.join("openai.env")).unwrap();
+            let ok = serde_json::json!({"version":1,"files":[
+                {"root":"config","name":"openai.env","data":hex::encode("A=1")}]});
+            assert!(import_at(&home, &config, ok.to_string().as_bytes()).is_err());
+            assert!(export_at(&home, &config, &env_file_names([])).is_err());
+        }
     }
 }

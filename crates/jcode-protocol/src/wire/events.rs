@@ -68,6 +68,37 @@ mod account_usage_tests {
     reason = "wire protocol prioritizes straightforward serde payloads over boxing every larger event variant"
 )]
 pub enum ServerEvent {
+    /// Read-only inventory of live sessions for mobile clients.
+    #[serde(rename = "sessions_list")]
+    SessionsList {
+        id: u64,
+        sessions: Vec<LiveSessionInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_name: Option<String>,
+    },
+    /// Result of submitting an owner message from a mobile client.
+    #[serde(rename = "mobile_delivery")]
+    MobileDelivery {
+        id: u64,
+        session_id: String,
+        status: String,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
+    /// Credential-free provider quota snapshot for mobile clients.
+    #[serde(rename = "mobile_usage")]
+    MobileUsage {
+        id: u64,
+        scope: String,
+        providers: Vec<MobileProviderUsage>,
+        error: Option<String>,
+        fetched_at_unix_secs: u64,
+        from_cache: bool,
+    },
+    /// Serialized todo card snapshot containing todos, plan, and goals.
+    #[serde(rename = "todos")]
+    Todos { session_id: String, payload: String },
     #[serde(rename = "account_usage")]
     AccountUsage {
         id: u64,
@@ -216,6 +247,9 @@ pub enum ServerEvent {
         cache_read_input: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_creation_input: Option<u64>,
+        /// Authoritative session context budget after applying its override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effective_budget: Option<usize>,
     },
 
     /// Prompt-shape signature for the API request that will later report token
@@ -725,6 +759,16 @@ pub enum ServerEvent {
         /// Output from the step (stdout/stderr)
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
+    },
+
+    /// Session context cap changed, including the authoritative budget.
+    #[serde(rename = "context_cap_changed")]
+    ContextCapChanged {
+        id: u64,
+        session_id: String,
+        /// Normalized override, null when cleared.
+        max_context_tokens: Option<usize>,
+        effective_budget: usize,
     },
 
     /// Model changed (response to cycle_model)

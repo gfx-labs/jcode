@@ -176,6 +176,10 @@ pub(super) async fn create_headless_session(
 
     new_agent.set_debug(true);
 
+    if let Some(parent_id) = report_back_to_session_id.as_deref() {
+        crate::session_env::inherit_session_env(parent_id, &client_session_id);
+    }
+
     if selfdev_requested {
         new_agent.set_canary("self-dev");
     }
@@ -283,6 +287,7 @@ pub(super) async fn create_headless_session(
                     effort,
                     elapsed_secs: Some(0),
                     activity_age_secs: None,
+                    ..Default::default()
                 },
             },
         );

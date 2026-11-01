@@ -82,21 +82,17 @@ fn detect_multiplexer_from_env() -> Multiplexer {
 
 /// Adjust a detected protocol for multiplexer limitations.
 ///
-/// ratatui-image renders Kitty graphics exclusively through Unicode
-/// placeholders (`U=1` virtual placements). Zellij implements the Kitty
-/// graphics protocol but rejects `U=1` with `ENOTSUPPORTED`, so the image
-/// never appears and the reserved area renders blank. `KITTY_WINDOW_ID` leaks
-/// into Zellij panes from an outer kitty, and the stdio probe succeeds because
-/// Zellij answers Kitty queries, so both detection paths would pick Kitty.
-/// Fall back to halfblocks (Mermaid then shows its source) unless the user
-/// opts in with `JCODE_ZELLIJ_KITTY_IMAGES=1`, for Zellij builds that add
-/// placeholder support.
+/// Zellij supports classic Kitty placements, not Unicode placeholders. Our
+/// custom renderer handles that distinction, so Kitty need not be downgraded
+/// unless explicitly disabled for an older Zellij build or configuration.
 pub(super) fn adjust_protocol_for_multiplexer(
     protocol: ProtocolType,
     multiplexer: Multiplexer,
-    zellij_kitty_opt_in: bool,
+    zellij_kitty_enabled: bool,
 ) -> ProtocolType {
-    if protocol == ProtocolType::Kitty && multiplexer == Multiplexer::Zellij && !zellij_kitty_opt_in
+    if protocol == ProtocolType::Kitty
+        && multiplexer == Multiplexer::Zellij
+        && !zellij_kitty_enabled
     {
         ProtocolType::Halfblocks
     } else {
@@ -104,21 +100,47 @@ pub(super) fn adjust_protocol_for_multiplexer(
     }
 }
 
-fn zellij_kitty_images_opt_in() -> bool {
+fn zellij_kitty_images_enabled() -> bool {
     std::env::var("JCODE_ZELLIJ_KITTY_IMAGES")
         .ok()
         .as_deref()
         .and_then(parse_env_bool)
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+pub(super) fn use_classic_kitty() -> bool {
+    #[cfg(test)]
+    {
+        TEST_CLASSIC_KITTY.with(|value| value.get())
+    }
+    #[cfg(not(test))]
+    {
+        detect_multiplexer_from_env() == Multiplexer::Zellij
+    }
+}
+
+#[cfg(test)]
+thread_local! { static TEST_CLASSIC_KITTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+pub(super) fn with_classic_kitty_for_test<T>(f: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_CLASSIC_KITTY.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_CLASSIC_KITTY.with(|value| value.replace(true)));
+    f()
 }
 
 fn apply_multiplexer_protocol_limits(picker: &mut Picker, multiplexer: Multiplexer) {
     let current = picker.protocol_type();
     let adjusted =
-        adjust_protocol_for_multiplexer(current, multiplexer, zellij_kitty_images_opt_in());
+        adjust_protocol_for_multiplexer(current, multiplexer, zellij_kitty_images_enabled());
     if adjusted != current {
         crate::log_info(&format!(
-            "Image protocol {:?} unusable inside {} (no Kitty unicode placeholder support); using {:?}. Set JCODE_ZELLIJ_KITTY_IMAGES=1 to override",
+            "Image protocol {:?} disabled inside {}; using {:?}. Unset JCODE_ZELLIJ_KITTY_IMAGES to use classic Kitty placements",
             current,
             multiplexer.label(),
             adjusted
@@ -193,18 +215,21 @@ fn parse_env_bool(raw: &str) -> Option<bool> {
 /// * `probe_override` is the parsed value of `JCODE_MERMAID_PICKER_PROBE`
 ///   (`Some(true)`/`Some(false)` when set explicitly, `None` otherwise) and
 ///   always wins so users can force either behavior.
-/// * When the override is absent, startup stays on the environment-based fast
-///   path. The upstream stdio probe can block for two seconds when a terminal
-///   does not answer, which made an optional image capability dominate the TUI
-///   critical path. Users behind multiplexers that hide the outer terminal can
-///   still opt into the authoritative probe with
-///   `JCODE_MERMAID_PICKER_PROBE=1`.
+/// * Without an override, Orca is probed automatically outside multiplexers:
+///   it answers capability queries, including when inline images are disabled,
+///   so the probe respects that setting. Other terminals keep the fast path because
+///   the upstream stdio probe can block for two seconds if they do not answer.
+///   Multiplexer users can opt into the probe with `JCODE_MERMAID_PICKER_PROBE=1`.
 pub(super) fn decide_picker_init_mode(
     probe_override: Option<bool>,
     _env_protocol: Option<ProtocolType>,
-    _multiplexer: Multiplexer,
+    multiplexer: Multiplexer,
+    term_program: Option<&str>,
 ) -> PickerInitMode {
-    if probe_override == Some(true) {
+    if probe_override.unwrap_or(
+        multiplexer == Multiplexer::None
+            && term_program.is_some_and(|program| program.eq_ignore_ascii_case("Orca")),
+    ) {
         PickerInitMode::Probe
     } else {
         PickerInitMode::Fast
@@ -414,10 +439,10 @@ pub(crate) fn prewarm_svg_font_db_async() {
 }
 
 /// Initialize the global picker.
-/// By default jcode uses environment-based detection and never blocks startup
-/// on terminal capability responses. Set JCODE_MERMAID_PICKER_PROBE=1 to run an
-/// authoritative stdio probe when a multiplexer masks the outer terminal, or
-/// =0 to explicitly retain the fast path. Cache eviction runs once before image
+/// By default jcode probes Orca automatically outside multiplexers and uses
+/// environment-based detection elsewhere to avoid waiting on capability responses.
+/// Set JCODE_MERMAID_PICKER_PROBE=1 to force the authoritative stdio probe, or
+/// =0 to retain the fast path even in Orca. Cache eviction runs once before image
 /// rendering can begin so it cannot delete a file between materialization and
 /// in-memory cache registration.
 pub fn init_picker() {
@@ -433,7 +458,12 @@ pub fn init_picker() {
             .ok()
             .as_deref()
             .and_then(parse_env_bool);
-        let mode = decide_picker_init_mode(probe_override, env_protocol, multiplexer);
+        let mode = decide_picker_init_mode(
+            probe_override,
+            env_protocol,
+            multiplexer,
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+        );
         crate::log_info(&format!(
             "Mermaid picker init: mode={:?} multiplexer={} env_protocol={:?} probe_override={:?}",
             mode,
@@ -942,9 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn zellij_downgrades_kitty_placeholders_unless_opted_in() {
-        // Zellij rejects U=1 virtual placements, the only Kitty mode
-        // ratatui-image uses, so Kitty would render blank there.
+    fn zellij_preserves_classic_kitty_unless_explicitly_disabled() {
         assert_eq!(
             adjust_protocol_for_multiplexer(ProtocolType::Kitty, Multiplexer::Zellij, false),
             ProtocolType::Halfblocks
@@ -970,33 +998,99 @@ mod tests {
     fn decide_mode_respects_explicit_override() {
         // Force-on always probes, even when env already detected a protocol.
         assert_eq!(
-            decide_picker_init_mode(Some(true), Some(ProtocolType::Kitty), Multiplexer::None),
+            decide_picker_init_mode(
+                Some(true),
+                Some(ProtocolType::Kitty),
+                Multiplexer::None,
+                None
+            ),
             PickerInitMode::Probe
         );
         // Force-off never probes, even on an env miss inside a multiplexer.
         assert_eq!(
-            decide_picker_init_mode(Some(false), None, Multiplexer::Herdr),
+            decide_picker_init_mode(Some(false), None, Multiplexer::Herdr, None),
             PickerInitMode::Fast
         );
+        for term_program in [None, Some("Orca"), Some("kitty"), Some("xterm")] {
+            assert_eq!(
+                decide_picker_init_mode(Some(true), None, Multiplexer::None, term_program),
+                PickerInitMode::Probe,
+                "force-on for {term_program:?}"
+            );
+            assert_eq!(
+                decide_picker_init_mode(Some(false), None, Multiplexer::None, term_program),
+                PickerInitMode::Fast,
+                "force-off for {term_program:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_mode_probes_orca_case_insensitively() {
+        for term_program in ["Orca", "orca", "ORCA", "oRcA"] {
+            assert_eq!(
+                decide_picker_init_mode(None, None, Multiplexer::None, Some(term_program)),
+                PickerInitMode::Probe,
+                "{term_program}"
+            );
+        }
     }
 
     #[test]
     fn decide_mode_defaults_to_fast_path() {
         // Env already identified a graphics terminal: stay fast.
         assert_eq!(
-            decide_picker_init_mode(None, Some(ProtocolType::Kitty), Multiplexer::None),
+            decide_picker_init_mode(None, Some(ProtocolType::Kitty), Multiplexer::None, None),
             PickerInitMode::Fast
         );
         // An env miss must not turn an optional capability query into a
         // two-second startup stall. Multiplexer users can opt in explicitly.
         assert_eq!(
-            decide_picker_init_mode(None, None, Multiplexer::Herdr),
+            decide_picker_init_mode(None, None, Multiplexer::Herdr, None),
             PickerInitMode::Fast
         );
         assert_eq!(
-            decide_picker_init_mode(None, None, Multiplexer::None),
+            decide_picker_init_mode(None, None, Multiplexer::None, None),
             PickerInitMode::Fast
         );
+        for term_program in [
+            None,
+            Some(""),
+            Some("kitty"),
+            Some("ghostty"),
+            Some("WezTerm"),
+            Some("iTerm.app"),
+            Some("foot"),
+            Some("xterm"),
+            Some("Orca Nightly"),
+            Some("not-orca"),
+            Some(" Orca "),
+        ] {
+            assert_eq!(
+                decide_picker_init_mode(None, None, Multiplexer::None, term_program),
+                PickerInitMode::Fast,
+                "{term_program:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_mode_keeps_orca_multiplexers_fast_unless_forced() {
+        for multiplexer in [
+            Multiplexer::Tmux,
+            Multiplexer::Screen,
+            Multiplexer::Herdr,
+            Multiplexer::Zellij,
+        ] {
+            assert_eq!(
+                decide_picker_init_mode(None, None, multiplexer, Some("Orca")),
+                PickerInitMode::Fast
+            );
+            assert_eq!(
+                decide_picker_init_mode(Some(true), None, multiplexer, Some("Orca")),
+                PickerInitMode::Probe
+            );
+        }
     }
 
     #[test]

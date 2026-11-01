@@ -622,8 +622,12 @@ impl McpClient {
     pub async fn shutdown(&mut self) {
         match &mut self.backend {
             Backend::Stdio(child) => {
-                let Some(child) = child.as_mut() else { return; };
-                if let Some(pid) = child.id() { untrack_child(pid); }
+                let Some(child) = child.as_mut() else {
+                    return;
+                };
+                if let Some(pid) = child.id() {
+                    untrack_child(pid);
+                }
                 let _ = self
                     .handle
                     .writer_tx
@@ -692,11 +696,17 @@ fn mcp_child_env(
 impl Drop for McpClient {
     fn drop(&mut self) {
         if let Backend::Stdio(slot) = &mut self.backend {
-            let Some(mut child) = slot.take() else { return; };
-            if let Some(pid) = child.id() { untrack_child(pid); }
+            let Some(mut child) = slot.take() else {
+                return;
+            };
+            if let Some(pid) = child.id() {
+                untrack_child(pid);
+            }
             let _ = child.start_kill();
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                runtime.spawn(async move { let _ = child.wait().await; });
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                });
             }
         }
     }

@@ -243,7 +243,10 @@ async fn oauth_dcr_pkce_callback_persistence_and_csrf() {
         }),
     )
     .await;
-    assert!(rejected.is_err(), "invalid callback must not complete login");
+    assert!(
+        rejected.is_err(),
+        "invalid callback must not complete login"
+    );
     assert_eq!(
         events
             .lock()
