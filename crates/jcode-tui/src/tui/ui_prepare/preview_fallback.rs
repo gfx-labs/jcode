@@ -14,6 +14,7 @@ pub(super) fn unavailable(width: u16) -> PreparedMessages {
         &[],
         &[],
         &[],
+        &[],
     )
 }
 

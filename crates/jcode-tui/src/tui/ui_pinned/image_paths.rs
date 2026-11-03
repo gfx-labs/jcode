@@ -1,24 +1,5 @@
 use super::*;
 
-pub(super) fn wrap_side_panel_markdown_lines(
-    lines: Vec<Line<'static>>,
-    width: usize,
-) -> Vec<Line<'static>> {
-    lines
-        .into_iter()
-        .flat_map(|line| {
-            if is_rendered_table_line(&line)
-                || mermaid::parse_image_placeholder(&line).is_some()
-                || mermaid::parse_inline_image_placeholder(&line).is_some()
-            {
-                vec![line]
-            } else {
-                markdown::wrap_line(line, width)
-            }
-        })
-        .collect()
-}
-
 pub(super) fn markdown_image_line_to_placeholder(
     page: &crate::side_panel::SidePanelPage,
     line: Line<'static>,

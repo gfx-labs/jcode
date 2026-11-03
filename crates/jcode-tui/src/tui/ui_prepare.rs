@@ -1272,6 +1272,7 @@ fn prepare_history_preview_bounded(
             &acc.edit_tool_line_ranges,
             &acc.copy_targets,
             &acc.segments,
+            &acc.link_spans,
         ))
     })
 }
@@ -1425,7 +1426,7 @@ fn render_message_into(
             let rendered = get_cached_message_render(
                 msg,
                 content_width,
-                app.diff_mode(),
+                diff_mode,
                 render_assistant_message_with_links,
             );
             acc.link_spans

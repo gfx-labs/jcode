@@ -651,6 +651,7 @@ fn jev_openrouter_config_roundtrips_without_debug_secret() {
     );
 }
 
+#[cfg(test)]
 mod cloud_config_tests {
     use super::*;
 

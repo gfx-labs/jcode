@@ -83,6 +83,7 @@ use selection_support::apply_side_selection_highlight;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SidePanelMarkdownKey {
+    compact_links: bool,
     page_id: String,
     content_signature: u64,
     inner_width: u16,
@@ -101,6 +102,7 @@ struct SidePanelMarkdownCacheState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SidePanelRenderKey {
+    compact_links: bool,
     page_id: String,
     content_signature: u64,
     inner_width: u16,
@@ -122,6 +124,7 @@ struct SidePanelRenderCacheState {
 #[test]
 fn side_panel_cache_keys_include_link_url_visibility() {
     let markdown_key = SidePanelMarkdownKey {
+        compact_links: false,
         page_id: "links".into(),
         content_signature: 1,
         inner_width: 40,
@@ -138,6 +141,7 @@ fn side_panel_cache_keys_include_link_url_visibility() {
     assert_ne!(markdown_key, expanded_markdown_key);
 
     let render_key = SidePanelRenderKey {
+        compact_links: markdown_key.compact_links,
         page_id: markdown_key.page_id,
         content_signature: markdown_key.content_signature,
         inner_width: markdown_key.inner_width,
@@ -172,6 +176,7 @@ struct SidePanelDebugState {
 
 #[derive(Clone)]
 struct RenderedSidePanelMarkdown {
+    link_spans: Vec<markdown::LinkSpan>,
     rendered_markdown: Vec<Line<'static>>,
     placeholder_hashes: Vec<Option<u64>>,
     has_following_content_after: Vec<bool>,
@@ -179,6 +184,7 @@ struct RenderedSidePanelMarkdown {
 
 #[derive(Clone)]
 struct RenderedSidePanelCache {
+    link_spans: Arc<Vec<markdown::LinkSpan>>,
     lines: Vec<Line<'static>>,
     wrapped_plain_lines: std::sync::Arc<Vec<String>>,
     wrapped_copy_offsets: std::sync::Arc<Vec<usize>>,
@@ -227,12 +233,24 @@ fn estimate_side_panel_rendered_cache_bytes(cache: &RenderedSidePanelCache) -> u
         + estimate_arc_wrapped_line_map_bytes(&cache.wrapped_line_map)
         + cache.left_margins.capacity() * std::mem::size_of::<u16>()
         + cache.image_placements.capacity() * std::mem::size_of::<SidePanelImagePlacement>()
+        + cache.link_spans.capacity() * std::mem::size_of::<markdown::LinkSpan>()
+        + cache
+            .link_spans
+            .iter()
+            .map(|link| link.target.len())
+            .sum::<usize>()
 }
 
 fn estimate_rendered_side_panel_markdown_bytes(value: &RenderedSidePanelMarkdown) -> usize {
     estimate_lines_bytes(&value.rendered_markdown)
         + value.placeholder_hashes.capacity() * std::mem::size_of::<Option<u64>>()
         + value.has_following_content_after.capacity() * std::mem::size_of::<bool>()
+        + value.link_spans.capacity() * std::mem::size_of::<markdown::LinkSpan>()
+        + value
+            .link_spans
+            .iter()
+            .map(|link| link.target.len())
+            .sum::<usize>()
 }
 
 fn estimate_side_panel_markdown_key_bytes(key: &SidePanelMarkdownKey) -> usize {
@@ -725,6 +743,7 @@ pub(super) fn draw_side_panel_markdown(
         visible_end,
         content_inner,
         visible_left_margins,
+        rendered.link_spans.clone(),
     );
     apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
     super::clear_area(frame, content_inner);
@@ -985,6 +1004,7 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
         side_panel_mermaid_preferred_aspect_ratio(page, mermaid_profile_area, has_protocol);
     let mermaid_aspect_bucket = mermaid::preferred_aspect_ratio_bucket(mermaid_aspect_ratio);
     let key = SidePanelRenderKey {
+        compact_links: crate::config::config().display.compact_links,
         page_id: page.id.clone(),
         content_signature,
         inner_width: inner.width,
@@ -1030,6 +1050,7 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
         Alignment::Left
     };
     let mut text_lines: Vec<Line<'static>> = Vec::new();
+    let mut link_spans = Vec::new();
     let mut image_placements: Vec<SidePanelImagePlacement> = Vec::new();
 
     for (idx, line) in rendered_markdown.rendered_markdown.iter().enumerate() {
@@ -1066,14 +1087,28 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
             }
             continue;
         }
+        link_spans.extend(
+            rendered_markdown
+                .link_spans
+                .iter()
+                .filter(|link| link.line == idx)
+                .cloned()
+                .map(|mut link| {
+                    link.line = text_lines.len();
+                    link
+                }),
+        );
         text_lines.push(align_if_unset(line.clone(), align));
     }
 
     if centered {
-        crate::tui::markdown::recenter_structured_blocks_for_display(
-            &mut text_lines,
-            inner.width as usize,
-        );
+        let mut rendered = markdown::RenderedMarkdown {
+            lines: text_lines,
+            links: link_spans,
+        };
+        markdown::recenter_markdown(&mut rendered, inner.width as usize);
+        text_lines = rendered.lines;
+        link_spans = rendered.links;
     }
 
     if text_lines.is_empty() {
@@ -1096,6 +1131,7 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
     ) = build_side_pane_snapshot_cache(&text_lines, inner.width);
 
     let rendered = RenderedSidePanelCache {
+        link_spans: Arc::new(link_spans),
         lines: text_lines,
         wrapped_plain_lines,
         wrapped_copy_offsets,
@@ -1130,6 +1166,7 @@ fn render_side_panel_markdown_lines_cached(
     mermaid_aspect_bucket: Option<u16>,
 ) -> RenderedSidePanelMarkdown {
     let key = SidePanelMarkdownKey {
+        compact_links: crate::config::config().display.compact_links,
         page_id: page.id.clone(),
         content_signature,
         inner_width,
@@ -1162,21 +1199,47 @@ fn render_side_panel_markdown_lines_cached(
     // Pin the diagram mode for this render only (thread-local scope): the
     // side panel always renders diagrams inline. Using the process-global
     // override here would race concurrent renders/tests that read or set it.
-    let rendered_lines =
+    let rendered =
         markdown::with_diagram_mode_scope(crate::config::DiagramDisplayMode::None, || {
             mermaid::with_preferred_aspect_ratio(mermaid_aspect_ratio, || {
-                markdown::render_markdown_with_width(&page.content, Some(inner_width as usize))
+                markdown::render_markdown_with_links(&page.content, Some(inner_width as usize))
             })
         });
     let rendered_lines = if has_protocol {
-        rendered_lines
+        rendered
+            .lines
             .into_iter()
             .map(|line| markdown_image_line_to_placeholder(page, line).unwrap_or_else(|line| line))
             .collect()
     } else {
-        rendered_lines
+        rendered.lines
     };
-    let lines = wrap_side_panel_markdown_lines(rendered_lines, inner_width as usize);
+    let mut lines = Vec::new();
+    let mut link_spans = Vec::new();
+    for (idx, line) in rendered_lines.into_iter().enumerate() {
+        let line_links: Vec<_> = rendered
+            .links
+            .iter()
+            .filter(|link| link.line == idx)
+            .cloned()
+            .collect();
+        let wrapped = if is_rendered_table_line(&line)
+            || mermaid::parse_image_placeholder(&line).is_some()
+            || mermaid::parse_inline_image_placeholder(&line).is_some()
+        {
+            markdown::RenderedMarkdown {
+                lines: vec![line],
+                links: line_links,
+            }
+        } else {
+            markdown::wrap_line_with_links(line, inner_width as usize, &line_links)
+        };
+        link_spans.extend(wrapped.links.into_iter().map(|mut link| {
+            link.line += lines.len();
+            link
+        }));
+        lines.extend(wrapped.lines);
+    }
     markdown::set_center_code_blocks(saved_centered);
 
     let placeholder_hashes: Vec<Option<u64>> = if has_protocol {
@@ -1204,6 +1267,7 @@ fn render_side_panel_markdown_lines_cached(
     }
 
     let rendered = RenderedSidePanelMarkdown {
+        link_spans,
         rendered_markdown: lines,
         placeholder_hashes,
         has_following_content_after,
@@ -1226,7 +1290,6 @@ fn render_side_panel_markdown_lines_cached(
 #[path = "ui_pinned/image_paths.rs"]
 mod image_paths;
 use image_paths::markdown_image_line_to_placeholder;
-use image_paths::wrap_side_panel_markdown_lines;
 
 #[cfg(test)]
 #[path = "ui_pinned_tests.rs"]

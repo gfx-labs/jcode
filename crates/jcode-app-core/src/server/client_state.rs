@@ -407,6 +407,8 @@ pub(super) async fn handle_get_model_catalog(
     provider: &Arc<dyn Provider>,
     writer: &Arc<Mutex<WriteHalf>>,
 ) -> Result<()> {
+    let live_provider = Agent::provider_handle_for_session(session_id);
+    let provider = live_provider.as_ref().unwrap_or(provider);
     let started = Instant::now();
     // Catalog discovery is ancillary to this attachment. A refresh racing the
     // build (or a failed blocking worker) must not close the transport and
@@ -742,6 +744,8 @@ async fn send_history_from_persisted_session(
     supports_turn_identity: bool,
     history_base: Option<crate::protocol::HistoryBase>,
 ) -> Result<()> {
+    let live_provider = Agent::provider_handle_for_session(session_id);
+    let provider = live_provider.as_ref().unwrap_or(provider);
     let loaded = super::run_blocking_io(|| {
         crate::session::Session::load_for_remote_startup(session_id)
             .or_else(|_| crate::session::Session::load_startup_stub(session_id))

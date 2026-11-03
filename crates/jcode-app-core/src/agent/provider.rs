@@ -89,6 +89,7 @@ impl Agent {
         Self::configured_spawn_openai_service_tier()
     }
 
+    #[cfg(test)]
     pub(crate) fn initialize_spawn_openai_service_tier(&mut self) -> Result<()> {
         self.initialize_spawn_openai_service_tier_with_override(None)
     }
