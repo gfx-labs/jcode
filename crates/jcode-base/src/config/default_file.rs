@@ -25,6 +25,11 @@ impl Config {
 # Environment variables override these settings.
 # Run `/config` in jcode to see current settings.
 
+[cloud]
+# Scoped local resource access after handoff, in seconds (default: 24 hours).
+# Set to 0 to disable. Disconnecting or switching sessions still revokes access.
+local_access_seconds = 86400
+
 [keybindings]
 # Scroll keys (vim-style by default)
 # Supports: ctrl, alt, shift modifiers + any key
@@ -203,6 +208,10 @@ reasoning_display = "full"
 # Show clickable Markdown labels without appending their URL. Toggle with /compact-links.
 # compact_links = false
 
+# Append destinations after Markdown link labels, e.g. label (https://example.com).
+# Link labels remain visible and styled when disabled (default: false).
+# show_link_urls = false
+
 # LaTeX rendering: "none" (show source), "unicode" (terminal text), or "image" (typeset PNG, default).
 # Image mode uses `latex` + `dvipng`, or `pdflatex` + `pdftocairo` as a fallback.
 # When neither toolchain is available, formulas fall back to Unicode.
@@ -260,6 +269,13 @@ prompt_entry_animation = true
 # subdirectories, and sibling git worktrees) when that project has sessions
 # (default: false). Resume is global by default. Press `s` to cycle filters.
 # resume_project_scope = false
+
+# Highlight just-closed sessions and put them first in Resume for this many
+# seconds (default: 30). Set 0 to disable. Uses the final client socket closing,
+# not the last message time. Reattaching clears it. Explicit detach/switch and
+# server reload are excluded. Applies to local native sessions, including a
+# disconnected SDK client, since the server cannot observe OS windows directly.
+# resume_recent_close_seconds = 30
 
 # Disable specific animation variants by name.
 # Examples: ["donut"] or ["donut", "orbit_rings"]
@@ -426,9 +442,14 @@ use_default_dirs = true
 max_bytes_per_dir = 262144
 
 [tools]
-# Seconds before automatic background handoff; zero hands off immediately.
-# Explicit background requests remain immediate; this is not a command timeout.
-auto_background_after_secs = 3
+# Opt into Jev browser handoff. Default off, direct browser actions still work.
+# Env override: JCODE_BROWSER_HANDOFF=1 to enable.
+browser_handoff = false
+# Automatically hand long-running tool calls to the background after this many
+# milliseconds. Default: 3000 (3 seconds). Set 0 to disable automatic handoff.
+# Applies to streaming, nonstreaming, and SDK calls. bg wait stays foreground.
+# This does not kill tools or change their own execution timeouts.
+auto_background_timeout_ms = 3000
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
 # acp keeps core coding tools plus batch for generic ACP clients.
@@ -898,14 +919,14 @@ desktop_notifications = true
 # jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
 
 # [sponsors] # Legacy config section name retained for compatibility.
-# Integration discovery (enabled by default; set enabled = false to opt out).
-# When enabled, the agent gains a `discover_tools` tool listing third-party
+# Integration discovery (disabled by default; set enabled = true to opt in).
+# When enabled, the agent gains an `integration_tools` tool listing third-party
 # developer tools from Jcode's hosted integration directory. These providers
 # have integrated with the agent to make setup and use seamless. Some providers
 # may share revenue with Jcode when a referred user becomes a customer, but
 # commercial relationships never influence recommendations.
 # See https://jcode.sh/discovery-tools
-# enabled = true
+# enabled = false
 # endpoint = "https://api.jcode.sh/v1/discovery"
 	"##;
 
@@ -943,6 +964,7 @@ mod tests {
         );
         assert_eq!(config.tools.mcp_tools, McpToolsMode::Auto);
         assert_eq!(config.tools.mcp_tools_token_threshold, 8_000);
+        assert_eq!(config.tools.auto_background_timeout_ms, 3_000);
         assert_eq!(config.session.hibernation_idle_secs, 1800);
         assert!(
             config.display.show_thinking,
@@ -953,21 +975,6 @@ mod tests {
             ReasoningDisplayMode::Full,
             "the shipped user config must keep the full reasoning trace visible"
         );
-    }
-
-    #[test]
-    fn automatic_background_duration_defaults_and_roundtrips() {
-        let legacy: Config = toml::from_str("").unwrap();
-        assert_eq!(legacy.tools.auto_background_after_secs, 3);
-        for seconds in [0, 15] {
-            let configured: Config = toml::from_str(&format!(
-                "[tools]\nauto_background_after_secs = {seconds}\n"
-            ))
-            .unwrap();
-            let encoded = toml::to_string(&configured).unwrap();
-            let restored: Config = toml::from_str(&encoded).unwrap();
-            assert_eq!(restored.tools.auto_background_after_secs, seconds);
-        }
     }
 
     #[test]

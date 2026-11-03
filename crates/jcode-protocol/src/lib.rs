@@ -353,7 +353,7 @@ pub type ReloadRecoverySnapshot = jcode_selfdev_types::ReloadRecoveryDirective;
 mod wire;
 pub use wire::{
     AccountUsageSnapshot, Request, ServerEvent, SessionListEntry, SessionToolConfig,
-    SessionToolDefinition,
+    SessionToolDefinition, TurnIdentity,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -811,6 +811,7 @@ impl Request {
             Request::RewindUndo { id } => *id,
             Request::Ping { id } | Request::ListSessions { id } => *id,
             Request::GetState { id } => *id,
+            Request::GetTodos { id } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
             Request::ClientDebugResponse { id, .. } => *id,

@@ -28,6 +28,8 @@ pub use types::{
 pub struct MarkdownConfigSnapshot {
     pub diagram_mode: DiagramDisplayMode,
     pub markdown_spacing: MarkdownSpacingMode,
+    /// Append link destinations after labels. Disabled by default.
+    pub show_link_urls: bool,
     pub mermaid_enabled: bool,
     pub latex_rendering: LatexRenderingMode,
     pub compact_links: bool,
@@ -38,6 +40,7 @@ impl Default for MarkdownConfigSnapshot {
         Self {
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
+            show_link_urls: false,
             mermaid_enabled: true,
             latex_rendering: LatexRenderingMode::default(),
             compact_links: false,
@@ -125,6 +128,12 @@ use context::{
     with_streaming_render_context,
 };
 
+/// Whether rendered output should append link destinations next to labels.
+/// `show_link_urls` opts in; `compact_links` always hides them.
+pub(crate) fn link_destinations_visible() -> bool {
+    config_snapshot().show_link_urls && !compact_links()
+}
+
 #[path = "markdown_latex_image.rs"]
 mod latex_image;
 #[path = "markdown_math_copy.rs"]
@@ -143,6 +152,10 @@ mod render_support;
 #[path = "markdown_streaming_copy.rs"]
 mod streaming_copy;
 pub use streaming_copy::extract_streaming_copy_targets;
+
+#[path = "markdown_link_target.rs"]
+mod link_target;
+pub use link_target::markdown_link_target;
 
 mod render_core_adapter;
 pub use render_core_adapter::{
@@ -1248,22 +1261,12 @@ pub fn debug_stats_json() -> Option<serde_json::Value> {
     serde_json::to_value(debug_stats()).ok()
 }
 
-/// Render markdown with optional width constraint for tables
-pub fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    wrap::wrap_line(line, width, repeated_gutter_prefix)
-}
-
-pub fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
-    wrap::wrap_lines(lines, width, repeated_gutter_prefix)
-}
-
-pub fn progress_bar(progress: f32, width: usize) -> String {
-    wrap::progress_bar(progress, width)
-}
-
-pub fn progress_line(label: &str, progress: f32, width: usize) -> Line<'static> {
-    wrap::progress_line(label, progress, width)
-}
+#[path = "display_helpers.rs"]
+mod display_helpers;
+pub use display_helpers::progress_bar;
+pub use display_helpers::progress_line;
+pub use display_helpers::wrap_line;
+pub use display_helpers::wrap_lines;
 
 #[cfg(test)]
 #[path = "markdown_tests/mod.rs"]

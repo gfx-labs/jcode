@@ -1001,9 +1001,8 @@ fn load_agents_md_files_from_dirs(
     // so distinct AGENTS.md and JCODE.md files are both included.
     if let Some(global_jcode_md) = global_jcode_md
         && !(same_canonical_path(&project_agents_md, global_jcode_md)
-            || global_agents_md.is_some_and(|agents_md| {
-                same_canonical_path(agents_md, global_jcode_md)
-            }))
+            || global_agents_md
+                .is_some_and(|agents_md| same_canonical_path(agents_md, global_jcode_md)))
         && let Some((content, size)) =
             load_file(global_jcode_md, "Global Jcode Instructions (~/JCODE.md)")
     {

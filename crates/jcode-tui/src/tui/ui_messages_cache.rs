@@ -49,6 +49,7 @@ where
             reasoning_display: crate::config::config().display.reasoning_display(),
             latex_rendering: crate::config::config().display.latex_rendering,
             compact_links: crate::config::config().display.compact_links,
+            show_link_urls: crate::config::config().display.show_link_urls,
         },
         render,
     )

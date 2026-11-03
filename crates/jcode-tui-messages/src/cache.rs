@@ -24,6 +24,7 @@ struct MessageCacheKey {
     transcript_expand_epoch: u64,
     latex_rendering: LatexRenderingMode,
     compact_links: bool,
+    show_link_urls: bool,
 }
 
 #[derive(Default)]
@@ -94,6 +95,7 @@ pub struct MessageCacheContext {
     pub reasoning_display: jcode_config_types::ReasoningDisplayMode,
     pub latex_rendering: LatexRenderingMode,
     pub compact_links: bool,
+    pub show_link_urls: bool,
 }
 
 pub fn left_pad_lines_for_centered_mode(lines: &mut [Line<'static>], width: u16) {
@@ -168,6 +170,7 @@ where
         transcript_expand_epoch: crate::transcript_expand_epoch(),
         latex_rendering: context.latex_rendering,
         compact_links: context.compact_links,
+        show_link_urls: context.show_link_urls,
     };
 
     let mut cache = match message_cache().lock() {
@@ -206,14 +209,21 @@ mod tests {
             transcript_expand_epoch: 0,
             latex_rendering: LatexRenderingMode::Image,
             compact_links: false,
+            show_link_urls: false,
         };
         let mut isolated_cache = MessageCacheState::default();
         isolated_cache.insert(key.clone(), vec![Line::from("image")].into());
         let unicode_key = MessageCacheKey {
             latex_rendering: LatexRenderingMode::Unicode,
+            show_link_urls: false,
             ..key.clone()
         };
         assert!(isolated_cache.get(&unicode_key).is_none());
+        let link_urls_key = MessageCacheKey {
+            show_link_urls: true,
+            ..key.clone()
+        };
+        assert!(isolated_cache.get(&link_urls_key).is_none());
         assert!(isolated_cache.get(&key).is_some());
         let weak = {
             let mut cache = message_cache().lock().unwrap();

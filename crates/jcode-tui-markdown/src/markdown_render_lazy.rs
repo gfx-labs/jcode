@@ -15,6 +15,31 @@ pub fn render_markdown_lazy_with_links(
     max_width: Option<usize>,
     visible_range: std::ops::Range<usize>,
 ) -> RenderedMarkdown {
+    render_markdown_lazy_with_link_destinations(
+        text,
+        max_width,
+        visible_range,
+        link_destinations_visible(),
+    )
+}
+
+#[cfg(test)]
+fn render_markdown_lazy_with_link_urls(
+    text: &str,
+    max_width: Option<usize>,
+    visible_range: std::ops::Range<usize>,
+    show_link_urls: bool,
+) -> Vec<Line<'static>> {
+    render_markdown_lazy_with_link_destinations(text, max_width, visible_range, show_link_urls)
+        .lines
+}
+
+fn render_markdown_lazy_with_link_destinations(
+    text: &str,
+    max_width: Option<usize>,
+    visible_range: std::ops::Range<usize>,
+    link_destinations: bool,
+) -> RenderedMarkdown {
     let text = jcode_render_core::normalize_latex_math(text);
     let text = escape_currency_dollars(&text);
     let text = preserve_line_oriented_softbreaks(&text);
@@ -47,7 +72,6 @@ pub fn render_markdown_lazy_with_links(
     let mut link_targets: Vec<String> = Vec::new();
     let mut link_starts = Vec::new();
     let mut links = Vec::new();
-    let compact_links = compact_links();
     let mut in_image = false;
     let mut image_url: Option<String> = None;
     let mut image_alt = String::new();
@@ -231,7 +255,7 @@ pub fn render_markdown_lazy_with_links(
                     && let Some(start) = link_starts.pop()
                 {
                     if in_table {
-                        if !compact_links && !url.is_empty() {
+                        if link_destinations && !url.is_empty() {
                             current_cell.push_str(&format!(" ({url})"));
                         }
                         table_links.push(TableLinkSpan {
@@ -241,7 +265,7 @@ pub fn render_markdown_lazy_with_links(
                             end_col: UnicodeWidthStr::width(current_cell.as_str()),
                             target: url.clone().into(),
                         });
-                    } else if !compact_links && !url.is_empty() {
+                    } else if link_destinations && !url.is_empty() {
                         current_spans.push(Span::styled(
                             format!(" ({})", url),
                             Style::default().fg(md_dim_color()),
@@ -1029,4 +1053,39 @@ pub fn render_markdown_lazy_with_links(
     }
 
     RenderedMarkdown { lines, links }
+}
+
+#[cfg(test)]
+mod link_url_tests {
+    use super::*;
+
+    #[test]
+    fn lazy_link_urls_are_opt_in_and_preserve_labels() {
+        let markdown = "[docs](https://example.com) and [empty]()";
+        for enabled in [false, true] {
+            let lines = render_markdown_lazy_with_link_urls(markdown, Some(120), 0..100, enabled);
+            let text = lines
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let expected = if enabled {
+                "docs (https://example.com) and empty"
+            } else {
+                "docs and empty"
+            };
+            assert_eq!(text.trim(), expected);
+            assert!(lines.iter().flat_map(|line| &line.spans).any(|span| {
+                span.content == "docs"
+                    && span.style.fg == Some(link_fg())
+                    && span.style.add_modifier.contains(Modifier::UNDERLINED)
+            }));
+        }
+        let default_lines = render_markdown_lazy(markdown, Some(120), 0..100);
+        assert!(
+            !default_lines
+                .iter()
+                .any(|line| line.to_string().contains("https://"))
+        );
+    }
 }

@@ -576,20 +576,15 @@ fn empty_remote_catalog_keeps_routes_when_provider_metadata_changes() {
     app.remote_provider_name = Some("OpenAI".to_string());
     app.remote_provider_model = Some("gpt-6.1-sol".to_string());
     app.remote_available_entries = vec!["gpt-6.1-sol".to_string(), "gpt-6.1".to_string()];
-    app.remote_model_options = vec![model_route(
-        "gpt-6.1-sol",
-        "OpenAI",
-        "openai-oauth",
-    )];
+    app.remote_model_options = vec![model_route("gpt-6.1-sol", "OpenAI", "openai-oauth")];
 
-    let outcome = app.replace_remote_model_catalog_snapshot(
-        jcode_provider_core::ModelCatalogSnapshot::new(
+    let outcome =
+        app.replace_remote_model_catalog_snapshot(jcode_provider_core::ModelCatalogSnapshot::new(
             Some("openai-oauth".to_string()),
             Some("gpt-6.1-sol".to_string()),
             Vec::new(),
             Vec::new(),
-        ),
-    );
+        ));
 
     assert!(outcome.provider_meta_changed);
     assert!(outcome.catalog_changed);

@@ -125,6 +125,10 @@ pub enum Request {
     #[serde(rename = "state")]
     GetState { id: u64 },
 
+    /// Fetch the attached session's todo card without locking its agent.
+    #[serde(rename = "get_todos")]
+    GetTodos { id: u64 },
+
     /// Execute a debug command (debug socket only)
     #[serde(rename = "debug_command")]
     DebugCommand {
@@ -160,6 +164,9 @@ pub enum Request {
         /// pool-approved account and retries the turn itself.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_server_failover: bool,
+        /// Accept runtime-generation and turn-scoped events. Legacy readers get flat events.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_turn_identity: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -897,7 +904,7 @@ pub enum Request {
 }
 
 mod events;
-pub use events::{AccountUsageSnapshot, ServerEvent};
+pub use events::{AccountUsageSnapshot, ServerEvent, TurnIdentity};
 
 /// Minimal session-picker metadata. Optional fields may be unavailable.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

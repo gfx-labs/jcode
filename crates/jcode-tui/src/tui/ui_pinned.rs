@@ -83,12 +83,12 @@ use selection_support::apply_side_selection_highlight;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SidePanelMarkdownKey {
-    compact_links: bool,
     page_id: String,
     content_signature: u64,
     inner_width: u16,
     has_protocol: bool,
     centered: bool,
+    show_link_urls: bool,
     mermaid_epoch: u64,
     mermaid_aspect_bucket: Option<u16>,
 }
@@ -101,13 +101,13 @@ struct SidePanelMarkdownCacheState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SidePanelRenderKey {
-    compact_links: bool,
     page_id: String,
     content_signature: u64,
     inner_width: u16,
     inner_height: u16,
     has_protocol: bool,
     centered: bool,
+    show_link_urls: bool,
     image_zoom_percent: u8,
     mermaid_epoch: u64,
     mermaid_aspect_bucket: Option<u16>,
@@ -117,6 +117,43 @@ struct SidePanelRenderKey {
 struct SidePanelRenderCacheState {
     entries: HashMap<SidePanelRenderKey, RenderedSidePanelCache>,
     order: VecDeque<SidePanelRenderKey>,
+}
+
+#[test]
+fn side_panel_cache_keys_include_link_url_visibility() {
+    let markdown_key = SidePanelMarkdownKey {
+        page_id: "links".into(),
+        content_signature: 1,
+        inner_width: 40,
+        has_protocol: false,
+        centered: false,
+        show_link_urls: false,
+        mermaid_epoch: 0,
+        mermaid_aspect_bucket: None,
+    };
+    let expanded_markdown_key = SidePanelMarkdownKey {
+        show_link_urls: true,
+        ..markdown_key.clone()
+    };
+    assert_ne!(markdown_key, expanded_markdown_key);
+
+    let render_key = SidePanelRenderKey {
+        page_id: markdown_key.page_id,
+        content_signature: markdown_key.content_signature,
+        inner_width: markdown_key.inner_width,
+        inner_height: 20,
+        has_protocol: markdown_key.has_protocol,
+        centered: markdown_key.centered,
+        show_link_urls: false,
+        image_zoom_percent: 100,
+        mermaid_epoch: markdown_key.mermaid_epoch,
+        mermaid_aspect_bucket: markdown_key.mermaid_aspect_bucket,
+    };
+    let expanded_render_key = SidePanelRenderKey {
+        show_link_urls: true,
+        ..render_key.clone()
+    };
+    assert_ne!(render_key, expanded_render_key);
 }
 
 #[path = "ui_pinned_mermaid_debug.rs"]
@@ -135,7 +172,6 @@ struct SidePanelDebugState {
 
 #[derive(Clone)]
 struct RenderedSidePanelMarkdown {
-    link_spans: Vec<markdown::LinkSpan>,
     rendered_markdown: Vec<Line<'static>>,
     placeholder_hashes: Vec<Option<u64>>,
     has_following_content_after: Vec<bool>,
@@ -143,7 +179,6 @@ struct RenderedSidePanelMarkdown {
 
 #[derive(Clone)]
 struct RenderedSidePanelCache {
-    link_spans: Arc<Vec<markdown::LinkSpan>>,
     lines: Vec<Line<'static>>,
     wrapped_plain_lines: std::sync::Arc<Vec<String>>,
     wrapped_copy_offsets: std::sync::Arc<Vec<usize>>,
@@ -192,24 +227,12 @@ fn estimate_side_panel_rendered_cache_bytes(cache: &RenderedSidePanelCache) -> u
         + estimate_arc_wrapped_line_map_bytes(&cache.wrapped_line_map)
         + cache.left_margins.capacity() * std::mem::size_of::<u16>()
         + cache.image_placements.capacity() * std::mem::size_of::<SidePanelImagePlacement>()
-        + cache.link_spans.capacity() * std::mem::size_of::<markdown::LinkSpan>()
-        + cache
-            .link_spans
-            .iter()
-            .map(|link| link.target.len())
-            .sum::<usize>()
 }
 
 fn estimate_rendered_side_panel_markdown_bytes(value: &RenderedSidePanelMarkdown) -> usize {
     estimate_lines_bytes(&value.rendered_markdown)
         + value.placeholder_hashes.capacity() * std::mem::size_of::<Option<u64>>()
         + value.has_following_content_after.capacity() * std::mem::size_of::<bool>()
-        + value.link_spans.capacity() * std::mem::size_of::<markdown::LinkSpan>()
-        + value
-            .link_spans
-            .iter()
-            .map(|link| link.target.len())
-            .sum::<usize>()
 }
 
 fn estimate_side_panel_markdown_key_bytes(key: &SidePanelMarkdownKey) -> usize {
@@ -693,6 +716,7 @@ pub(super) fn draw_side_panel_markdown(
         .get(clamped_scroll..visible_end.min(rendered.left_margins.len()))
         .unwrap_or(&[]);
     record_side_pane_snapshot_precomputed(
+        &rendered.lines,
         rendered.wrapped_plain_lines.clone(),
         rendered.wrapped_copy_offsets.clone(),
         rendered.raw_plain_lines.clone(),
@@ -701,7 +725,6 @@ pub(super) fn draw_side_panel_markdown(
         visible_end,
         content_inner,
         visible_left_margins,
-        rendered.link_spans.clone(),
     );
     apply_side_selection_highlight(app, &mut visible_lines, clamped_scroll);
     super::clear_area(frame, content_inner);
@@ -962,13 +985,13 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
         side_panel_mermaid_preferred_aspect_ratio(page, mermaid_profile_area, has_protocol);
     let mermaid_aspect_bucket = mermaid::preferred_aspect_ratio_bucket(mermaid_aspect_ratio);
     let key = SidePanelRenderKey {
-        compact_links: crate::config::config().display.compact_links,
         page_id: page.id.clone(),
         content_signature,
         inner_width: inner.width,
         inner_height: inner.height,
         has_protocol,
         centered,
+        show_link_urls: crate::config::config().display.show_link_urls,
         image_zoom_percent,
         mermaid_epoch: crate::tui::mermaid::deferred_render_epoch(),
         mermaid_aspect_bucket,
@@ -1007,7 +1030,6 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
         Alignment::Left
     };
     let mut text_lines: Vec<Line<'static>> = Vec::new();
-    let mut link_spans = Vec::new();
     let mut image_placements: Vec<SidePanelImagePlacement> = Vec::new();
 
     for (idx, line) in rendered_markdown.rendered_markdown.iter().enumerate() {
@@ -1044,28 +1066,14 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
             }
             continue;
         }
-        link_spans.extend(
-            rendered_markdown
-                .link_spans
-                .iter()
-                .filter(|link| link.line == idx)
-                .cloned()
-                .map(|mut link| {
-                    link.line = text_lines.len();
-                    link
-                }),
-        );
         text_lines.push(align_if_unset(line.clone(), align));
     }
 
     if centered {
-        let mut rendered = markdown::RenderedMarkdown {
-            lines: text_lines,
-            links: link_spans,
-        };
-        markdown::recenter_markdown(&mut rendered, inner.width as usize);
-        text_lines = rendered.lines;
-        link_spans = rendered.links;
+        crate::tui::markdown::recenter_structured_blocks_for_display(
+            &mut text_lines,
+            inner.width as usize,
+        );
     }
 
     if text_lines.is_empty() {
@@ -1088,7 +1096,6 @@ fn render_side_panel_markdown_cached_with_zoom_and_profile_area(
     ) = build_side_pane_snapshot_cache(&text_lines, inner.width);
 
     let rendered = RenderedSidePanelCache {
-        link_spans: Arc::new(link_spans),
         lines: text_lines,
         wrapped_plain_lines,
         wrapped_copy_offsets,
@@ -1123,12 +1130,12 @@ fn render_side_panel_markdown_lines_cached(
     mermaid_aspect_bucket: Option<u16>,
 ) -> RenderedSidePanelMarkdown {
     let key = SidePanelMarkdownKey {
-        compact_links: crate::config::config().display.compact_links,
         page_id: page.id.clone(),
         content_signature,
         inner_width,
         has_protocol,
         centered,
+        show_link_urls: crate::config::config().display.show_link_urls,
         mermaid_epoch: crate::tui::mermaid::deferred_render_epoch(),
         mermaid_aspect_bucket,
     };
@@ -1155,47 +1162,21 @@ fn render_side_panel_markdown_lines_cached(
     // Pin the diagram mode for this render only (thread-local scope): the
     // side panel always renders diagrams inline. Using the process-global
     // override here would race concurrent renders/tests that read or set it.
-    let rendered =
+    let rendered_lines =
         markdown::with_diagram_mode_scope(crate::config::DiagramDisplayMode::None, || {
             mermaid::with_preferred_aspect_ratio(mermaid_aspect_ratio, || {
-                markdown::render_markdown_with_links(&page.content, Some(inner_width as usize))
+                markdown::render_markdown_with_width(&page.content, Some(inner_width as usize))
             })
         });
     let rendered_lines = if has_protocol {
-        rendered
-            .lines
+        rendered_lines
             .into_iter()
             .map(|line| markdown_image_line_to_placeholder(page, line).unwrap_or_else(|line| line))
             .collect()
     } else {
-        rendered.lines
+        rendered_lines
     };
-    let mut lines = Vec::new();
-    let mut link_spans = Vec::new();
-    for (idx, line) in rendered_lines.into_iter().enumerate() {
-        let line_links: Vec<_> = rendered
-            .links
-            .iter()
-            .filter(|link| link.line == idx)
-            .cloned()
-            .collect();
-        let wrapped = if is_rendered_table_line(&line)
-            || mermaid::parse_image_placeholder(&line).is_some()
-            || mermaid::parse_inline_image_placeholder(&line).is_some()
-        {
-            markdown::RenderedMarkdown {
-                lines: vec![line],
-                links: line_links,
-            }
-        } else {
-            markdown::wrap_line_with_links(line, inner_width as usize, &line_links)
-        };
-        link_spans.extend(wrapped.links.into_iter().map(|mut link| {
-            link.line += lines.len();
-            link
-        }));
-        lines.extend(wrapped.lines);
-    }
+    let lines = wrap_side_panel_markdown_lines(rendered_lines, inner_width as usize);
     markdown::set_center_code_blocks(saved_centered);
 
     let placeholder_hashes: Vec<Option<u64>> = if has_protocol {
@@ -1223,7 +1204,6 @@ fn render_side_panel_markdown_lines_cached(
     }
 
     let rendered = RenderedSidePanelMarkdown {
-        link_spans,
         rendered_markdown: lines,
         placeholder_hashes,
         has_following_content_after,
@@ -1243,72 +1223,10 @@ fn render_side_panel_markdown_lines_cached(
     rendered
 }
 
-fn markdown_image_line_to_placeholder(
-    page: &crate::side_panel::SidePanelPage,
-    line: Line<'static>,
-) -> Result<Line<'static>, Line<'static>> {
-    let text = super::line_plain_text(&line);
-    let Some(path_text) = parse_rendered_markdown_image_path(&text) else {
-        return Err(line);
-    };
-    let path = resolve_side_panel_image_path(page, path_text);
-    let Ok((width, height)) = ::image::image_dimensions(&path) else {
-        return Err(line);
-    };
-
-    let hash = mermaid::register_external_image(&path, width, height);
-    let marker = mermaid::image_widget_placeholder_markdown(hash)
-        .trim_end()
-        .to_string();
-    Ok(Line::from(Span::styled(
-        marker,
-        Style::default().fg(Color::Black).bg(Color::Black),
-    )))
-}
-
-fn parse_rendered_markdown_image_path(text: &str) -> Option<&str> {
-    let text = text.trim();
-    if !text.starts_with("[image:") || !text.ends_with(')') {
-        return None;
-    }
-
-    let start = text.rfind("] (")? + 3;
-    let path = text.get(start..text.len().saturating_sub(1))?.trim();
-    if path.is_empty()
-        || path.starts_with("http://")
-        || path.starts_with("https://")
-        || path.starts_with("data:")
-    {
-        return None;
-    }
-
-    let lower = path.to_ascii_lowercase();
-    if matches!(
-        std::path::Path::new(&lower)
-            .extension()
-            .and_then(|extension| extension.to_str()),
-        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico")
-    ) {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-fn resolve_side_panel_image_path(
-    page: &crate::side_panel::SidePanelPage,
-    path_text: &str,
-) -> std::path::PathBuf {
-    let path = std::path::Path::new(path_text);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    std::path::Path::new(&page.file_path)
-        .parent()
-        .map(|parent| parent.join(path))
-        .unwrap_or_else(|| path.to_path_buf())
-}
+#[path = "ui_pinned/image_paths.rs"]
+mod image_paths;
+use image_paths::markdown_image_line_to_placeholder;
+use image_paths::wrap_side_panel_markdown_lines;
 
 #[cfg(test)]
 #[path = "ui_pinned_tests.rs"]

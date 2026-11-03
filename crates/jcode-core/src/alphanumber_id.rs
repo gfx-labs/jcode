@@ -32,7 +32,8 @@ pub fn alphanumber_name_at(index: usize) -> String {
 
 fn alphanumber_name_cursor() -> &'static AtomicUsize {
     static CURSOR: OnceLock<AtomicUsize> = OnceLock::new();
-    CURSOR.get_or_init(|| AtomicUsize::new((rand::random::<u64>() as usize) % ALPHANUMBER_NAME_COUNT))
+    CURSOR
+        .get_or_init(|| AtomicUsize::new((rand::random::<u64>() as usize) % ALPHANUMBER_NAME_COUNT))
 }
 
 /// Generate an alphanumber session identity that avoids names already held by
@@ -67,7 +68,10 @@ mod tests {
     #[test]
     fn alphabet_skips_confusable_characters() {
         for banned in ['I', 'L', 'O'] {
-            assert!(!ALPHANUMBER_LETTERS.contains(&banned), "{banned} must be excluded");
+            assert!(
+                !ALPHANUMBER_LETTERS.contains(&banned),
+                "{banned} must be excluded"
+            );
         }
         assert!(!ALPHANUMBER_DIGITS.contains(&'0'));
         assert_eq!(ALPHANUMBER_NAME_COUNT, 23 * 9);
@@ -89,7 +93,9 @@ mod tests {
 
     #[test]
     fn all_names_are_distinct() {
-        let names: HashSet<String> = (0..ALPHANUMBER_NAME_COUNT).map(alphanumber_name_at).collect();
+        let names: HashSet<String> = (0..ALPHANUMBER_NAME_COUNT)
+            .map(alphanumber_name_at)
+            .collect();
         assert_eq!(names.len(), ALPHANUMBER_NAME_COUNT);
     }
 
@@ -98,7 +104,10 @@ mod tests {
         let mut used: HashSet<String> = HashSet::new();
         for _ in 0..ALPHANUMBER_NAME_COUNT {
             let (id, short) = new_alphanumber_session_id_avoiding(&used);
-            assert!(!used.contains(&short), "reused {short} while free names remained");
+            assert!(
+                !used.contains(&short),
+                "reused {short} while free names remained"
+            );
             assert_eq!(crate::id::extract_session_name(&id), Some(short.as_str()));
             used.insert(short);
         }

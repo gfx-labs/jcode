@@ -617,6 +617,21 @@ impl std::fmt::Debug for JevConfig {
     }
 }
 
+/// Scoped local resource bridge policy. Zero disables access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloudConfig {
+    pub local_access_seconds: u32,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            local_access_seconds: 86_400,
+        }
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn jev_openrouter_config_roundtrips_without_debug_secret() {
@@ -636,6 +651,22 @@ fn jev_openrouter_config_roundtrips_without_debug_secret() {
     );
 }
 
+mod cloud_config_tests {
+    use super::*;
+
+    #[test]
+    fn cloud_access_defaults_and_overrides() {
+        let defaults: Config = toml::from_str("").unwrap();
+        assert_eq!(defaults.cloud.local_access_seconds, 86400);
+        for seconds in [0, 900, 172800] {
+            let config: Config =
+                toml::from_str(&format!("[cloud]\nlocal_access_seconds = {seconds}")).unwrap();
+            assert_eq!(config.cloud.local_access_seconds, seconds);
+        }
+        assert!(toml::from_str::<Config>("[cloud]\nlocal_access_seconds = -1").is_err());
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -643,6 +674,8 @@ pub struct Config {
     /// Shared Jev provider and optional Jev-only credential override.
     pub jev: JevConfig,
 
+    /// Local resource access after cloud handoff.
+    pub cloud: CloudConfig,
     /// Idle session memory hibernation policy.
     pub session: SessionConfig,
 
@@ -831,8 +864,10 @@ impl McpToolsMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolConfig {
-    /// Seconds before a running tool is automatically backgrounded; zero hands off immediately.
-    pub auto_background_after_secs: u64,
+    /// Opt into Jev browser handoff. Direct browser actions remain available.
+    pub browser_handoff: bool,
+    /// Foreground time before automatic tool handoff, in milliseconds. Zero disables it.
+    pub auto_background_timeout_ms: u64,
     /// Tool profile: "full" (default), "acp", "minimal"/"lite", or "none".
     pub profile: String,
     /// Explicit allow-list. When set, only these tools are exposed.
@@ -862,7 +897,8 @@ pub struct ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
-            auto_background_after_secs: 3,
+            browser_handoff: false,
+            auto_background_timeout_ms: 3_000,
             profile: String::new(),
             enabled: Vec::new(),
             disabled: Vec::new(),
@@ -1046,22 +1082,12 @@ mod color_tests;
 /// Whether integration discovery settings carry no information beyond the shipped
 /// default, so `[sponsors]` can be left out of written config files.
 ///
-/// Discovery originally shipped opt-in with `enabled = false`, and because
-/// config saves serialize the whole struct, any save during that window froze
-/// the old default into the user's file and permanently disabled discovery even
-/// after the default flipped. Omitting default sections prevents a repeat.
+/// Explicit opt-ins must be serialized so unrelated preference saves cannot
+/// silently disable discovery on the next load.
 fn sponsors_is_default(sponsors: &SponsorsConfig) -> bool {
-    sponsors.enabled && is_default_discovery_endpoint(&sponsors.endpoint)
+    !sponsors.enabled && sponsors.endpoint == SponsorsConfig::default().endpoint
 }
 
 fn session_names_is_default(session_names: &SessionNamesConfig) -> bool {
     *session_names == SessionNamesConfig::default()
-}
-
-/// Endpoints used by shipped defaults. These may also be explicit user choices.
-fn is_default_discovery_endpoint(endpoint: &str) -> bool {
-    matches!(
-        endpoint.trim_end_matches('/'),
-        "https://api.jcode.sh/v1/discovery" | "https://api.solosystems.dev/v1/discovery"
-    )
 }

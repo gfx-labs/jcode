@@ -2,117 +2,68 @@ use super::*;
 use std::path::Path;
 
 #[cfg(unix)]
-#[test]
-fn new_and_resumed_sessions_request_server_failover() {
-    let _guard = crate::storage::lock_test_env();
-    struct RestoreSocket(Option<std::ffi::OsString>);
-    impl Drop for RestoreSocket {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => crate::env::set_var("JCODE_SOCKET", value),
-                None => crate::env::remove_var("JCODE_SOCKET"),
-            }
-        }
-    }
-    let _restore = RestoreSocket(std::env::var_os("JCODE_SOCKET"));
-    let root = tempfile::tempdir().unwrap();
-    let socket = root.path().join("acp.sock");
-    crate::env::set_var("JCODE_SOCKET", &socket);
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-            let peer = tokio::spawn(async move {
-                let mut capabilities = Vec::new();
-                for target in [None, Some("session_acp_failover")] {
-                    let (mut reader, mut writer, request) = loop {
-                        let (stream, _) = listener.accept().await.unwrap();
-                        let (reader, writer) = stream.into_split();
-                        let mut reader = BufReader::new(reader);
-                        let mut line = String::new();
-                        // The daemon liveness probe connects without sending a request.
-                        if reader.read_line(&mut line).await.unwrap() != 0 {
-                            break (
-                                reader,
-                                writer,
-                                serde_json::from_str::<Request>(&line).unwrap(),
-                            );
-                        }
-                    };
-                    let Request::Subscribe {
-                        id,
-                        target_session_id,
-                        supports_server_failover,
-                        ..
-                    } = request
-                    else {
-                        panic!("expected ACP subscription");
-                    };
-                    assert_eq!(target_session_id.as_deref(), target);
-                    capabilities.push(supports_server_failover);
-                    let history_id = if target.is_none() {
-                        writer
-                            .write_all(
-                                format!("{}\n", json!({"type": "done", "id": id})).as_bytes(),
-                            )
-                            .await
-                            .unwrap();
-                        let mut line = String::new();
-                        reader.read_line(&mut line).await.unwrap();
-                        let Request::GetHistory { id } = serde_json::from_str(&line).unwrap()
-                        else {
-                            panic!("expected history request");
-                        };
-                        id
-                    } else {
-                        id
-                    };
-                    let history = json!({
-                        "type": "history", "id": history_id,
-                        "session_id": "session_acp_failover", "messages": []
-                    });
-                    writer
-                        .write_all(format!("{history}\n").as_bytes())
-                        .await
-                        .unwrap();
-                    if target.is_some() {
-                        writer
-                            .write_all(
-                                format!("{}\n", json!({"type": "done", "id": id})).as_bytes(),
-                            )
-                            .await
-                            .unwrap();
-                    }
-                }
-                capabilities
-            });
-            let runtime = AcpRuntime::new(AcpProfile::Standard, ProviderChoice::Auto, None, None);
-            let handshake = async {
+#[tokio::test]
+async fn acp_new_and_resumed_sessions_advertise_server_failover() {
+    for resume in [false, true] {
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, writer) = client.into_split();
+        let daemon = tokio::spawn(async move {
+            let (reader, mut writer) = server.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let request: Request = serde_json::from_str(&line).unwrap();
+            let Request::Subscribe {
+                id,
+                supports_server_failover,
+                target_session_id,
+                ..
+            } = request
+            else {
+                panic!("expected ACP subscription");
+            };
+            assert!(
+                supports_server_failover,
+                "ACP must delegate account failover to the daemon"
+            );
+            assert_eq!(target_session_id.as_deref(), resume.then_some("existing"));
+            // Stop after the subscription, without needing a live provider or daemon.
+            let response = json!({"type": "error", "id": id, "message": "subscription captured"});
+            writer
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let runtime = AcpRuntime::new(AcpProfile::Standard, ProviderChoice::Claude, None, None);
+        let cwd = PathBuf::from("/acp-test");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            if resume {
                 runtime
-                    .create_new_session(root.path().to_path_buf())
-                    .await
-                    .unwrap();
-                runtime
-                    .attach_existing_session(
-                        "session_acp_failover".into(),
-                        root.path().to_path_buf(),
+                    .attach_existing_session_connected(
+                        "existing".into(),
+                        cwd,
                         false,
+                        reader,
+                        writer,
                     )
                     .await
-                    .unwrap();
-                peer.await.unwrap()
-            };
-            let capabilities = tokio::time::timeout(std::time::Duration::from_secs(5), handshake)
-                .await
-                .expect("ACP handshakes should complete");
-            assert_eq!(
-                capabilities,
-                [true, true],
-                "ACP must delegate account retries to the daemon on creation and resume"
-            );
-        });
+            } else {
+                runtime
+                    .create_new_session_connected(cwd, reader, writer)
+                    .await
+            }
+        })
+        .await
+        .expect("ACP subscription timed out");
+        daemon.await.unwrap();
+        assert_eq!(
+            result
+                .err()
+                .expect("mock daemon rejects subscription")
+                .to_string(),
+            "subscription captured"
+        );
+    }
 }
 
 #[test]
