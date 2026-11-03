@@ -157,6 +157,7 @@ fn render_single_line_system_notice(
 /// turns leave it empty. Those names are deliberately not rendered: the chat
 /// already shows a full row per tool, and a summary line would only appear
 /// after a reload.
+#[cfg(test)]
 pub(crate) fn render_assistant_message(
     msg: &DisplayMessage,
     width: u16,
@@ -478,87 +479,6 @@ fn wrap_plain_words(text: &str, width: usize) -> Vec<String> {
         out.push(current);
     }
     out
-}
-
-fn render_assistant_tool_call_lines(
-    tool_calls: &[String],
-    width: usize,
-    centered: bool,
-) -> Vec<Line<'static>> {
-    if tool_calls.is_empty() {
-        return Vec::new();
-    }
-
-    const TOOL_SEPARATOR: &str = " · ";
-
-    let label = if tool_calls.len() == 1 {
-        "tool:"
-    } else {
-        "tools:"
-    };
-    let prefix = format!("  {} ", label);
-    let prefix_width = prefix.width();
-    let available_width = width.max(prefix_width.saturating_add(1));
-
-    let prefix_style = Style::default().fg(tool_color()).dim();
-    let separator_style = Style::default().fg(dim_color()).dim();
-    let name_style = Style::default().fg(accent_color()).dim();
-
-    let max_width = available_width.saturating_sub(1).max(prefix_width + 1);
-    let mut spans = vec![Span::styled(prefix.clone(), prefix_style)];
-    let mut current_width = prefix_width;
-    let mut shown = 0usize;
-
-    for (idx, tool_name) in tool_calls.iter().enumerate() {
-        let separator_width = if shown == 0 {
-            0
-        } else {
-            TOOL_SEPARATOR.width()
-        };
-        let more_remaining = tool_calls.len().saturating_sub(idx + 1);
-        let more_label = if more_remaining > 0 {
-            format!("{}+{} more", TOOL_SEPARATOR, more_remaining)
-        } else {
-            String::new()
-        };
-        let required = separator_width + tool_name.width() + more_label.width();
-
-        if current_width.saturating_add(required) <= max_width {
-            if shown > 0 {
-                spans.push(Span::styled(TOOL_SEPARATOR, separator_style));
-                current_width = current_width.saturating_add(separator_width);
-            }
-            spans.push(Span::styled(tool_name.clone(), name_style));
-            current_width = current_width.saturating_add(tool_name.width());
-            shown += 1;
-        } else {
-            break;
-        }
-    }
-
-    if shown < tool_calls.len() {
-        let remaining = tool_calls.len() - shown;
-        let more_text = if shown == 0 {
-            format!("+{} more", remaining)
-        } else {
-            format!("{}+{} more", TOOL_SEPARATOR, remaining)
-        };
-        spans.push(Span::styled(more_text, separator_style));
-    }
-
-    let mut lines = vec![super::truncate_line_with_ellipsis_to_width(
-        &Line::from(spans),
-        max_width,
-    )];
-
-    if centered {
-        left_pad_lines_for_centered_mode(&mut lines, width as u16);
-        if let Some(line) = lines.first_mut() {
-            *line = super::truncate_line_with_ellipsis_to_width(line, max_width);
-        }
-    }
-
-    lines
 }
 
 /// Wrap plaintext content into lines without any markdown interpretation.
