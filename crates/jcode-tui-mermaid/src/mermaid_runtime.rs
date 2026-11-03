@@ -233,10 +233,13 @@ pub(super) fn decide_picker_init_mode(
     }
 }
 
-/// Parse the explicit override using the same policy as picker initialization.
+/// Parse the explicit override. An unset or invalid value keeps the fast default.
 #[cfg(test)]
 pub(super) fn picker_init_mode_from_probe_env(raw: Option<&str>) -> PickerInitMode {
-    decide_picker_init_mode(raw.and_then(parse_env_bool), None, Multiplexer::None)
+    match raw.and_then(parse_env_bool) {
+        Some(true) => PickerInitMode::Probe,
+        _ => PickerInitMode::Fast,
+    }
 }
 
 pub(super) fn infer_protocol_from_env(
