@@ -322,7 +322,7 @@ impl Tool for SessionSearchTool {
                 },
                 "include_tools": {
                     "type": "boolean",
-                    "description": "Include raw tool calls and tool results. Defaults to false to reduce log noise. Tool intents are always searchable."
+                    "description": "Include raw tool calls and tool results. Defaults to false to reduce log noise. Tool intents and todo task names/descriptions are always searchable."
                 },
                 "include_system": {
                     "type": "boolean",
@@ -1770,30 +1770,8 @@ fn truncate_context_text(text: &str) -> String {
     }
 }
 
-fn searchable_message_text(msg: &StoredMessage, include_tools: bool) -> String {
-    msg.content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. } => Some(text.clone()),
-            ContentBlock::ToolResult { content, .. } if include_tools => Some(content.clone()),
-            ContentBlock::ToolUse { name, input, .. } if include_tools => {
-                let input = input.to_string();
-                Some(if input == "null" {
-                    format!("[tool call: {name}]")
-                } else {
-                    format!("[tool call: {name}] {input}")
-                })
-            }
-            ContentBlock::ToolUse { input, .. } => input
-                .get("intent")
-                .and_then(serde_json::Value::as_str)
-                .filter(|intent| !intent.trim().is_empty())
-                .map(ToOwned::to_owned),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+mod searchable_text;
+use searchable_text::searchable_message_text;
 
 fn is_system_like_message(msg: &StoredMessage) -> bool {
     msg.display_role.is_some()

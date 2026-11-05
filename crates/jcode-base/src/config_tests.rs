@@ -1698,6 +1698,9 @@ fn cli_config_save_round_trips_desktop_tables() {
     Config::invalidate_cache();
 }
 
+#[path = "config_tests/default_provider.rs"]
+mod default_provider;
+
 /// `display.overscroll_status` was removed; configs that still set it (users
 /// had `"on"` written by older versions) must load without losing settings.
 #[test]

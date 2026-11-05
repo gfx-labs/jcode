@@ -8,6 +8,8 @@ mod account_fetch;
 pub use account_fetch::fetch_oauth_account_usage;
 mod anthropic_reset;
 mod api_keys;
+mod banked;
+pub use banked::{AccountBankedResets, cached_account_banked_resets};
 mod cache;
 mod disk_cache;
 mod display;
@@ -122,7 +124,7 @@ async fn fetch_anthropic_usage_data_uncached(
                 crate::provider::anthropic::CLAUDE_CLI_USER_AGENT,
             )
             .header("Authorization", format!("Bearer {}", access_token))
-            .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219"),
+            .header("anthropic-beta", "oauth-2025-04-20"),
         &crate::provider::anthropic::new_oauth_request_id(),
     )
     .send()
