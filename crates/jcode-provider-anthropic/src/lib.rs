@@ -35,7 +35,7 @@ use history_repair::*;
 /// shows the billing block alone is rejected. If you change this, re-run
 /// `scripts/anthropic_oauth_identity_probe.py claude-opus-4-5` (not Haiku).
 /// Full write-up: docs/ANTHROPIC_OAUTH_IDENTITY_PROBE_2026_11_05.md
-pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;";
+pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.280; cc_entrypoint=jcode; cch=33f85;";
 
 /// Minimal user turn appended when a formatted conversation would otherwise end
 /// on an assistant message, which Anthropic rejects on non-prefill models.

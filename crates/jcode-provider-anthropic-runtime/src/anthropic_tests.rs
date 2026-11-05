@@ -970,6 +970,7 @@ fn test_system_param_split_oauth() {
         // Block 0: billing attribution (no cache)
         assert!(blocks[0].cache_control.is_none());
         assert!(blocks[0].text.starts_with("x-anthropic-billing-header: "));
+        assert!(blocks[0].text.contains("cc_entrypoint=jcode;"));
 
         // Block 1: static (cached)
         assert!(blocks[1].cache_control.is_some());

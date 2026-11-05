@@ -44,7 +44,7 @@ const OAUTH_BETA_HEADERS: &str = "oauth-2025-04-20";
 /// Anthropic strips it before the model sees it. No identity sentence is sent,
 /// see `OAUTH_BILLING_HEADER` in jcode-provider-anthropic.
 const CLAUDE_OAUTH_BILLING_BLOCK: &str =
-    "x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;";
+    "x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=jcode; cch=33f85;";
 
 /// Maximum tokens for sidecar responses (keep small for speed/cost)
 const DEFAULT_MAX_TOKENS: u32 = 1024;
@@ -1732,6 +1732,7 @@ mod tests {
             build_claude_system_param("be terse").expect("oauth system present");
         assert_eq!(oauth_blocks.len(), 2);
         assert_eq!(oauth_blocks[0].text, CLAUDE_OAUTH_BILLING_BLOCK);
+        assert!(oauth_blocks[0].text.contains("cc_entrypoint=jcode;"));
         assert_eq!(oauth_blocks[1].text, "be terse");
         assert!(
             !oauth_blocks

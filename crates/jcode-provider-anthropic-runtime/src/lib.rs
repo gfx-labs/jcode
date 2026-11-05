@@ -422,9 +422,7 @@ async fn ensure_oauth_preflight(
             rate_limit_tier: "default_claude_ai".to_string(),
             first_token_time: 1_740_976_801_491,
             email: email_address,
-            // Must match the User-Agent version, or the preflight advertises a
-            // different client than the request that follows it.
-            app_version: jcode_base::provider::anthropic::CLAUDE_CLI_VERSION.to_string(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
         },
         forced_variations: Default::default(),
         forced_features: Vec::new(),
