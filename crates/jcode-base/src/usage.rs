@@ -245,14 +245,15 @@ async fn fetch_anthropic_usage_data_uncached(
 }
 
 fn anthropic_primary_quotas_present(data: &UsageResponse) -> bool {
-    [&data.five_hour, &data.seven_day]
-        .into_iter()
-        .all(|window| {
-            window
-                .as_ref()
-                .and_then(|w| w.utilization)
-                .is_some_and(|value| value.is_finite() && value >= 0.0)
-        })
+    let valid = |window: &UsageWindow| {
+        window
+            .utilization
+            .is_some_and(|value| value.is_finite() && value >= 0.0)
+    };
+    // The API returns `five_hour: null` when no 5-hour session window is
+    // active (nothing used recently), which genuinely means 0% used. A window
+    // object that is present but lacks utilization is still malformed.
+    data.five_hour.as_ref().is_none_or(valid) && data.seven_day.as_ref().is_some_and(valid)
 }
 
 /// A failed request keeps any last-known limits, but marks them as stale and

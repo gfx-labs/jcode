@@ -936,6 +936,14 @@ fn missing_anthropic_primary_quota_is_not_treated_as_zero_usage() {
     )
     .unwrap();
     assert!(anthropic_primary_quotas_present(&zero));
+    // Idle accounts get `five_hour: null` (no active session window).
+    let idle: UsageResponse =
+        serde_json::from_str(r#"{"five_hour":null,"seven_day":{"utilization":38.0}}"#)
+            .unwrap();
+    assert!(anthropic_primary_quotas_present(&idle));
+    let no_weekly: UsageResponse =
+        serde_json::from_str(r#"{"five_hour":null,"seven_day":null}"#).unwrap();
+    assert!(!anthropic_primary_quotas_present(&no_weekly));
 }
 
 #[test]
