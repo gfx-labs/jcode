@@ -9,8 +9,13 @@ impl RemoteEventState for RemoteConnection {
         Self::handle_tool_start(self, id, name);
     }
 
-    fn handle_tool_input(&mut self, id: Option<&str>, delta: &str) {
-        Self::handle_tool_input(self, id, delta);
+    fn handle_tool_input(
+        &mut self,
+        id: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
+        delta: &str,
+    ) {
+        Self::handle_tool_input(self, id, snapshot, delta);
     }
 
     fn get_tool_input(&self, id: &str) -> serde_json::Value {
@@ -59,8 +64,13 @@ impl RemoteEventState for ReplayRemoteState {
         self.tool_diff.handle_tool_start(id, name);
     }
 
-    fn handle_tool_input(&mut self, id: Option<&str>, delta: &str) {
-        self.tool_diff.handle_tool_input(id, delta);
+    fn handle_tool_input(
+        &mut self,
+        id: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
+        delta: &str,
+    ) {
+        self.tool_diff.handle_tool_input(id, snapshot, delta);
     }
 
     fn get_tool_input(&self, id: &str) -> serde_json::Value {

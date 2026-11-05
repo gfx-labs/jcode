@@ -139,7 +139,7 @@ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
     ] {
         provider_tx.send(Ok(delta(id, fragment))).await.unwrap();
         assert!(
-            matches!(next_tool_event(&mut rx).await, ServerEvent::ToolInput { id: Some(actual), delta }
+            matches!(next_tool_event(&mut rx).await, ServerEvent::ToolInput { id: Some(actual), delta, snapshot: None }
             if actual == id && delta == fragment)
         );
     }
@@ -171,12 +171,31 @@ async fn keyed_tool_streaming_emits_each_name_before_args_and_executes_once() {
     inputs.sort_by_key(Value::to_string);
     assert_eq!(inputs, vec![json!({"value":"a"}), json!({"value":"b"})]);
     let mut executions = Vec::new();
+    let mut snapshots = Vec::new();
     while let Ok(event) = rx.try_recv() {
-        if let ServerEvent::ToolExec { id, .. } = event {
-            executions.push(id);
+        match event {
+            ServerEvent::ToolInput {
+                id: Some(id),
+                delta,
+                snapshot: Some(snapshot),
+            } if delta.is_empty() => snapshots.push((id, snapshot)),
+            ServerEvent::ToolExec { id, .. } => {
+                // The authoritative snapshot immediately precedes execution.
+                assert_eq!(snapshots.last().map(|(actual, _)| actual), Some(&id));
+                executions.push(id);
+            }
+            _ => {}
         }
     }
     assert_eq!(executions, ["a", "b"]);
+    snapshots.sort_by_key(|(id, _)| id.clone());
+    assert_eq!(
+        snapshots,
+        vec![
+            ("a".to_string(), json!({"value":"a"})),
+            ("b".to_string(), json!({"value":"b"}))
+        ]
+    );
     for id in ["a", "b"] {
         assert!(agent.session.messages.iter().flat_map(|m| &m.content).any(
             |block| matches!(block,

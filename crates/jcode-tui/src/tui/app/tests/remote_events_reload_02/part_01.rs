@@ -262,6 +262,7 @@ fn test_handle_server_event_remote_observe_tracks_tool_exec_and_done() {
         crate::protocol::ServerEvent::ToolInput {
             id: None,
             delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
+            snapshot: None,
         },
         &mut remote,
     );
@@ -345,6 +346,7 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             crate::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolInput {
                 id: None,
                 delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
+                snapshot: None,
             }),
         ))
         .expect("tool input should succeed");
@@ -468,6 +470,7 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             crate::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolInput {
                 id: None,
                 delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
+                snapshot: None,
             }),
         ))
         .expect("tool input should succeed");

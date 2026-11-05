@@ -1991,6 +1991,7 @@ impl BridgeState {
                 session_id: session(self),
                 call_id: event["id"].as_str().unwrap_or("").to_string(),
                 delta: event["delta"].as_str().unwrap_or("").to_string(),
+                snapshot: event.get("snapshot").filter(|v| !v.is_null()).cloned(),
             })],
             "tool_exec" => {
                 let mut frames = self.finish_text();

@@ -298,7 +298,14 @@ export type ApiEvent =
   | { ev: "reasoning_delta"; session_id: string; text: string }
   | { ev: "reasoning_done"; session_id: string; duration_secs?: number }
   | { ev: "tool_start"; session_id: string; call_id: string; name: string }
-  | { ev: "tool_input_delta"; session_id: string; call_id: string; delta: string }
+  | {
+      ev: "tool_input_delta";
+      session_id: string;
+      call_id: string;
+      delta: string;
+      /** Complete input: replace the buffered input with it, then append `delta`. */
+      snapshot?: unknown;
+    }
   | { ev: "tool_exec"; session_id: string; call_id: string; name: string }
   | { ev: "tools"; session_id: string; tools: SessionToolDefinition[] }
   | { ev: "tool_call"; session_id: string; call_id: string; name: string; input: unknown }

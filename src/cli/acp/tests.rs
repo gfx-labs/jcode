@@ -198,6 +198,7 @@ fn event_mapper_maps_tool_lifecycle() {
     let input = mapper.map_event(ServerEvent::ToolInput {
         id: None,
         delta: "{\"command\":\"true\"}".to_string(),
+        snapshot: None,
     });
     assert_eq!(input[0]["rawInput"]["command"], "true");
 
@@ -209,6 +210,76 @@ fn event_mapper_maps_tool_lifecycle() {
     });
     assert_eq!(done[0]["status"], "completed");
     assert_eq!(done[0]["content"][0]["content"]["text"], "ok");
+}
+
+#[test]
+fn event_mapper_routes_streamed_inputs_without_empty_updates() {
+    let mut mapper = EventMapper::new("session1".into(), AcpProfile::Standard);
+    // These are daemon wire events, including legacy deltas without a snapshot field.
+    let mut send = |event: Value| mapper.map_event(serde_json::from_value(event).unwrap());
+    for id in ["a", "b"] {
+        assert_eq!(
+            send(json!({"type":"tool_start", "id":id, "name":"bash"})).len(),
+            1
+        );
+        assert!(send(json!({"type":"tool_input", "id":id, "delta":"{\"command\":"})).is_empty());
+    }
+    for (id, command) in [("a", "true"), ("b", "false")] {
+        let update = send(json!({
+            "type":"tool_input", "id":id, "delta":format!("\"{command}\"}}")
+        }));
+        assert_eq!(
+            update,
+            vec![json!({
+                "sessionUpdate":"tool_call_update", "toolCallId":id,
+                "rawInput":{"command":command}
+            })]
+        );
+        // Whitespace and the authoritative final snapshot do not republish the same input.
+        assert!(send(json!({"type":"tool_input", "id":id, "delta":" "})).is_empty());
+        assert!(
+            send(json!({
+                "type":"tool_input", "id":id, "delta":"",
+                "snapshot":{"command":command}
+            }))
+            .is_empty()
+        );
+        let exec = send(json!({"type":"tool_exec", "id":id, "name":"bash"}));
+        assert_eq!(exec.len(), 1);
+        assert_eq!(exec[0]["status"], "in_progress");
+        assert!(exec[0].get("rawInput").is_none());
+    }
+    // Native tools may supply a newer complete input after execution starts.
+    let snapshot = json!({"command":"printf updated"});
+    let update = send(json!({
+        "type":"tool_input", "id":"a", "delta":"", "snapshot":snapshot
+    }));
+    assert_eq!(update[0]["toolCallId"], "a");
+    assert_eq!(update[0]["rawInput"], snapshot);
+    assert!(
+        send(json!({
+            "type":"tool_input", "id":"a", "delta":"", "snapshot":snapshot
+        }))
+        .is_empty()
+    );
+    for id in ["a", "b"] {
+        let done = send(json!({
+            "type":"tool_done", "id":id, "name":"bash", "output":"ok", "error":null
+        }));
+        assert_eq!(done[0]["status"], "completed");
+        assert!(
+            send(json!({
+                "type":"tool_input", "id":id, "delta":"", "snapshot":{}
+            }))
+            .is_empty()
+        );
+    }
+    assert!(send(json!({"type":"tool_input", "delta":"{}"})).is_empty());
+    send(json!({"type":"tool_start", "id":"noargs", "name":"time"}));
+    let input = send(json!({
+        "type":"tool_input", "id":"noargs", "delta":"", "snapshot":{}
+    }));
+    assert_eq!(input[0]["rawInput"], json!({}));
 }
 
 #[test]

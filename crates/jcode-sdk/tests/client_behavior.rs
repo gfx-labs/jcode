@@ -1220,6 +1220,7 @@ fn tool_names_arrive_before_any_arguments_and_interleaved_inputs_keep_call_ids()
                         session_id: "mine".into(),
                         call_id: id.into(),
                         delta: delta.into(),
+                        snapshot: None,
                     },
                     writer,
                 );

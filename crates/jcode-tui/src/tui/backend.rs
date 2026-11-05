@@ -300,7 +300,12 @@ pub(crate) trait RemoteEventState {
     }
 
     fn handle_tool_start(&mut self, id: &str, name: &str);
-    fn handle_tool_input(&mut self, id: Option<&str>, delta: &str);
+    fn handle_tool_input(
+        &mut self,
+        id: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
+        delta: &str,
+    );
     fn get_tool_input(&self, id: &str) -> serde_json::Value;
     fn handle_tool_exec(&mut self, id: &str, name: &str);
     fn handle_tool_done(&mut self, id: &str, name: &str, output: &str) -> String;
@@ -1516,8 +1521,14 @@ impl RemoteConnection {
     }
 
     /// Handle tool input delta
-    pub fn handle_tool_input(&mut self, id: Option<&str>, delta: &str) {
-        self.tool_diff.handle_tool_input(id, delta);
+    /// A snapshot replaces the buffered input, then the delta appends.
+    pub fn handle_tool_input(
+        &mut self,
+        id: Option<&str>,
+        snapshot: Option<&serde_json::Value>,
+        delta: &str,
+    ) {
+        self.tool_diff.handle_tool_input(id, snapshot, delta);
     }
 
     /// Get parsed input for this call (before handle_tool_exec clears it)

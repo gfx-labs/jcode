@@ -110,11 +110,15 @@ pub enum ApiEvent {
     },
     /// Incremental, potentially incomplete JSON. A nonempty `call_id` identifies
     /// the call independently of event interleaving. Empty IDs are legacy input
-    /// for the most recently started call.
+    /// for the most recently started call. When `snapshot` is present it is the
+    /// authoritative complete input: replace any buffered input with it, then
+    /// append `delta` (usually empty).
     ToolInputDelta {
         session_id: String,
         call_id: String,
         delta: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<serde_json::Value>,
     },
     ToolExec {
         session_id: String,

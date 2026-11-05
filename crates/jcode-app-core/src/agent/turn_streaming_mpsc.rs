@@ -562,7 +562,8 @@ impl Agent {
                                 });
                                 let _ = event_tx.send(ServerEvent::ToolInput {
                                     id: Some(id.clone()),
-                                    delta: input.to_string(),
+                                    delta: String::new(),
+                                    snapshot: Some(input),
                                 });
                                 let _ = event_tx.send(ServerEvent::ToolExec { id, name });
                             }
@@ -580,7 +581,8 @@ impl Agent {
                                     // the final snapshot, after execution started.
                                     let _ = event_tx.send(ServerEvent::ToolInput {
                                         id: Some(id.clone()),
-                                        delta: input.to_string(),
+                                        delta: String::new(),
+                                        snapshot: Some(input.clone()),
                                     });
                                 }
                                 if !already_open {
@@ -592,7 +594,8 @@ impl Agent {
                                     });
                                     let _ = event_tx.send(ServerEvent::ToolInput {
                                         id: Some(id.clone()),
-                                        delta: input.to_string(),
+                                        delta: String::new(),
+                                        snapshot: Some(input),
                                     });
                                     let _ = event_tx.send(ServerEvent::ToolExec {
                                         id: id.clone(),
@@ -683,6 +686,7 @@ impl Agent {
                         let _ = event_tx.send(ServerEvent::ToolInput {
                             id: input_tool_id.clone(),
                             delta: delta.clone(),
+                            snapshot: None,
                         });
                         if let Some((_, input)) = input_tool_id
                             .as_ref()
@@ -700,6 +704,13 @@ impl Agent {
                                 ToolCall::parse_streamed_input_to_object(&current_tool_input);
                             tool.refresh_intent_from_input();
 
+                            // The normalized input is what executes, so it is the
+                            // authoritative final input for clients.
+                            let _ = event_tx.send(ServerEvent::ToolInput {
+                                id: Some(tool.id.clone()),
+                                delta: String::new(),
+                                snapshot: Some(tool.input.clone()),
+                            });
                             let _ = event_tx.send(ServerEvent::ToolExec {
                                 id: tool.id.clone(),
                                 name: tool.name.clone(),

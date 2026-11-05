@@ -138,6 +138,7 @@ async fn live_status_fanout_projects_worker_events_into_broadcast() {
         ServerEvent::ToolInput {
             id: Some("call".into()),
             delta: r#"{"intent":"Check telemetry"}"#.into(),
+            snapshot: None,
         },
         ServerEvent::ToolExec {
             id: "call".into(),

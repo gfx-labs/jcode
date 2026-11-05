@@ -23,7 +23,13 @@ impl RemoteDiffTracker {
         self.tool_inputs.insert(id.to_string(), String::new());
     }
 
-    pub(crate) fn handle_tool_input(&mut self, id: Option<&str>, delta: &str) {
+    /// A snapshot replaces the buffered input, then the delta appends.
+    pub(crate) fn handle_tool_input(
+        &mut self,
+        id: Option<&str>,
+        snapshot: Option<&Value>,
+        delta: &str,
+    ) {
         if let Some(id) = id.or(self.current_tool_id.as_deref()) {
             // Hosted tools may supply their input only after execution begins.
             // Still ignore input for unknown or already-finished calls.
@@ -31,6 +37,9 @@ impl RemoteDiffTracker {
                 self.tool_inputs.entry(id.to_string()).or_default();
             }
             if let Some(input) = self.tool_inputs.get_mut(id) {
+                if let Some(snapshot) = snapshot {
+                    *input = snapshot.to_string();
+                }
                 input.push_str(delta);
             }
         }
@@ -151,11 +160,11 @@ mod keyed_tool_tests {
     fn keyed_tool_inputs_survive_sibling_exec_and_preserve_legacy_fallback() {
         let mut tracker = RemoteDiffTracker::default();
         tracker.handle_tool_start("a", "read");
-        tracker.handle_tool_input(Some("a"), r#"{"file_path":"a"#);
+        tracker.handle_tool_input(Some("a"), None, r#"{"file_path":"a"#);
         tracker.handle_tool_start("b", "read");
-        tracker.handle_tool_input(None, r#"{"file_path":"b"}"#);
-        tracker.handle_tool_input(Some("a"), r#""}"#);
-        tracker.handle_tool_input(Some("unknown"), "corruption");
+        tracker.handle_tool_input(None, None, r#"{"file_path":"b"}"#);
+        tracker.handle_tool_input(Some("a"), None, r#""}"#);
+        tracker.handle_tool_input(Some("unknown"), None, "corruption");
         assert_eq!(tracker.tool_input_json("a")["file_path"], "a");
         tracker.handle_tool_exec("a", "read");
         assert_eq!(tracker.tool_input_json("a"), Value::Null);
@@ -164,6 +173,22 @@ mod keyed_tool_tests {
         tracker.handle_tool_exec("b", "read");
         assert_eq!(tracker.tool_input_json("b"), Value::Null);
         assert!(tracker.current_tool_id.is_none());
+    }
+
+    #[test]
+    fn tool_input_snapshot_replaces_buffer_then_delta_appends() {
+        let mut tracker = RemoteDiffTracker::default();
+        tracker.handle_tool_start("a", "read");
+        tracker.handle_tool_start("b", "read");
+        tracker.handle_tool_input(Some("a"), None, r#"{"stale":"#);
+        tracker.handle_tool_input(Some("a"), Some(&serde_json::json!({"x": 1})), "");
+        assert_eq!(tracker.tool_input_json("a"), serde_json::json!({"x": 1}));
+        // The sibling's buffer is untouched, and snapshot plus delta applies in order.
+        assert_eq!(tracker.tool_input_json("b"), Value::Null);
+        tracker.handle_tool_input(Some("b"), Some(&serde_json::json!({"y": 2})), "");
+        tracker.handle_tool_input(Some("a"), Some(&serde_json::json!({"x": 1})), " ");
+        assert_eq!(tracker.tool_input_json("a"), serde_json::json!({"x": 1}));
+        assert_eq!(tracker.tool_input_json("b"), serde_json::json!({"y": 2}));
     }
 
     #[test]
@@ -176,8 +201,16 @@ mod keyed_tool_tests {
         let mut tracker = RemoteDiffTracker::default();
         tracker.handle_tool_start("a", "write");
         tracker.handle_tool_start("b", "write");
-        tracker.handle_tool_input(Some("a"), &serde_json::json!({"file_path": a}).to_string());
-        tracker.handle_tool_input(Some("b"), &serde_json::json!({"file_path": b}).to_string());
+        tracker.handle_tool_input(
+            Some("a"),
+            None,
+            &serde_json::json!({"file_path": a}).to_string(),
+        );
+        tracker.handle_tool_input(
+            Some("b"),
+            None,
+            &serde_json::json!({"file_path": b}).to_string(),
+        );
         tracker.handle_tool_exec("a", "write");
         tracker.handle_tool_exec("b", "write");
         if show_diffs_enabled() {
@@ -218,13 +251,13 @@ mod keyed_tool_tests {
     fn keyed_tool_inputs_clear_discards_all_partial_calls() {
         let mut tracker = RemoteDiffTracker::default();
         tracker.handle_tool_start("a", "read");
-        tracker.handle_tool_input(None, "{}");
+        tracker.handle_tool_input(None, None, "{}");
         tracker.handle_tool_start("b", "read");
-        tracker.handle_tool_input(None, "{}");
+        tracker.handle_tool_input(None, None, "{}");
         tracker.clear();
         assert!(tracker.tool_inputs.is_empty());
         assert!(tracker.current_tool_id.is_none());
-        tracker.handle_tool_input(Some("a"), "{}");
+        tracker.handle_tool_input(Some("a"), None, "{}");
         assert!(tracker.tool_inputs.is_empty());
     }
 }

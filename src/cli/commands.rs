@@ -3381,10 +3381,20 @@ fn emit_ndjson_event(
             stdout,
             &serde_json::json!({ "type": "tool_start", "id": id, "name": name }),
         ),
-        ServerEvent::ToolInput { delta, .. } => write_json_line(
-            stdout,
-            &serde_json::json!({ "type": "tool_input", "delta": delta }),
-        ),
+        ServerEvent::ToolInput {
+            id,
+            delta,
+            snapshot,
+        } => {
+            let mut line = serde_json::json!({ "type": "tool_input", "delta": delta });
+            if let Some(id) = id {
+                line["id"] = serde_json::Value::String(id);
+            }
+            if let Some(snapshot) = snapshot {
+                line["snapshot"] = snapshot;
+            }
+            write_json_line(stdout, &line)
+        }
         ServerEvent::ToolExec { id, name } => write_json_line(
             stdout,
             &serde_json::json!({ "type": "tool_exec", "id": id, "name": name }),
