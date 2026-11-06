@@ -618,7 +618,7 @@ impl App {
                 let usage = crate::usage::get_sync();
                 Some(crate::tui::info_widget::UsageInfo {
                     provider: crate::tui::info_widget::UsageProvider::Anthropic,
-                    primary_limit_label: Some("5-hour".to_string()),
+                    primary_limit_label: usage.has_five_hour_window().then(|| "5-hour".to_string()),
                     five_hour: usage.five_hour,
                     five_hour_resets_at: usage.five_hour_resets_at.clone(),
                     secondary_limit_label: Some("Weekly".to_string()),

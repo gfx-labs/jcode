@@ -99,6 +99,13 @@ pub struct UsageData {
 }
 
 impl UsageData {
+    /// Whether the provider reported a 5-hour session window. Anthropic now
+    /// returns `five_hour: null` with no reset time when that window is not
+    /// in effect, which is stored as zero usage without a reset.
+    pub fn has_five_hour_window(&self) -> bool {
+        self.five_hour_resets_at.is_some() || self.five_hour > 0.0
+    }
+
     /// Whether Anthropic reports an exhausted model-scoped weekly window for
     /// `model`. The API currently uses display names such as `Fable`, while
     /// callers use catalog ids such as `claude-fable-5`, so compare normalized

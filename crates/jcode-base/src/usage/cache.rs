@@ -548,11 +548,13 @@ pub(super) fn provider_report_from_usage_data(
     }
 
     let mut limits = Vec::new();
-    limits.push(UsageLimit {
-        name: "5-hour window".to_string(),
-        usage_percent: data.five_hour * 100.0,
-        resets_at: data.five_hour_resets_at.clone(),
-    });
+    if data.has_five_hour_window() {
+        limits.push(UsageLimit {
+            name: "5-hour window".to_string(),
+            usage_percent: data.five_hour * 100.0,
+            resets_at: data.five_hour_resets_at.clone(),
+        });
+    }
     limits.push(UsageLimit {
         name: "7-day window".to_string(),
         usage_percent: data.seven_day * 100.0,
@@ -780,7 +782,10 @@ pub(super) fn anthropic_snapshot_from_usage(
         (usage.last_success_at.is_some() && usage.fetched_at.is_some() && future_reset)
             .then_some(value)
     };
-    let five_hour_ratio = ratio(usage.five_hour, usage.five_hour_resets_at.as_deref());
+    let five_hour_ratio = usage
+        .has_five_hour_window()
+        .then(|| ratio(usage.five_hour, usage.five_hour_resets_at.as_deref()))
+        .flatten();
     let seven_day_ratio = ratio(usage.seven_day, usage.seven_day_resets_at.as_deref());
     AccountUsageSnapshot {
         label,

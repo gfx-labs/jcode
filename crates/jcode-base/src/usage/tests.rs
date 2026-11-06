@@ -925,6 +925,32 @@ fn anthropic_model_scoped_exhaustion_matches_display_name_to_catalog_id() {
     assert!(!below_limit.model_scoped_exhausted("claude-fable-5"));
 }
 #[test]
+fn absent_anthropic_five_hour_window_is_not_displayed() {
+    let idle = UsageData {
+        five_hour: 0.0,
+        five_hour_resets_at: None,
+        seven_day: 0.38,
+        seven_day_resets_at: Some("2999-01-01T00:00:00Z".into()),
+        ..Default::default()
+    };
+    assert!(!idle.has_five_hour_window());
+    let report = cache::provider_report_from_usage_data("Claude".into(), &idle);
+    assert!(report.limits.iter().all(|l| l.name != "5-hour window"));
+    assert_eq!(report.limits[0].name, "7-day window");
+    let snapshot = cache::anthropic_snapshot_from_usage("a".into(), None, &idle);
+    assert_eq!(snapshot.five_hour_ratio, None);
+    assert_eq!(snapshot.seven_day_ratio, Some(0.38));
+
+    let active = UsageData {
+        five_hour_resets_at: Some("2999-01-01T00:00:00Z".into()),
+        ..idle
+    };
+    assert!(active.has_five_hour_window());
+    let report = cache::provider_report_from_usage_data("Claude".into(), &active);
+    assert_eq!(report.limits[0].name, "5-hour window");
+}
+
+#[test]
 fn missing_anthropic_primary_quota_is_not_treated_as_zero_usage() {
     let missing: UsageResponse =
         serde_json::from_str(r#"{"five_hour":{"utilization":0.0}}"#).unwrap();
