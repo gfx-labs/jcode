@@ -18,10 +18,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use uuid::Uuid;
 
 pub use jcode_provider_core::CredentialMode as AnthropicCredentialMode;
-use jcode_provider_core::{
-    ANTHROPIC_OAUTH_BETA_HEADERS, anthropic_effectively_1m,
-    anthropic_stainless_arch as stainless_arch, anthropic_stainless_os as stainless_os,
-};
+use jcode_provider_core::{ANTHROPIC_OAUTH_BETA_HEADERS, anthropic_effectively_1m};
 
 // 0 follows persisted configuration, 1/2 are explicit process-local overrides.
 static CACHE_TTL_1H: AtomicU8 = AtomicU8::new(0);
@@ -53,24 +50,16 @@ pub fn new_oauth_request_id() -> String {
     Uuid::new_v4().to_string()
 }
 
-/// Attach the OAuth attribution headers the official Claude CLI sends.
-/// Shared by the runtime crate's request path and base's usage probes.
+/// Attach per-request headers for Claude subscription (OAuth) calls.
+///
+/// Only a request id is sent. The Claude Code CLI impersonation headers that
+/// used to live here were not needed, see [`CLAUDE_CLI_USER_AGENT`].
+/// `_session_id` is kept for call-site compatibility.
 pub fn apply_oauth_attribution_headers(
     req: reqwest::RequestBuilder,
-    session_id: &str,
+    _session_id: &str,
 ) -> reqwest::RequestBuilder {
     req.header("x-client-request-id", new_oauth_request_id())
-        .header("x-app", "cli")
-        .header("X-Claude-Code-Session-Id", session_id)
-        .header("X-Stainless-Arch", stainless_arch())
-        .header("X-Stainless-Lang", "js")
-        .header("X-Stainless-OS", stainless_os())
-        .header("X-Stainless-Package-Version", "0.81.0")
-        .header("X-Stainless-Retry-Count", "0")
-        .header("X-Stainless-Runtime", "node")
-        .header("X-Stainless-Runtime-Version", "v24.3.0")
-        .header("X-Stainless-Timeout", "600")
-        .header("anthropic-dangerous-direct-browser-access", "true")
 }
 
 /// Available models

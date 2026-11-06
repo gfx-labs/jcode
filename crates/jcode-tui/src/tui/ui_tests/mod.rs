@@ -1,6 +1,9 @@
 use super::*;
 
+mod cloud_directories;
+mod preview_redraw_schedule;
 mod resume_parity;
+mod stable_status;
 use crate::tui::session_picker;
 use crate::tui::ui::tools_ui;
 
@@ -115,6 +118,8 @@ fn native_scrollbar_visibility_requires_overflow() {
 
 #[derive(Clone, Default)]
 struct TestState {
+    session_picker: Option<std::rc::Rc<std::cell::RefCell<session_picker::SessionPicker>>>,
+    unfocused: bool,
     input: String,
     cursor_pos: usize,
     provider_name: Option<String>,
@@ -130,6 +135,9 @@ struct TestState {
     pending_soft_interrupts: Vec<String>,
     interleave_message: Option<String>,
     status: ProcessingStatus,
+    status_elapsed: Option<Duration>,
+    status_rate_limit: Option<Duration>,
+    status_background: Vec<crate::tui::BackgroundTaskRow>,
     queue_mode: bool,
     active_skill: Option<String>,
     centered_mode: bool,
@@ -164,6 +172,9 @@ struct TestState {
 }
 
 impl crate::tui::TuiState for TestState {
+    fn client_focused(&self) -> bool {
+        !self.unfocused
+    }
     fn justrust_status(&self) -> Option<&crate::tui::justrust_status::StatusRow> {
         self.justrust_status.as_ref()
     }
@@ -265,7 +276,7 @@ impl crate::tui::TuiState for TestState {
         Vec::new()
     }
     fn elapsed(&self) -> Option<Duration> {
-        None
+        self.status_elapsed
     }
     fn status(&self) -> ProcessingStatus {
         self.status.clone()
@@ -355,7 +366,10 @@ impl crate::tui::TuiState for TestState {
         self.anim_elapsed
     }
     fn rate_limit_remaining(&self) -> Option<Duration> {
-        None
+        self.status_rate_limit
+    }
+    fn background_task_rows(&self) -> &[crate::tui::BackgroundTaskRow] {
+        &self.status_background
     }
     fn queue_mode(&self) -> bool {
         self.queue_mode
@@ -463,7 +477,7 @@ impl crate::tui::TuiState for TestState {
         None
     }
     fn session_picker_overlay(&self) -> Option<&std::cell::RefCell<session_picker::SessionPicker>> {
-        None
+        self.session_picker.as_deref()
     }
     fn login_picker_overlay(
         &self,

@@ -14,6 +14,15 @@ pub struct AccountUsageSnapshot {
     pub seven_day_ratio: Option<f32>,
     pub resets_at: Option<String>,
     pub error: Option<String>,
+    /// Banked usage resets claimable now. `None` when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banked_resets: Option<u64>,
+    /// RFC3339 expiry of the soonest-expiring banked reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banked_expires_at: Option<String>,
+    /// RFC3339 time the next banked reset unlocks when none are claimable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banked_next_at: Option<String>,
 }
 
 #[cfg(test)]
@@ -38,6 +47,9 @@ mod account_usage_tests {
             seven_day_ratio: None,
             resets_at: None,
             error: None,
+            banked_resets: None,
+            banked_expires_at: None,
+            banked_next_at: None,
         };
         let event = ServerEvent::AccountUsage {
             id: 71,
@@ -58,6 +70,13 @@ mod account_usage_tests {
         assert_eq!(anthropic, vec![snapshot]);
         assert!(openai.is_empty());
     }
+}
+
+/// Identity of a turn within one runtime incarnation. Request IDs are not turn IDs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnIdentity {
+    pub runtime_generation: String,
+    pub turn_id: u64,
 }
 
 /// Server event sent to client
@@ -95,6 +114,23 @@ pub enum ServerEvent {
         error: Option<String>,
         fetched_at_unix_secs: u64,
         from_cache: bool,
+    },
+    /// Authoritative attachment boundary, sent before the corresponding History.
+    #[serde(rename = "turn_state")]
+    TurnState {
+        session_id: String,
+        runtime_generation: String,
+        turn_id: Option<u64>,
+        latest_turn_id: u64,
+    },
+    /// Published before any output from an accepted server turn.
+    #[serde(rename = "turn_started")]
+    TurnStarted { identity: TurnIdentity },
+    /// All events owned by a turn, including its terminal, share this scope.
+    #[serde(rename = "turn_event")]
+    TurnEvent {
+        identity: TurnIdentity,
+        event: Box<ServerEvent>,
     },
     /// Serialized todo card snapshot containing todos, plan, and goals.
     #[serde(rename = "todos")]
@@ -175,9 +211,8 @@ pub enum ServerEvent {
         duration_secs: Option<f64>,
     },
 
-    /// Replace the current turn's streamed text content
-    /// Used when text-wrapped tool calls are recovered: the garbled text
-    /// shown during streaming is replaced with the clean prefix text.
+    /// Replace the current turn's streamed text content, for example when a
+    /// provider retry rolls back a partial response.
     #[serde(rename = "text_replace")]
     TextReplace { text: String },
 

@@ -28,6 +28,7 @@ mod ssh_host;
 pub(super) mod ssh_sessions;
 mod swarm_plan_core;
 mod swarm_status_core;
+pub(super) mod turn_identity;
 mod workspace;
 
 #[cfg(test)]
@@ -126,6 +127,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     needs_redraw |= app.poll_cloud_job();
+    if app.take_cloud_remote_interrupt() {
+        if let Err(error) = remote.cancel_with_reason("cloud_handoff_ready").await {
+            crate::logging::warn(&format!(
+                "Failed to interrupt turn for cloud handoff: {error}"
+            ));
+        }
+        needs_redraw = true;
+    }
     if let Some((provider, account)) = app.usage_reset.invalidate_account.take() {
         let sent = match provider {
             super::usage_reset::Provider::OpenAi => remote.invalidate_openai_usage(account).await,
@@ -200,7 +209,15 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         && app.stream_buffer.is_empty()
         && let Some(id) = app.deferred_stream_done_id.take()
     {
-        needs_redraw |= app.handle_server_event(crate::protocol::ServerEvent::Done { id }, remote);
+        let event = crate::protocol::ServerEvent::Done { id };
+        let event = match app.deferred_stream_done_identity.clone() {
+            Some(identity) => crate::protocol::ServerEvent::TurnEvent {
+                identity,
+                event: Box::new(event),
+            },
+            None => event,
+        };
+        needs_redraw |= app.handle_server_event(event, remote);
     }
 
     if app.remote_todos_refresh_due()
@@ -218,6 +235,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.poll_model_picker_load();
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
+    needs_redraw |= app.poll_session_picker_search_submission();
     needs_redraw |= app.onboarding_tick();
     needs_redraw |= app.progress_update_simulator();
     needs_redraw |= app.refresh_keybindings_if_config_reloaded();
@@ -362,6 +380,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             return true;
         }
     }
+
+    if app
+        .remote_queue_retry_not_before
+        .is_some_and(|deadline| Instant::now() < deadline)
+    {
+        return needs_redraw;
+    }
+    app.remote_queue_retry_not_before = None;
 
     // Esc redirect hold. On timeout this arms pending_queued_dispatch, which
     // the next check hands to the normal follow-up path.
@@ -1344,6 +1370,13 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
 }
 
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
+    if app
+        .remote_queue_retry_not_before
+        .is_some_and(|deadline| Instant::now() < deadline)
+    {
+        return;
+    }
+    app.remote_queue_retry_not_before = None;
     if app.prepare_cloud_environment(remote).await.is_err() {
         app.revoke_cloud_environment();
         return;
@@ -1912,6 +1945,12 @@ async fn handle_debug_command(app: &mut App, cmd: &str, remote: &mut RemoteConne
     if cmd == "state" {
         return serde_json::json!({
             "processing": app.is_processing,
+            "processing_status": format!("{:?}", app.status),
+            "current_message_id": app.current_message_id,
+            "pending_soft_interrupts": app.pending_soft_interrupts.len(),
+            "pending_soft_interrupt_requests": app.pending_soft_interrupt_requests.len(),
+            "pending_queued_dispatch": app.pending_queued_dispatch,
+            "remote_session_id": app.remote_session_id,
             "messages": app.messages.len(),
             "display_messages": app.display_messages.len(),
             "input": app.input,
@@ -2017,6 +2056,9 @@ fn queue_message_for_reconnect(app: &mut App) {
 
     let prepared = input::take_prepared_input(app);
     app.queued_messages.push(prepared.expanded);
+    if crate::tui::is_ssh_remote() {
+        crate::tui::request_immediate_ssh_reconnect();
+    }
 
     let queued_count = app.queued_messages.len();
     app.set_status_notice(format!(

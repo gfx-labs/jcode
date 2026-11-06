@@ -903,6 +903,7 @@ impl RawClient {
             supports_pdf_panels: false,
             supports_user_response: false,
             supports_server_failover: false,
+            supports_turn_identity: false,
             id,
             working_dir: Some(working_dir.display().to_string()),
             selfdev: None,
@@ -914,6 +915,7 @@ impl RawClient {
             crash_on_disconnect: false,
             continue_on_disconnect: false,
             terminal_env: Vec::new(),
+            client_name: None,
         })
         .await?;
         self.read_until(

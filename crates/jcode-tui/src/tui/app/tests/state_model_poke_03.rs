@@ -2654,6 +2654,7 @@ fn test_finish_turn_auto_pokes_again_when_todos_remain() {
 #[test]
 fn test_finish_turn_auto_poke_queues_confidence_summary_when_todos_done() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         crate::todo::save_todos(
             &app.session.id,
@@ -2854,6 +2855,7 @@ fn test_todo_completion_gate_allows_evidence_backed_confidence_steps() {
 #[test]
 fn test_finish_turn_challenges_confidence_spike_once() {
     with_temp_jcode_home(|| {
+        write_test_config("[features]\ntodo_gate_digest = true\n");
         let mut app = create_test_app();
         crate::todo::save_todos(
             &app.session.id,
@@ -3121,16 +3123,5 @@ fn test_finish_turn_does_not_challenge_moderate_or_unrecorded_confidence_jumps()
     });
 }
 
-#[test]
-fn test_remote_alt_e_toggles_prompt_history_without_typing() {
-    let mut app = create_test_app();
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut remote = crate::tui::backend::RemoteConnection::dummy();
-    let before = crate::tui::ui::viewport::prompt_history_expanded();
-    rt.block_on(app.handle_remote_key(KeyCode::Char('e'), KeyModifiers::ALT, &mut remote))
-        .unwrap();
-    assert!(app.input.is_empty(), "Alt+E must not type: {:?}", app.input);
-    assert_ne!(crate::tui::ui::viewport::prompt_history_expanded(), before);
-    crate::tui::ui::viewport::toggle_prompt_history_expanded();
-}
+#[path = "state_model_poke_03/prompt_history_keys.rs"]
+mod prompt_history_keys;

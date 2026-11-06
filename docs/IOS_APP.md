@@ -1,18 +1,22 @@
-# jcode iOS App
+# Jcode mobile app
 
-> Status: v2 rebuild. Pure Swift. This replaces the earlier prototype and the
-> Rust-mobile-core/simulator direction, both removed in the `ios-app-restart`
-> branch history.
+The current iPhone client lives in the separate
+[jcode-mobile repository](https://github.com/1jehuang/jcode-mobile).
+That repository owns the Rust/GPUI app, iOS platform integrations, mobile tests,
+build scripts, and App Store metadata. See its README for development and
+platform setup instructions.
 
-## Product definition
+The legacy Swift/SwiftUI client formerly in this repository's `ios/` directory
+and its `ios-testflight.yml` workflow were retired on November 6, 2026. Their
+sources, tests, and release documentation remain available in Git history.
+This removal does not assert App Store release readiness for the replacement.
 
-A native iOS remote control for jcode servers running on your own machines.
-The phone renders conversations and drives sessions; all heavy lifting (LLM
-calls, tools, git, files, MCP) stays on the server. Reachability is assumed to
-be Tailscale (or LAN); the app never talks to LLM providers directly.
+## What stays in this repository
 
-Design identity: dark, calm, terminal-native without being retro. Mint accent
-(`#4DD9A6`) for live/connected state. Dense information in touchable cards.
+Mobile clients still depend on Jcode's server and shared libraries. Keep the
+pairing and gateway endpoints, harness API, wire protocol, cloud session sync,
+mobile push support, and `jcode-sdk` here. The separate mobile repository
+consumes the SDK from this repository, not the retired Swift client.
 
 ## Architecture decision: pure Swift
 

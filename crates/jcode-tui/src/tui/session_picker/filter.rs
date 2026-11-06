@@ -1,6 +1,140 @@
 use super::*;
 
+#[derive(Default)]
+pub(super) struct SearchSelection {
+    query: String,
+    follow_until: Option<std::time::Instant>,
+    last_publish: Option<std::time::Instant>,
+    unpublished_results: bool,
+}
+
+impl SearchSelection {
+    fn update_query(&mut self, query: &str) {
+        let query = query.trim().to_lowercase();
+        if self.query != query {
+            self.follow_until = (!query.is_empty())
+                .then(|| std::time::Instant::now() + std::time::Duration::from_secs(1));
+            self.query = query;
+            self.last_publish = Some(std::time::Instant::now());
+            self.unpublished_results = false;
+        }
+    }
+
+    pub(super) fn following(&self) -> bool {
+        self.follow_until
+            .is_some_and(|until| std::time::Instant::now() < until)
+    }
+
+    pub(super) fn stop(&mut self) {
+        self.follow_until = None;
+    }
+
+    /// Coalesce worker batches into at most eight list/preview updates per
+    /// second. Completion always flushes, including a channel disconnect with
+    /// no new results in that poll.
+    fn publish_results(&mut self, changed: bool, pending: bool) -> bool {
+        self.unpublished_results |= changed;
+        let ready = !pending
+            || self
+                .last_publish
+                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(125));
+        if self.unpublished_results && ready {
+            self.unpublished_results = false;
+            self.last_publish = Some(std::time::Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_next_poll_for_test(&mut self) {
+        self.last_publish = None;
+    }
+
+    #[cfg(test)]
+    pub(super) fn expire_for_test(&mut self) {
+        self.follow_until = Some(std::time::Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod search_selection_tests {
+    use super::*;
+
+    #[test]
+    fn progressive_batches_wait_for_publish_interval_but_completion_flushes() {
+        let mut selection = SearchSelection::default();
+        selection.update_query("needle");
+        assert!(!selection.publish_results(true, true));
+        assert!(!selection.publish_results(true, true));
+        selection.last_publish =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(126));
+        assert!(selection.publish_results(false, true));
+        assert!(!selection.publish_results(false, true));
+        assert!(!selection.publish_results(true, true));
+        assert!(selection.publish_results(false, false));
+        assert!(!selection.publish_results(false, false));
+    }
+
+    #[test]
+    fn changing_query_discards_unpublished_results() {
+        let mut selection = SearchSelection::default();
+        selection.update_query("old");
+        assert!(!selection.publish_results(true, true));
+        selection.update_query("new");
+        assert!(!selection.publish_results(false, false));
+    }
+
+    #[test]
+    fn follows_for_one_second_without_extending_on_rebuild() {
+        let mut selection = SearchSelection::default();
+        selection.update_query("needle");
+        assert!(selection.following());
+        let deadline = selection.follow_until.unwrap();
+        selection.update_query("needle");
+        assert_eq!(selection.follow_until, Some(deadline));
+        selection.follow_until = Some(std::time::Instant::now());
+        assert!(!selection.following());
+        selection.update_query("needle");
+        assert!(
+            !selection.following(),
+            "same query must not restart an expired window"
+        );
+        selection.update_query("another query");
+        assert!(selection.following());
+        selection.stop();
+        selection.update_query("another query");
+        assert!(
+            !selection.following(),
+            "refresh must not undo a manual override"
+        );
+        selection.update_query("");
+        assert!(!selection.following());
+    }
+}
+
 impl SessionPicker {
+    /// Commit the best evidence available when queued Enter completes or its
+    /// time budget expires. This never restarts the auto-follow deadline.
+    pub(super) fn rebuild_items_following(&mut self) {
+        let selected = self.selected_session().map(|session| session.id.clone());
+        let scroll = self.scroll_offset;
+        let auto_scroll = self.auto_scroll_preview;
+        self.cached_search_query.clear();
+        self.cached_search_refs.clear();
+        self.rebuild_items();
+        self.list_state
+            .select(self.item_to_session.iter().position(Option::is_some));
+        if self.selected_session().map(|session| &session.id) == selected.as_ref() {
+            self.scroll_offset = scroll;
+            self.auto_scroll_preview = auto_scroll;
+        } else {
+            self.scroll_offset = 0;
+            self.auto_scroll_preview = true;
+        }
+    }
+
     fn normalized_search_query(query: &str) -> String {
         query.trim().to_lowercase()
     }
@@ -45,8 +179,8 @@ impl SessionPicker {
         }
 
         // Keep literal matches immediate. Expensive typo-tolerant matching is
-        // debounced in the worker alongside transcript search, not performed
-        // on every keypress. Reconsider all sessions for new worker results.
+        // scheduled immediately on the worker alongside transcript search,
+        // never on the UI thread. Reconsider all sessions for new worker results.
         let candidates = self.all_session_refs();
         let tokens = loading::search_query_tokens(&normalized);
 
@@ -54,10 +188,11 @@ impl SessionPicker {
             .into_iter()
             .filter(|session_ref| {
                 self.session_by_ref(*session_ref).is_some_and(|session| {
-                    (!self.transcript_search.defers_metadata()
-                        && tokens
-                            .iter()
-                            .all(|token| session.search_index.contains(token)))
+                    identity_search::rank(session, &tokens).0
+                        || (!self.transcript_search.defers_metadata()
+                            && tokens
+                                .iter()
+                                .all(|token| session.search_index.contains(token)))
                         || self.transcript_search.contains(&session.id)
                 })
             })
@@ -71,7 +206,11 @@ impl SessionPicker {
     /// Called once per rendered frame, so completed scans update results even
     /// when the user is not typing. Never wait for the worker on the UI thread.
     pub(super) fn poll_transcript_search(&mut self) {
-        if self.transcript_search.poll() {
+        let changed = self.transcript_search.poll();
+        if self
+            .search_selection
+            .publish_results(changed, self.transcript_search.pending())
+        {
             let selected = self.selected_session().map(|session| session.id.clone());
             let preview_scroll = self.scroll_offset;
             let auto_scroll = self.auto_scroll_preview;
@@ -135,15 +274,18 @@ impl SessionPicker {
                     // intent evidence than incidental matches in tool output.
                     let fields = [
                         session.title.as_str(),
-                        session.save_label.as_deref().unwrap_or_default(),
-                        session.first_user_prompt.as_deref().unwrap_or_default(),
+                        session.save_label.as_deref().unwrap_or(""),
+                        session.first_user_prompt.as_deref().unwrap_or(""),
                     ];
                     let fields = fields.map(transcript_search::lowercase_field);
                     let intent_terms = tokens
                         .iter()
                         .filter(|token| fields.iter().any(|field| field.contains(token.as_str())))
                         .count();
-                    rank.with_intent_terms(intent_terms)
+                    (
+                        identity_search::rank(session, &tokens),
+                        rank.with_intent_terms(intent_terms),
+                    )
                 }))
             });
         }
@@ -254,6 +396,9 @@ impl SessionPicker {
         let show_test = self.show_test_sessions;
         let filter_mode = self.filter_mode;
         let search_query = self.search_query.clone();
+        self.search_selection.update_query(&search_query);
+        let current_selected_id =
+            current_selected_id.filter(|_| !self.search_selection.following());
         let search_matches = self.search_matched_session_refs(&search_query);
         let filtered_refs = self.filtered_session_refs(&search_matches, show_test, filter_mode);
 

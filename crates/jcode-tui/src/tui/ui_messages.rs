@@ -968,6 +968,38 @@ pub(crate) fn render_todos_message(
     render_todos_message_with_cap(msg, width, diff_mode, true)
 }
 
+/// Dedicated composer chrome, one non-wrapping row per live blocker.
+pub(super) fn todo_blocker_footer(payload: Option<&str>, width: u16) -> Vec<Line<'static>> {
+    let Some(payload) = payload.and_then(|p| serde_json::from_str::<TodoCardPayload>(p).ok())
+    else {
+        return Vec::new();
+    };
+    let (todos, ..) = payload.into_parts();
+    todos
+        .iter()
+        .filter(|todo| crate::todo::is_incomplete_todo(todo))
+        .filter_map(|todo| {
+            let reason = if crate::todo::todo_completely_blocked(todo) {
+                todo.completely_blocked.as_ref().map(|b| b.reason.clone())
+            } else if crate::todo::todo_has_external_blocker(todo) {
+                todo.external_blocker.as_ref().map(|b| b.reason.clone())
+            } else if !todo.blocked_by.is_empty() {
+                Some(format!("waiting on {}", todo.blocked_by.join(", ")))
+            } else {
+                None
+            }?;
+            let text = format!("Blocked · {}: {}", todo.content, reason)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(super::truncate_line_with_ellipsis_to_width(
+                &Line::styled(text, Style::default().fg(todo_warning_color())),
+                usize::from(width),
+            ))
+        })
+        .collect()
+}
+
 /// Full blocker prose belongs below the response, outside the pinned chrome.
 pub(super) fn todo_blocker_notes(payload: Option<&str>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -1023,7 +1055,10 @@ fn render_todos_message_with_cap(
     };
     let (todos, plan, goals, agents, background_tasks) = payload.into_parts();
 
-    let centered = markdown::center_code_blocks();
+    // Pinned todos are viewport chrome, not a centered transcript card. Using
+    // the code-block preference here makes short plans float in the middle of
+    // wide terminals, detached from the conversation's left edge.
+    let centered = cap_width && markdown::center_code_blocks();
     let meta_style = Style::default().fg(todo_meta_color());
     let card_width = match (centered, cap_width) {
         (true, true) => (width.saturating_sub(4) as usize).min(120),
@@ -1756,7 +1791,7 @@ fn render_todo_plan_update(
                     inner_width,
                 )
             }
-            crate::todo::TodoPlanField::UserIntention => {}
+            crate::todo::TodoPlanField::UserIntention | crate::todo::TodoPlanField::Title => {}
         }
     }
 

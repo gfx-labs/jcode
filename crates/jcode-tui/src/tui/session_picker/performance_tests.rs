@@ -1,7 +1,7 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-fn session(id: usize, turns: usize) -> SessionInfo {
+pub(super) fn session(id: usize, turns: usize) -> SessionInfo {
     let now = chrono::Utc::now();
     let messages_preview = (0..turns * 2).map(|i| PreviewMessage {
         role: if i % 2 == 0 { "user" } else { "assistant" }.into(),
@@ -32,6 +32,7 @@ fn session(id: usize, turns: usize) -> SessionInfo {
         status: SessionStatus::Closed,
         needs_catchup: false,
         estimated_tokens: turns * 1000,
+        todo_statuses: Vec::new(),
         first_user_prompt: Some("improve resume responsiveness".into()),
         messages_preview,
         search_index: String::new(),
@@ -48,6 +49,82 @@ fn session(id: usize, turns: usize) -> SessionInfo {
 fn median(mut samples: Vec<Duration>) -> Duration {
     samples.sort();
     samples[samples.len() / 2]
+}
+
+#[test]
+fn cold_preview_viewport_matches_full_wide_then_narrow_layout() {
+    let mode = crate::config::DiffDisplayMode::Inline;
+    for turns in [0, 1, 8] {
+        let item = session(0, turns);
+        let picker = SessionPicker::new(vec![item.clone()]);
+        let messages: Vec<DisplayMessage> = item
+            .messages_preview
+            .iter()
+            .map(|msg| DisplayMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                tool_calls: msg.tool_calls.clone(),
+                tool_data: msg.tool_data.clone(),
+                title: msg.title.clone(),
+                duration_secs: msg.duration_secs,
+            })
+            .collect();
+        for width in [1, 2, 3, 20, 80, 120] {
+            for height in [0, 1, 2, 5, 30, 200] {
+                let area = Rect::new(0, 0, width, height);
+                let wide = width
+                    .saturating_sub(super::super::ui::left_aligned_content_inset(width, false));
+                let mut prepared =
+                    super::super::ui::prepare::prepare_history_preview(&messages, 0, wide, mode);
+                let mut header = super::super::ui::header::build_preview_header(&item, wide);
+                let mut padding =
+                    super::super::ui::prepare::initial_header_pad_top(height, header.len());
+                let scrollbar = super::super::ui::native_scrollbar_visible(
+                    width > 1,
+                    padding + header.len() + prepared.wrapped_lines.len(),
+                    height as usize,
+                );
+                if scrollbar {
+                    let render_width = width.saturating_sub(1);
+                    let narrow = render_width.saturating_sub(
+                        super::super::ui::left_aligned_content_inset(render_width, false),
+                    );
+                    prepared = super::super::ui::prepare::prepare_history_preview(
+                        &messages, 0, narrow, mode,
+                    );
+                    header = super::super::ui::header::build_preview_header(&item, narrow);
+                    padding =
+                        super::super::ui::prepare::initial_header_pad_top(height, header.len());
+                }
+                let body_empty = prepared.wrapped_lines.is_empty();
+                let mut expected = vec![Line::default(); padding];
+                expected.extend(header);
+                expected.extend(prepared.wrapped_lines);
+                if body_empty {
+                    expected.push(Line::styled(
+                        "(empty session)",
+                        Style::default().fg(rgb(80, 80, 80)),
+                    ));
+                }
+                let actual = picker.build_preview_cache(
+                    &item,
+                    area,
+                    area,
+                    tiny_cache(0, 0).key,
+                    Alignment::Left,
+                    mode,
+                );
+                assert_eq!(
+                    actual.show_scrollbar, scrollbar,
+                    "turns={turns} width={width} height={height}"
+                );
+                assert_eq!(
+                    actual.wrapped_lines, expected,
+                    "turns={turns} width={width} height={height}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -167,7 +244,7 @@ fn memoized_transcript_hash_invalidates_on_load_mutation_and_reseed() {
     let original = picker.selected_preview_content_hash(selected, mode);
     assert_eq!(
         original,
-        picker.preview_content_hash(picker.selected_session().unwrap(), mode)
+        Some(picker.preview_content_hash(picker.selected_session().unwrap(), mode))
     );
     picker
         .session_by_ref_mut(selected)
@@ -179,7 +256,7 @@ fn memoized_transcript_hash_invalidates_on_load_mutation_and_reseed() {
     assert_ne!(changed, original);
     assert_eq!(
         changed,
-        picker.preview_content_hash(picker.selected_session().unwrap(), mode)
+        Some(picker.preview_content_hash(picker.selected_session().unwrap(), mode))
     );
     picker.preview_extras.insert(
         "performance-0".into(),
@@ -198,18 +275,52 @@ fn memoized_transcript_hash_invalidates_on_load_mutation_and_reseed() {
     picker.apply_session_preview("performance-0", preview);
     assert_eq!(
         picker.selected_preview_content_hash(selected, mode),
-        picker.preview_content_hash(picker.selected_session().unwrap(), mode)
+        Some(picker.preview_content_hash(picker.selected_session().unwrap(), mode))
     );
     picker.reseed_grouped(Vec::new(), vec![session(1, 2)]);
     let selected = picker.selected_session_ref().unwrap();
     assert_eq!(
         picker.selected_preview_content_hash(selected, mode),
-        picker.preview_content_hash(picker.selected_session().unwrap(), mode)
+        Some(picker.preview_content_hash(picker.selected_session().unwrap(), mode))
     );
     assert_ne!(
         picker.selected_preview_content_hash(selected, mode),
         original
     );
+}
+
+#[test]
+fn stale_preview_selection_renders_empty_and_does_not_fingerprint() {
+    let mut picker = SessionPicker::new(vec![session(0, 2)]);
+    let selected = picker.selected_session_ref().unwrap();
+    picker.all_sessions.clear();
+    let mode = crate::config::config().display.diff_mode;
+    assert_eq!(picker.selected_preview_content_hash(selected, mode), None);
+    assert!(picker.preview_fingerprints.borrow().is_empty());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    draw_preview(&mut picker, &mut terminal);
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("No session selected"));
+    assert!(picker.preview_cache.is_none());
+}
+
+#[test]
+fn missing_preview_is_a_cache_miss_and_rebuilds_on_render() {
+    let mut picker = SessionPicker::new(vec![session(0, 2)]);
+    assert!(!picker.reuse_preview(&tiny_cache(42, 0).key));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    draw_preview(&mut picker, &mut terminal);
+    let key = picker.preview_cache.as_ref().unwrap().key.clone();
+    assert!(picker.reuse_preview(&key));
+    picker.preview_cache = None;
+    draw_preview(&mut picker, &mut terminal);
+    assert!(picker.preview_cache.as_ref().unwrap().key == key);
 }
 
 fn tiny_cache(id: u64, bytes: usize) -> PreviewRenderCache {
@@ -264,6 +375,234 @@ fn retained_previews_have_byte_and_entry_bounds_and_evict_lru() {
         profile["retained_preview_bytes"].as_u64().unwrap() as usize,
         picker.preview_reuse.retained_bytes()
     );
+}
+
+#[test]
+fn self_dev_entries_keep_here_marker_on_directory_row() {
+    let mut item = session(0, 1);
+    item.is_canary = true;
+    item.working_dir = Some("/project/picker-layout".into());
+    let mut picker = SessionPicker::new(vec![item.clone()]);
+    picker.current_dir = item.working_dir.clone();
+    for selected in [false, true] {
+        let rows = picker.render_session_item_lines(&item, selected);
+        assert!(!rows[0].to_string().contains("🔬"));
+        assert!(!rows[0].to_string().contains("▸ here"));
+        assert!(rows[1].to_string().contains("picker-layout  ▸ here"));
+        assert!(rows[1].spans.last().unwrap().content.contains("ago"));
+    }
+    picker.current_dir = Some("/different-project".into());
+    picker.current_repo = None;
+    let rows = picker.render_session_item_lines(&item, false);
+    assert!(!rows[1].to_string().contains("▸ here"));
+}
+
+#[test]
+fn compact_session_entries_keep_context_without_spacer_rows() {
+    let mut item = session(0, 1);
+    item.working_dir = Some("/project/resume-layout".into());
+    let picker = SessionPicker::new(vec![item.clone()]);
+    let rows = picker.render_session_item_lines(&item, false);
+    assert_eq!(rows.len(), 2);
+    assert!(!rows[0].to_string().contains("tok"));
+    assert!(rows[1].to_string().contains("resume-layout"));
+    assert!(rows[1].to_string().contains("ago"));
+    assert!(!rows[1].to_string().contains("active"));
+    assert!(
+        !rows[1]
+            .to_string()
+            .contains("improve resume responsiveness")
+    );
+    assert!(!rows[1].to_string().contains("messages"));
+
+    item.first_user_prompt = Some("  \n ".into());
+    let rows = picker.render_session_item_lines(&item, false);
+    assert_eq!(rows.len(), 2);
+    assert!(rows[1].to_string().contains("resume-layout"));
+
+    item.working_dir = None;
+    let rows = picker.render_session_item_lines(&item, false);
+    assert_eq!(rows.len(), 2);
+    assert!(rows[1].to_string().contains("No directory"));
+    assert!(!rows[0].to_string().contains("tok"));
+
+    item.status = SessionStatus::Crashed {
+        message: Some("connection failed".into()),
+    };
+    let rows = picker.render_session_item_lines(&item, false);
+    assert_eq!(
+        rows.len(),
+        3,
+        "crash reasons remain visible, not hidden for density"
+    );
+    assert!(rows[2].to_string().contains("connection failed"));
+    assert!(rows.iter().all(|row| !row.to_string().trim().is_empty()));
+}
+
+#[test]
+fn resume_todo_dots_follow_item_statuses() {
+    let mut item = session(0, 1);
+    item.todo_statuses = ["completed", "in_progress", "pending", "cancelled"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let dots = SessionPicker::todo_dot_spans(&item, 20);
+    assert_eq!(dots.len(), 4);
+    for (dot, color) in dots.iter().zip([
+        rgb(129, 199, 132),
+        rgb(255, 213, 79),
+        rgb(140, 140, 140),
+        rgb(80, 80, 80),
+    ]) {
+        assert_eq!(dot.content, "●");
+        assert_eq!(dot.style.fg, Some(color));
+    }
+    assert_eq!(SessionPicker::todo_dot_spans(&item, 2)[1].content, "…");
+    assert!(SessionPicker::todo_dot_spans(&item, 0).is_empty());
+    item.todo_statuses.clear();
+    assert!(SessionPicker::todo_dot_spans(&item, 20).is_empty());
+}
+
+#[test]
+fn session_entry_reserves_todo_dots_and_activity_for_long_names_and_directories() {
+    let mut item = session(0, 1);
+    item.title = "界".repeat(60);
+    item.working_dir = Some(format!("/{}", "界".repeat(80)));
+    item.todo_statuses = vec!["completed".into(); 5];
+    item.last_active_at = Some(chrono::Utc::now());
+    let mut picker = SessionPicker::new(vec![item]);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(48, 12)).unwrap();
+    terminal
+        .draw(|f| picker.render_session_list_impl(f, f.area(), true))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (1..11)
+        .filter(|&y| buffer[(1, y)].symbol() == "▌")
+        .map(|y| (2..47).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].trim_end().ends_with("●●●●●"), "{}", rows[0]);
+    assert!(!rows[0].contains("tok"));
+    assert!(rows[1].contains("ago"), "{}", rows[1]);
+    assert!(rows.iter().all(|row| row.contains('…')));
+}
+
+#[test]
+fn compact_session_list_fits_ten_sessions_in_twenty_two_rows() {
+    let mut picker = SessionPicker::new((0..20).map(|id| session(id, 1)).collect());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(48, 24)).unwrap();
+    terminal
+        .draw(|f| picker.render_session_list_impl(f, f.area(), true))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let count = (1..23)
+        .filter(|&y| {
+            let text: String = (1..47).map(|x| buffer[(x, y)].symbol()).collect();
+            text.contains("Performance session")
+        })
+        .count();
+    assert!(
+        count >= 10,
+        "expected at least ten compact sessions, got {count}"
+    );
+}
+
+#[test]
+fn compact_rows_truncate_wide_text_without_wrapping() {
+    for width in [8, 20, 42] {
+        let mut item = session(0, 1);
+        item.title = "界".repeat(60);
+        item.todo_statuses = vec!["pending".into(); 1_000];
+        item.working_dir = Some(format!("/{}", "界".repeat(80)));
+        let mut picker = SessionPicker::new(vec![item]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 12)).unwrap();
+        terminal
+            .draw(|f| picker.render_session_list_impl(f, f.area(), true))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let selected_rows: Vec<_> = (1..11)
+            .filter(|&y| buffer[(1, y)].symbol() == "▌")
+            .collect();
+        assert_eq!(
+            selected_rows.len(),
+            2,
+            "entries never wrap at width {width}"
+        );
+        for y in selected_rows {
+            // A double-width glyph may leave one spare cell before the border.
+            assert!(
+                (1..width - 1).any(|x| buffer[(x, y)].symbol() == "…"),
+                "missing truncation marker: width={width}, row={y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn session_list_stripes_cover_whole_entries() {
+    let mut picker = SessionPicker::new((0..3).map(|id| session(id, 1)).collect());
+    picker.list_state.select(None);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|f| picker.render_session_list_impl(f, f.area(), true))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut backgrounds = Vec::new();
+    for y in 1..29 {
+        let text: String = (1..99).map(|x| buffer[(x, y)].symbol()).collect();
+        if text.contains("Performance session") {
+            let bg = buffer[(98, y)].bg;
+            // Both compact lines share one full-width session stripe.
+            for row in y..y + 2 {
+                assert_eq!(buffer[(1, row)].bg, bg);
+                assert_eq!(buffer[(98, row)].bg, bg);
+            }
+            backgrounds.push(bg);
+        }
+    }
+    assert_eq!(backgrounds.len(), 3);
+    assert_eq!(backgrounds[0], backgrounds[2]);
+    assert_ne!(backgrounds[0], backgrounds[1]);
+    assert_eq!(backgrounds[1], rgb(28, 30, 34));
+}
+
+#[test]
+fn session_selection_has_stable_rail_and_blended_background() {
+    let mut picker = SessionPicker::new((0..3).map(|id| session(id, 1)).collect());
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    let indices: Vec<_> = picker
+        .item_to_session
+        .iter()
+        .enumerate()
+        .filter_map(|(i, session)| session.map(|_| i))
+        .collect();
+    let mut positions = Vec::new();
+    for selected in indices {
+        picker.list_state.select(Some(selected));
+        terminal
+            .draw(|f| picker.render_session_list_impl(f, f.area(), true))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut titles = Vec::new();
+        let mut rail_rows = 0;
+        for y in 1..29 {
+            if buffer[(1, y)].symbol() == "▌" {
+                rail_rows += 1;
+                assert_eq!(buffer[(1, y)].bg, rgb(36, 43, 42));
+                assert_eq!(buffer[(98, y)].bg, rgb(36, 43, 42));
+            }
+            let text: String = (1..99).map(|x| buffer[(x, y)].symbol()).collect();
+            if text.contains("Performance session") {
+                let x = (1..99).find(|&x| buffer[(x, y)].symbol() == "P").unwrap();
+                titles.push((x, y));
+            }
+        }
+        assert_eq!(rail_rows, 2);
+        assert_eq!(titles.len(), 3);
+        positions.push(titles);
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] == pair[1]));
 }
 
 #[test]
