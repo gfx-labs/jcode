@@ -15,6 +15,17 @@
 use serde::{Deserialize, Deserializer, de};
 use std::fmt;
 
+/// Accept null for an optional boolean without accepting other JSON types.
+/// Pair with `serde(default)` (or the matching default function) for omitted keys.
+pub fn deserialize_bool_or_default<'de, D, const DEFAULT: bool>(
+    deserializer: D,
+) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(DEFAULT))
+}
+
 struct U32OrString;
 
 impl<'de> de::Visitor<'de> for U32OrString {

@@ -1,3 +1,4 @@
+use super::serde_coerce::deserialize_bool_or_default;
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
@@ -29,7 +30,7 @@ struct EditInput {
     old_string: Option<String>,
     #[serde(default)]
     new_string: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_or_default::<_, false>")]
     replace_all: bool,
 }
 
@@ -37,7 +38,7 @@ struct EditInput {
 struct EditOperation {
     old_string: String,
     new_string: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_or_default::<_, false>")]
     replace_all: bool,
 }
 
@@ -74,13 +75,18 @@ struct AppliedEdit {
     start_line: usize,
 }
 
+enum EditOutcome {
+    Replaced(AppliedEdit),
+    SkippedNoOp,
+}
+
 /// Apply every edit in order to an in-memory copy. Any failure aborts the whole
 /// call so the file is never left half-edited.
 fn apply_edits(
     original: &str,
     edits: &[EditOperation],
     file_path: &str,
-) -> Result<(String, Vec<AppliedEdit>)> {
+) -> Result<(String, Vec<EditOutcome>)> {
     let mut content = original.to_string();
     let mut applied = Vec::with_capacity(edits.len());
     let mut failures = Vec::new();
@@ -93,15 +99,19 @@ fn apply_edits(
     };
 
     for (index, edit) in edits.iter().enumerate() {
+        if edit.old_string.is_empty() {
+            failures.push(format!("{}old_string must not be empty", label(index)));
+            continue;
+        }
         if edit.old_string == edit.new_string {
+            if edits.len() > 1 {
+                applied.push(EditOutcome::SkippedNoOp);
+                continue;
+            }
             failures.push(format!(
                 "{}old_string and new_string must be different",
                 label(index)
             ));
-            continue;
-        }
-        if edit.old_string.is_empty() {
-            failures.push(format!("{}old_string must not be empty", label(index)));
             continue;
         }
         let occurrences = content.matches(&edit.old_string).count();
@@ -125,10 +135,10 @@ fn apply_edits(
         } else {
             content.replacen(&edit.old_string, &edit.new_string, 1)
         };
-        applied.push(AppliedEdit {
+        applied.push(EditOutcome::Replaced(AppliedEdit {
             occurrences,
             start_line,
-        });
+        }));
     }
 
     if failures.is_empty() {
@@ -213,6 +223,23 @@ impl Tool for EditTool {
         let content = tokio::fs::read_to_string(&path).await?;
         let (new_content, applied) = apply_edits(&content, &edits, &params.file_path)?;
 
+        if applied
+            .iter()
+            .all(|edit| matches!(edit, EditOutcome::SkippedNoOp))
+        {
+            let notes = (1..=applied.len())
+                .map(|index| {
+                    format!("  - Edit {index}: skipped no-op (old_string equals new_string)")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Ok(ToolOutput::new(format!(
+                "No changes written to {}.\n{notes}",
+                params.file_path
+            ))
+            .with_title(params.file_path));
+        }
+
         tokio::fs::write(&path, &new_content).await?;
         super::edit_stats::record(&ctx, &content, &new_content, false).await;
 
@@ -221,8 +248,9 @@ impl Tool for EditTool {
             .clone()
             .filter(|value| !value.trim().is_empty());
 
-        let mut body = if let [edit] = edits.as_slice() {
-            let applied = &applied[0];
+        let mut body = if let ([edit], [EditOutcome::Replaced(applied)]) =
+            (edits.as_slice(), applied.as_slice())
+        {
             let diff = generate_diff(&edit.old_string, &edit.new_string, applied.start_line);
             let end_line = applied.start_line + edit.new_string.lines().count().saturating_sub(1);
             Bus::global().publish(BusEvent::FileTouch(FileTouch {
@@ -246,7 +274,17 @@ impl Tool for EditTool {
             )
         } else {
             let diff = generate_diff_summary(&content, &new_content);
-            let replaced: usize = applied.iter().map(|edit| edit.occurrences).sum();
+            let replaced: usize = applied
+                .iter()
+                .map(|edit| match edit {
+                    EditOutcome::Replaced(edit) => edit.occurrences,
+                    EditOutcome::SkippedNoOp => 0,
+                })
+                .sum();
+            let changed = applied
+                .iter()
+                .filter(|edit| matches!(edit, EditOutcome::Replaced(_)))
+                .count();
             Bus::global().publish(BusEvent::FileTouch(FileTouch {
                 session_id: ctx.session_id.clone(),
                 path: path.to_path_buf(),
@@ -254,17 +292,20 @@ impl Tool for EditTool {
                 intent,
                 summary: Some(format!(
                     "applied {} edits ({replaced} replacement{})",
-                    edits.len(),
+                    changed,
                     if replaced == 1 { "" } else { "s" }
                 )),
                 detail: build_file_touch_preview(&diff),
             }));
-            let mut body = format!(
-                "Edited {}: applied {} edits\n",
-                params.file_path,
-                edits.len()
-            );
+            let mut body = format!("Edited {}: applied {} edits\n", params.file_path, changed);
             for (index, edit) in applied.iter().enumerate() {
+                let EditOutcome::Replaced(edit) = edit else {
+                    body.push_str(&format!(
+                        "  - Edit {}: skipped no-op (old_string equals new_string)\n",
+                        index + 1
+                    ));
+                    continue;
+                };
                 body.push_str(&format!(
                     "  ✓ Edit {}: replaced {} occurrence{} at line {}\n",
                     index + 1,
@@ -474,6 +515,98 @@ mod tests {
     use super::*;
 
     #[test]
+    fn optional_replace_all_accepts_null_but_rejects_non_booleans() {
+        for value in [Value::Null, json!(false), json!(true)] {
+            let expected = value.as_bool().unwrap_or(false);
+            for input in [
+                json!({"file_path":"scripts/install.sh", "intent":"Update installer", "accept_large_output":false,
+                    "replace_all":value, "old_string":null, "new_string":null,
+                    "edits":[{"old_string":"a", "new_string":"b", "replace_all":value}]}),
+                json!({"file_path":"f", "replace_all":value, "old_string":"a", "new_string":"b", "edits":null}),
+            ] {
+                let params: EditInput = serde_json::from_value(input).unwrap();
+                assert_eq!(params.replace_all, expected);
+                assert_eq!(params.operations().unwrap()[0].replace_all, expected);
+            }
+        }
+        for value in [json!("false"), json!(0), json!([])] {
+            assert!(
+                serde_json::from_value::<EditInput>(json!({"file_path":"f", "replace_all":value}))
+                    .is_err()
+            );
+            assert!(
+                serde_json::from_value::<EditOperation>(
+                    json!({"old_string":"a", "new_string":"b", "replace_all":value})
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn batch_skips_noop_with_original_edit_number() {
+        let _guard = crate::storage::lock_test_env();
+        let previous_home = std::env::var_os("JCODE_HOME");
+        let dir = tempfile::tempdir().unwrap();
+        crate::env::set_var("JCODE_HOME", dir.path());
+        let file = dir.path().join("PortfolioPage.tsx");
+        let original = "  portfolioActiveSectionAtom,\n  portfolioChainsAtom,\nalpha\nbeta\n";
+        tokio::fs::write(&file, original).await.unwrap();
+        let ctx = ToolContext {
+            session_id: "edit-noop-test".into(),
+            message_id: "m".into(),
+            tool_call_id: "call".into(),
+            working_dir: Some(dir.path().into()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let noop = json!({"old_string":"  portfolioActiveSectionAtom,\n  portfolioChainsAtom,", "new_string":"  portfolioActiveSectionAtom,\n  portfolioChainsAtom,"});
+        let output = EditTool::new().execute(json!({"file_path":file, "intent":"Reset table dust overrides when the section changes", "edits":[
+            {"old_string":"alpha", "new_string":"changed"}, noop,
+            {"old_string":"beta", "new_string":"done"}
+        ]}), ctx.clone()).await.unwrap();
+        assert!(
+            output.output.contains("applied 2 edits"),
+            "{}",
+            output.output
+        );
+        assert!(
+            output.output.contains("Edit 2: skipped no-op"),
+            "{}",
+            output.output
+        );
+        assert!(
+            output.output.contains("Edit 3: replaced 1"),
+            "{}",
+            output.output
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            original.replace("alpha", "changed").replace("beta", "done")
+        );
+        let before = tokio::fs::read_to_string(&file).await.unwrap();
+        let err = EditTool::new().execute(json!({"file_path":file, "edits":[noop,
+            {"old_string":"changed", "new_string":"bad"}, {"old_string":"absent", "new_string":"bad"}
+        ]}), ctx.clone()).await.unwrap_err();
+        assert!(err.to_string().contains("Edit 3"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), before);
+        let output = EditTool::new()
+            .execute(json!({"file_path":file, "edits":[noop, noop]}), ctx)
+            .await
+            .unwrap();
+        assert!(output.output.contains("No changes written"));
+        assert!(output.output.contains("Edit 2: skipped no-op"));
+        assert!(apply_edits("x", &[op("x", "x")], "f").is_err());
+        assert!(apply_edits("x", &[op("", ""), op("x", "y")], "f").is_err());
+        match previous_home {
+            Some(home) => crate::env::set_var("JCODE_HOME", home),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+    }
+
+    #[test]
     fn schema_requires_canonical_nonempty_edits() {
         let schema = EditTool::new().parameters_schema();
         assert_eq!(schema["required"], json!(["file_path", "edits"]));
@@ -647,7 +780,7 @@ mod tests {
         .unwrap();
         assert_eq!(content, "done\nb\n");
         assert_eq!(applied.len(), 3);
-        assert_eq!(applied[2].start_line, 2);
+        assert!(matches!(&applied[2], EditOutcome::Replaced(edit) if edit.start_line == 2));
     }
 
     #[test]
@@ -657,7 +790,7 @@ mod tests {
         all.replace_all = true;
         let (content, applied) = apply_edits("x x", &[all], "f").unwrap();
         assert_eq!(content, "y y");
-        assert_eq!(applied[0].occurrences, 2);
+        assert!(matches!(&applied[0], EditOutcome::Replaced(edit) if edit.occurrences == 2));
     }
 
     #[test]

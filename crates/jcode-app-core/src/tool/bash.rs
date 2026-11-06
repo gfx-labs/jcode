@@ -1,3 +1,4 @@
+use super::serde_coerce::deserialize_bool_or_default;
 use super::{BACKGROUND_WAIT_GUIDANCE, StdinInputRequest, Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
 use crate::bus::{
@@ -773,18 +774,6 @@ struct BashInput {
 
 fn default_true() -> bool {
     true
-}
-
-// OpenAI strict schemas represent omitted optional arguments as explicit null.
-// Serde's `default` only handles missing keys, so accept null separately while
-// retaining the same defaults and rejecting non-boolean values.
-fn deserialize_bool_or_default<'de, D, const DEFAULT: bool>(
-    deserializer: D,
-) -> Result<bool, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(DEFAULT))
 }
 
 #[path = "bash_destructive_gate.rs"]
