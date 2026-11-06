@@ -297,10 +297,26 @@ fn apply_todo_patch(mut input: Value, stored: impl FnOnce() -> Value) -> Result<
     };
     let id_of = |todo: &Value| todo.get("id").and_then(Value::as_str).map(str::to_string);
 
-    for update in updates {
-        let Some(fields) = update.as_object() else {
+    for mut update in updates {
+        let Some(fields) = update.as_object_mut() else {
             bail!("each update must be an object with an id");
         };
+        // Strict tool schemas fill omitted scalar fields with null. Null
+        // still clears optional fields such as details and waiting_on.
+        fields.retain(|key, value| {
+            !value.is_null()
+                || !matches!(
+                    key.as_str(),
+                    "content"
+                        | "status"
+                        | "priority"
+                        | "phase"
+                        | "stage"
+                        | "wave"
+                        | "lane"
+                        | "group"
+                )
+        });
         let Some(id) = fields.get("id").and_then(Value::as_str) else {
             bail!("each update needs an `id`");
         };
@@ -314,7 +330,7 @@ fn apply_todo_patch(mut input: Value, stored: impl FnOnce() -> Value) -> Result<
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("stored todo {id:?} is not an object"))?;
         validate_membership(fields)?;
-        for (key, value) in fields {
+        for (key, value) in fields.iter() {
             if key != "id" {
                 // `phase`/`lane` are the card's words for `stage`/`group`;
                 // write the canonical key so an alias never sits beside it.
@@ -482,7 +498,7 @@ fn flatten_phases(input: &mut Value) -> Result<()> {
     let Some(obj) = input.as_object_mut() else {
         return Ok(());
     };
-    let Some(phases) = obj.get("phases") else {
+    let Some(phases) = obj.get("phases").filter(|value| !value.is_null()) else {
         return Ok(());
     };
     if ["todos", "update", "add", "remove"]

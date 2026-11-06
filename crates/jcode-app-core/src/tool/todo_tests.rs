@@ -101,7 +101,6 @@ fn hierarchy_rejects_malformed_structures() {
     let lane = json!({"lane":"x","items":[item]});
     let phase = json!({"phase":1,"lanes":[lane]});
     for bad in [
-        json!(null),
         json!({}),
         json!([null]),
         json!([{"phase":0,"lanes":[lane]}]),
@@ -976,4 +975,49 @@ fn test_ctx(session_id: &str) -> ToolContext {
         graceful_shutdown_signal: None,
         execution_mode: crate::tool::ToolExecutionMode::Direct,
     }
+}
+#[test]
+fn incremental_update_accepts_null_schema_placeholders() {
+    let stored = json!([{"id":"r5-read", "content":"Read", "status":"in_progress", "priority":"high", "stage":1, "group":"work", "details":"old", "waiting_on":["old"]}]);
+    let patched = apply_todo_patch(
+        json!({
+            "accept_large_output":null, "add":null, "goals":null,
+            "intent":"Classify findings as valid", "phases":null, "plan":null, "remove":null,
+            "update":[{"completely_blocked":null, "completion_confidence":"verified",
+                "confidence":"verified", "content":null, "details":null,
+                "external_blocker":null, "id":"r5-read", "lane":null, "lane_after":null,
+                "phase":null, "priority":null, "status":"completed", "waiting_on":null}]
+        }),
+        || stored,
+    )
+    .unwrap();
+    let todos = parse_todo_input(patched).unwrap().todos.unwrap();
+    let todo = &todos[0];
+    assert_eq!(todo.content, "Read");
+    assert_eq!(todo.status, "completed");
+    assert_eq!(todo.priority, "high");
+    assert_eq!(todo.stage, Some(1));
+    assert_eq!(todo.group.as_deref(), Some("work"));
+    assert!(todo.waiting_on.is_empty());
+    assert!(todo.details.is_none());
+    assert!(parse_todo_input(json!({"phases":null, "goals":null, "plan":null})).is_ok());
+    for membership in [
+        json!({"phase":null, "lane":"work"}),
+        json!({"phase":1, "lane":null}),
+    ] {
+        let mut added = json!({"id":"new", "content":"New", "status":"pending", "priority":"high"});
+        added
+            .as_object_mut()
+            .unwrap()
+            .extend(membership.as_object().unwrap().clone());
+        assert!(apply_todo_patch(json!({"add":[added]}), || json!([])).is_err());
+    }
+    assert!(apply_todo_patch(json!({"phases":[], "update":[]}), || json!([])).is_err());
+    assert!(
+        apply_todo_patch(
+            json!({"phases":null, "todos":[], "update":[]}),
+            || json!([])
+        )
+        .is_err()
+    );
 }
