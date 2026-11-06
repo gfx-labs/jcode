@@ -49,7 +49,10 @@ async fn connect_swarm_socket(path: &std::path::Path) -> Result<crate::transport
             path.display(),
             spawn_error
         ));
-        return Err(map_socket_connection_error(first_error));
+        return Err(spawn_error.context(format!(
+            "Could not start a swarm server at {}",
+            path.display()
+        )));
     }
 
     crate::server::connect_socket(path)

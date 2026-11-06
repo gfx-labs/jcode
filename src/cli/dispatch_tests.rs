@@ -1,6 +1,49 @@
 use super::*;
 use crate::transport::Listener;
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn headless_readonly_runtime_uses_private_owned_socket() {
+    let _lock = crate::storage::lock_test_env();
+    let _env = ReloadTestEnv::new();
+    crate::env::remove_var("JCODE_SOCKET");
+    // sysfs is read-only even for privileged test runners.
+    crate::env::set_var("JCODE_RUNTIME_DIR", "/sys");
+    let private = prepare_run_server_runtime()
+        .await
+        .unwrap()
+        .expect("private runtime");
+    let path = private.path().to_path_buf();
+    assert_eq!(crate::storage::runtime_dir(), path);
+    assert!(server::socket_path_is_custom());
+    assert_eq!(server::socket_path(), path.join("run.sock"));
+    let listener = Listener::bind(server::socket_path()).expect("bind fallback socket");
+    drop(listener);
+    drop(private);
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn headless_runtime_keeps_writable_live_and_custom_sockets() {
+    let _lock = crate::storage::lock_test_env();
+    let env = ReloadTestEnv::new();
+    crate::env::remove_var("JCODE_SOCKET");
+    let runtime = crate::storage::runtime_dir();
+    assert!(prepare_run_server_runtime().await.unwrap().is_none());
+    let listener = Listener::bind(server::socket_path()).expect("bind default socket");
+    assert!(prepare_run_server_runtime().await.unwrap().is_none());
+    assert_eq!(crate::storage::runtime_dir(), runtime);
+    drop(listener);
+    server::set_socket_path(
+        env.socket_path
+            .with_file_name("custom.sock")
+            .to_str()
+            .unwrap(),
+    );
+    assert!(prepare_run_server_runtime().await.unwrap().is_none());
+    assert_eq!(server::socket_path().file_name().unwrap(), "custom.sock");
+}
+
 #[test]
 fn only_file_controlled_debug_clients_need_parent_lifetime_binding() {
     let _lock = crate::storage::lock_test_env();

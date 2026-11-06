@@ -411,6 +411,78 @@ fn description_tells_models_to_check_status_before_setup() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn open_waits_for_an_installed_bridge_to_reconnect() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = jcode_base::storage::lock_test_env();
+    let vars = [
+        "JCODE_HOME",
+        "JCODE_BROWSER",
+        "JCODE_BROWSER_AUTOLAUNCH",
+        "JCODE_BROWSER_AUTO_UPDATE",
+        "BROWSER_SESSION",
+    ];
+    let previous = vars.map(|key| (key, std::env::var_os(key)));
+    let temp = tempfile::tempdir().unwrap();
+    jcode_base::env::set_var("JCODE_HOME", temp.path());
+    jcode_base::env::set_var("JCODE_BROWSER", "firefox");
+    jcode_base::env::set_var("JCODE_BROWSER_AUTOLAUNCH", "0");
+    jcode_base::env::set_var("JCODE_BROWSER_AUTO_UPDATE", "0");
+    jcode_base::env::set_var("BROWSER_SESSION", "reconnect-test");
+    let dir = temp.path().join("browser");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("browser");
+    std::fs::write(
+        &bin,
+        r##"#!/bin/sh
+marker="$(dirname "$0")/ping-seen"
+if [ "$1" = ping ]; then
+  if [ ! -e "$marker" ]; then touch "$marker"; exit 1; fi
+  echo '{"pong":true,"browser":"firefox","extensionVersion":"0.10.0"}'
+else
+  printf '%s\n' "$1" > "$(dirname "$0")/action"
+  echo '{"url":"http://127.0.0.1:47005/info/ethereum/overview","tabId":1}'
+fi
+"##,
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(dir.join("firefox-agent-bridge-host"), "host").unwrap();
+    std::fs::write(dir.join(".setup-complete"), "complete").unwrap();
+    let ctx = ToolContext {
+        session_id: "browser-reconnect".into(),
+        message_id: "m".into(),
+        tool_call_id: "call".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: crate::tool::ToolExecutionMode::Direct,
+    };
+    let result = BrowserTool::new().execute(json!({"action":"open", "intent":"Open analytics destination for client-side navigation test", "url":"http://127.0.0.1:47005/info/ethereum/overview"}), ctx.clone()).await;
+    std::fs::remove_file(&bin).unwrap();
+    let missing = BrowserTool::new()
+        .execute(
+            json!({"action":"open", "url":"http://127.0.0.1:47005/info/ethereum/overview"}),
+            ctx,
+        )
+        .await;
+    for (key, value) in previous {
+        match value {
+            Some(value) => jcode_base::env::set_var(key, value),
+            None => jcode_base::env::remove_var(key),
+        }
+    }
+    result.expect("open should recover without another tool call");
+    let missing = missing.unwrap_err().to_string();
+    assert!(missing.contains("action='setup'"), "{missing}");
+    assert!(missing.contains("jcode browser setup"), "{missing}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("action")).unwrap().trim(),
+        "navigate"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn readiness_does_not_trust_a_stale_setup_marker() {
     use std::os::unix::fs::PermissionsExt;
 

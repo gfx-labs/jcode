@@ -300,6 +300,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             json,
             ndjson,
         }) => {
+            let _run_runtime = prepare_run_server_runtime().await?;
             register_on_demand_server_spawner_for_run(
                 args.provider,
                 args.model.clone(),
@@ -1297,24 +1298,47 @@ pub(crate) async fn spawn_owned_server(
     .await
 }
 
-/// Let a headless one-shot `jcode run` start a server on demand.
-///
-/// `jcode run` hosts its agent in-process, so there is no server for tools
-/// that need one. Registering the spawner here (rather than at startup) keeps
-/// it to the `run` command: interactive and client launches already bootstrap
-/// a daemon through their own paths. Nothing is started by registering. The
-/// first tool that cannot reach a server triggers the spawn, so runs that never
-/// use `swarm` keep their current startup cost.
-///
-/// Which server gets started follows the dialed socket:
-///
-/// - Shared socket (no `--socket`): the long-lived daemon, exactly as
-///   `jcode server start` or a TUI launch would start it. An ephemeral server
-///   here would squat the path every later client uses and then vanish with
-///   this run.
-/// - Custom `--socket`: a server owned by this run. The caller asked for an
-///   isolated socket, so nobody else is waiting on it, and the run must not
-///   leave a daemon behind on a one-off path.
+/// Keep headless swarm bootstrap usable in a read-only inherited runtime.
+/// The returned directory must outlive the agent and its owned server.
+async fn prepare_run_server_runtime() -> Result<Option<tempfile::TempDir>> {
+    if server::socket_path_is_custom() || server_is_running_at(&server::socket_path()).await {
+        return Ok(None);
+    }
+    let runtime = crate::storage::runtime_dir();
+    let writable = std::fs::create_dir_all(&runtime)
+        .and_then(|()| tempfile::NamedTempFile::new_in(&runtime).map(|_| ()));
+    match writable {
+        Ok(()) => Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            // Sandboxed headless runs may inherit an inaccessible XDG runtime.
+            // Keep their socket and durable swarm state in one private directory,
+            // and use a custom socket so the lazy server has the run's lifetime.
+            let private = tempfile::Builder::new()
+                .prefix("jcode-run-")
+                .tempdir()
+                .context("Could not create a private runtime for headless swarm tools")?;
+            let socket = private.path().join("run.sock");
+            crate::env::set_var("JCODE_RUNTIME_DIR", private.path());
+            server::set_socket_path(socket.to_str().context("Non-UTF-8 headless socket path")?);
+            crate::logging::info(&format!(
+                "Headless run using private runtime because {} is not writable: {error}",
+                runtime.display()
+            ));
+            Ok(Some(private))
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("Could not prepare headless runtime {}", runtime.display())),
+    }
+}
+
+/// Register lazy server startup only for the in-process `run` command.
+/// Shared sockets retain their long-lived daemon. Custom sockets use a server
+/// owned by this run, including the private read-only-runtime fallback.
 fn register_on_demand_server_spawner_for_run(
     provider_choice: ProviderChoice,
     model: Option<String>,

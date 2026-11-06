@@ -695,11 +695,23 @@ async fn ensure_firefox_ready(
         status = refreshed;
     }
 
-    let mut message = String::from(
-        "Browser automation is not ready yet. Use the browser tool with action='status' to confirm current state. Only run action='setup' or `jcode browser setup` for first-time install or repair when the bridge is not already ready.\n",
-    );
+    // An already-running browser can still be reconnecting its extension.
+    // Cold launches above already wait, so do not charge that timeout twice.
+    if !launched
+        && status.binary_installed
+        && !status.responding
+        && crate::browser::wait_for_bridge(target.kind, 10).await
+    {
+        status = crate::browser::ensure_browser_ready_noninteractive_for(target).await?;
+        if status.ready {
+            return ready_in_requested_browser(&status, target.kind, explicit)
+                .map(|note| note.or(update_note));
+        }
+    }
+
+    let mut message = String::from("Browser automation could not become ready.\n");
     if !status.binary_installed {
-        message.push_str("Browser bridge binary is not installed yet.\n");
+        message.push_str("Browser bridge binary is not installed. Run the browser tool with action='setup', or run `jcode browser setup`, then retry the action.\n");
     } else if status.responding && !status.compatible {
         message.push_str(&format!(
             "Browser bridge is connected, but the live {} extension is missing required actions.",
