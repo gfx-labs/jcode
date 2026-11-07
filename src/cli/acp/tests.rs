@@ -1,6 +1,41 @@
 use super::*;
 use std::path::Path;
 
+#[test]
+fn output_images_become_native_acp_blocks_without_echoing_user_images() {
+    use crate::session::{RenderedImage, RenderedImageSource};
+    let image = RenderedImage {
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=".into(),
+        label: Some("Read image".into()),
+        source: RenderedImageSource::ToolResult { tool_name: "read".into() },
+        anchor: None,
+        history_message_index: None,
+    };
+    let mut user_image = image.clone();
+    user_image.source = RenderedImageSource::UserInput;
+    let mut mapper = EventMapper::new("session".into(), AcpProfile::Standard);
+    let updates = mapper.map_event(ServerEvent::SidePaneImages {
+        session_id: "session".into(),
+        images: vec![user_image, image.clone()],
+    });
+    assert_eq!(
+        updates,
+        vec![json!({
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "image", "mimeType": image.media_type, "data": image.data}
+        })]
+    );
+    assert!(
+        mapper
+            .map_event(ServerEvent::SidePaneImages {
+                session_id: "other".into(),
+                images: vec![image],
+            })
+            .is_empty()
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn acp_new_and_resumed_sessions_advertise_server_failover() {

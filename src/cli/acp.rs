@@ -1651,6 +1651,24 @@ impl EventMapper {
                     }
                 }]
             })],
+            ServerEvent::SidePaneImages { session_id, images } if session_id == self.session_id => {
+                images
+                    .into_iter()
+                    .filter(|image| {
+                        !matches!(image.source, crate::session::RenderedImageSource::UserInput)
+                    })
+                    .map(|image| {
+                        json!({
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "image",
+                                "mimeType": image.media_type,
+                                "data": image.data,
+                            }
+                        })
+                    })
+                    .collect()
+            }
             ServerEvent::Compaction { trigger, .. } if self.profile.is_extended() => vec![json!({
                 "sessionUpdate": "agent_message_chunk",
                 "content": {
