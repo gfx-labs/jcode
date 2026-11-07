@@ -81,24 +81,9 @@ impl Projection {
                 self.value.phase = "streaming".into();
                 self.streaming_started.get_or_insert(now);
             }
-            ServerEvent::ToolInput {
-                id,
-                delta,
-                snapshot,
-            } => {
+            ServerEvent::ToolInput { id, delta } => {
                 if let Some(id) = id.as_ref().or(self.last_tool_id.as_ref()) {
                     let input = self.tool_inputs.entry(id.clone()).or_default();
-                    if let Some(snapshot) = snapshot {
-                        // Authoritative complete input replaces the buffer, within
-                        // the same bound. An oversized snapshot is dropped, since a
-                        // truncated JSON prefix cannot be parsed.
-                        let snapshot = snapshot.to_string();
-                        *input = if snapshot.len() <= 65536 {
-                            snapshot
-                        } else {
-                            String::new()
-                        };
-                    }
                     // Only retain a small bounded input for the display intent.
                     if input.len().saturating_add(delta.len()) <= 65536 {
                         input.push_str(delta);
@@ -430,7 +415,6 @@ mod tests {
             &ServerEvent::ToolInput {
                 id: Some("t".into()),
                 delta: r#"{"intent":"Run tests"}"#.into(),
-                snapshot: None,
             },
             start + Duration::from_secs(2),
         );

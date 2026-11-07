@@ -221,7 +221,7 @@ fn provider_native_web_search_reaches_sdk_as_tool_events_without_tool_call() {
     let mut frames = Vec::new();
     for event in [
         json!({"type":"tool_start","id":"srvtoolu_1","name":"web_search"}),
-        json!({"type":"tool_input","id":"srvtoolu_1","delta":"","snapshot":{"query":"rust news"}}),
+        json!({"type":"tool_input","id":"srvtoolu_1","delta":"{\"query\":\"rust news\"}"}),
         json!({"type":"tool_exec","id":"srvtoolu_1","name":"web_search"}),
         json!({"type":"tool_done","id":"srvtoolu_1","name":"web_search",
             "output":"Rust Blog - https://blog.rust-lang.org/"}),
@@ -233,12 +233,12 @@ fn provider_native_web_search_reaches_sdk_as_tool_events_without_tool_call() {
         events.as_slice(),
         [
             ApiEvent::ToolStart { call_id: a, name: n1, .. },
-            ApiEvent::ToolInputDelta { call_id: b, delta, snapshot: Some(snapshot), .. },
+            ApiEvent::ToolInputDelta { call_id: b, delta, .. },
             ApiEvent::ToolExec { call_id: c, .. },
             ApiEvent::ToolDone { call_id: d, name: n2, output, error: None, .. },
         ] if [a, b, c, d].iter().all(|id| *id == "srvtoolu_1")
             && n1 == "web_search" && n2 == "web_search"
-            && delta.is_empty() && snapshot["query"] == "rust news"
+            && delta.contains("rust news")
             && output.contains("https://blog.rust-lang.org/")
     ));
 }

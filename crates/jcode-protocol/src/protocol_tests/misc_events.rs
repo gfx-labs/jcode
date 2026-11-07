@@ -719,31 +719,18 @@ fn session_picker_wire_contract() {
 #[test]
 fn tool_input_optional_id_preserves_legacy_wire_format() -> Result<()> {
     let legacy = parse_event_json(r#"{"type":"tool_input","delta":"{"}"#)?;
-    assert!(
-        matches!(&legacy, ServerEvent::ToolInput { id: None, delta, snapshot: None } if delta == "{")
-    );
+    assert!(matches!(&legacy, ServerEvent::ToolInput { id: None, delta } if delta == "{"));
     assert_eq!(
         serde_json::to_value(legacy)?,
         serde_json::json!({"type":"tool_input","delta":"{"})
     );
     let keyed = parse_event_json(r#"{"type":"tool_input","id":"a","delta":"{}"}"#)?;
     assert!(
-        matches!(&keyed, ServerEvent::ToolInput { id: Some(id), delta, snapshot: None } if id == "a" && delta == "{}")
+        matches!(&keyed, ServerEvent::ToolInput { id: Some(id), delta } if id == "a" && delta == "{}")
     );
     assert_eq!(
         serde_json::to_value(keyed)?,
         serde_json::json!({"type":"tool_input","id":"a","delta":"{}"})
-    );
-    let snapshot = parse_event_json(
-        r#"{"type":"tool_input","id":"a","delta":"","snapshot":{"command":"ls"}}"#,
-    )?;
-    assert!(
-        matches!(&snapshot, ServerEvent::ToolInput { snapshot: Some(value), .. }
-        if value == &serde_json::json!({"command":"ls"}))
-    );
-    assert_eq!(
-        serde_json::to_value(snapshot)?,
-        serde_json::json!({"type":"tool_input","id":"a","delta":"","snapshot":{"command":"ls"}})
     );
     Ok(())
 }

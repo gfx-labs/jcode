@@ -454,14 +454,13 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
                     }),
                 ));
 
-                // The recorded input is complete, so send it as a snapshot.
-                if !input.is_null() {
+                let input_str = serde_json::to_string(input).unwrap_or_default();
+                if !input_str.is_empty() && input_str != "null" {
                     out.push((
                         0,
                         ReplayEvent::Server(ServerEvent::ToolInput {
                             id: None,
-                            delta: String::new(),
-                            snapshot: Some(input.clone()),
+                            delta: input_str,
                         }),
                     ));
                 }

@@ -15,7 +15,6 @@ fn native_search_duration_includes_execution_and_preserves_late_query() {
         ServerEvent::ToolInput {
             id: Some("ws_timed".into()),
             delta: r#"{"query":""}"#.into(),
-            snapshot: None,
         },
         ServerEvent::ToolExec {
             id: "ws_timed".into(),
@@ -29,7 +28,6 @@ fn native_search_duration_includes_execution_and_preserves_late_query() {
         ServerEvent::ToolInput {
             id: Some("ws_timed".into()),
             delta: r#"{"query":"jcode timing"}"#.into(),
-            snapshot: None,
         },
         &mut remote,
     );

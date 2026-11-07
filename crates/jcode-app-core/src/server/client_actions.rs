@@ -350,8 +350,7 @@ pub(super) fn handle_run_subagent(
         });
         let _ = tx.send(ServerEvent::ToolInput {
             id: Some(tool_call_id.clone()),
-            delta: String::new(),
-            snapshot: Some(tool_input.clone()),
+            delta: tool_input.to_string(),
         });
         let _ = tx.send(ServerEvent::ToolExec {
             id: tool_call_id.clone(),

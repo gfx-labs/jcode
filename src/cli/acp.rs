@@ -1511,24 +1511,7 @@ struct EventMapper {
     session_id: String,
     profile: AcpProfile,
     current_tool_id: Option<String>,
-    tool_inputs: HashMap<String, ToolInputState>,
-}
-
-#[derive(Default)]
-struct ToolInputState {
-    buffer: String,
-    published: Option<Value>,
-}
-
-impl ToolInputState {
-    fn changed_input(&mut self) -> Option<Value> {
-        let input = parse_json_object(&self.buffer)?;
-        if self.published.as_ref() == Some(&input) {
-            return None;
-        }
-        self.published = Some(input.clone());
-        Some(input)
-    }
+    tool_inputs: HashMap<String, String>,
 }
 
 impl EventMapper {
@@ -1552,8 +1535,7 @@ impl EventMapper {
             }
             ServerEvent::ToolStart { id, name } => {
                 self.current_tool_id = Some(id.clone());
-                self.tool_inputs
-                    .insert(id.clone(), ToolInputState::default());
+                self.tool_inputs.entry(id.clone()).or_default();
                 vec![json!({
                     "sessionUpdate": "tool_call",
                     "toolCallId": id,
@@ -1562,31 +1544,25 @@ impl EventMapper {
                     "status": "pending",
                 })]
             }
-            ServerEvent::ToolInput {
-                id,
-                delta,
-                snapshot,
-            } => {
-                let Some(tool_id) = id.or_else(|| self.current_tool_id.clone()) else {
+            ServerEvent::ToolInput { delta, .. } => {
+                let Some(tool_id) = self.current_tool_id.clone() else {
                     return Vec::new();
                 };
-                let Some(input) = self.tool_inputs.get_mut(&tool_id) else {
-                    return Vec::new();
-                };
-                if let Some(snapshot) = snapshot {
-                    input.buffer = snapshot.to_string();
-                }
-                input.buffer.push_str(&delta);
-                let Some(raw_input) = input.changed_input() else {
-                    return Vec::new();
-                };
-                vec![json!({
+                let buffer = self.tool_inputs.entry(tool_id.clone()).or_default();
+                buffer.push_str(&delta);
+                let mut update = json!({
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": tool_id,
-                    "rawInput": raw_input,
-                })]
+                });
+                if let Some(raw_input) = parse_json_object(buffer)
+                    && let Some(object) = update.as_object_mut()
+                {
+                    object.insert("rawInput".to_string(), raw_input);
+                }
+                vec![update]
             }
             ServerEvent::ToolExec { id, name } => {
+                self.current_tool_id = Some(id.clone());
                 let mut update = json!({
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": id,
@@ -1596,8 +1572,8 @@ impl EventMapper {
                 });
                 if let Some(input) = self
                     .tool_inputs
-                    .get_mut(update["toolCallId"].as_str().unwrap_or_default())
-                    && let Some(raw_input) = input.changed_input()
+                    .get(update["toolCallId"].as_str().unwrap_or_default())
+                    && let Some(raw_input) = parse_json_object(input)
                     && let Some(object) = update.as_object_mut()
                 {
                     object.insert("rawInput".to_string(), raw_input);
@@ -1609,12 +1585,7 @@ impl EventMapper {
                 name,
                 output,
                 error,
-            } => {
-                self.tool_inputs.remove(&id);
-                if self.current_tool_id.as_deref() == Some(&id) {
-                    self.current_tool_id = None;
-                }
-                vec![json!({
+            } => vec![json!({
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": id,
                 "title": tool_title(&name),
@@ -1631,8 +1602,7 @@ impl EventMapper {
                     "output": output,
                     "error": error,
                 }
-                })]
-            }
+            })],
             ServerEvent::GeneratedImage {
                 id,
                 path,

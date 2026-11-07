@@ -598,12 +598,8 @@ fn handle_server_event_inner(
             });
             eager_stream_redraw
         }
-        ServerEvent::ToolInput {
-            id,
-            delta,
-            snapshot,
-        } => {
-            remote.handle_tool_input(id.as_deref(), snapshot.as_ref(), &delta);
+        ServerEvent::ToolInput { id, delta } => {
+            remote.handle_tool_input(id.as_deref(), &delta);
             if let Some(id) = id.as_deref() {
                 let input = remote.get_tool_input(id);
                 if !input.is_null()

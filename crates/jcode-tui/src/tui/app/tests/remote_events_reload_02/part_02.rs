@@ -71,9 +71,7 @@ fn test_replace_latest_tool_display_message_updates_latest_match_and_bumps_versi
         id: "tool-1".to_string(),
         name: "read".to_string(),
         input: serde_json::json!({"file_path": "src/main.rs"}),
-        intent: None,
-        thought_signature: None,
-    };
+        intent: None, thought_signature: None, };
 
     app.push_display_message(DisplayMessage {
         role: "tool".to_string(),
@@ -385,7 +383,6 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
         crate::protocol::ServerEvent::ToolInput {
             id: None,
             delta: r#"{"url":"https://example.com/a","intent":"Fetch page A"}"#.to_string(),
-            snapshot: None,
         },
         &mut remote,
     );
@@ -409,7 +406,6 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
         crate::protocol::ServerEvent::ToolInput {
             id: None,
             delta: r#"{"url":"https://example.com/b","intent":"Fetch page B"}"#.to_string(),
-            snapshot: None,
         },
         &mut remote,
     );
@@ -457,7 +453,11 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
         .display_messages()
         .iter()
         .rev()
-        .find(|dm| dm.tool_data.as_ref().is_some_and(|td| td.id == "tool_b"))
+        .find(|dm| {
+            dm.tool_data
+                .as_ref()
+                .is_some_and(|td| td.id == "tool_b")
+        })
         .expect("missing tool_b display message");
     let tool_b = tool_b_msg.tool_data.as_ref().unwrap();
     assert_eq!(tool_b.intent.as_deref(), Some("Fetch page B"));
@@ -482,7 +482,6 @@ fn test_keyed_tool_inputs_interleave_in_remote_events() {
         ServerEvent::ToolInput {
             id: Some("a".into()),
             delta: r#"{"file_path":"a","intent":"Read "#.into(),
-            snapshot: None,
         },
         ServerEvent::ToolStart {
             id: "b".into(),
@@ -491,12 +490,10 @@ fn test_keyed_tool_inputs_interleave_in_remote_events() {
         ServerEvent::ToolInput {
             id: Some("b".into()),
             delta: r#"{"file_path":"b","intent":"Read B"}"#.into(),
-            snapshot: None,
         },
         ServerEvent::ToolInput {
             id: Some("a".into()),
             delta: r#"A"}"#.into(),
-            snapshot: None,
         },
         ServerEvent::ToolExec {
             id: "a".into(),
@@ -539,7 +536,6 @@ fn send_native_search_row(
         ServerEvent::ToolInput {
             id: Some(id.to_string()),
             delta: format!(r#"{{"query":"{query}"}}"#),
-            snapshot: None,
         },
         remote,
     );
@@ -619,10 +615,7 @@ fn test_retry_rollback_discards_native_search_rows_from_aborted_attempt() {
         &mut remote,
     );
     assert_eq!(native_search_rows(&app), 1);
-    app.handle_server_event(
-        ServerEvent::RetryRollback { attempt: 1, max: 3 },
-        &mut remote,
-    );
+    app.handle_server_event(ServerEvent::RetryRollback { attempt: 1, max: 3 }, &mut remote);
 
     assert_eq!(
         native_search_rows(&app),
@@ -682,9 +675,6 @@ fn test_native_search_rows_from_completed_attempt_survive_later_rollback() {
         },
         &mut remote,
     );
-    app.handle_server_event(
-        ServerEvent::RetryRollback { attempt: 1, max: 3 },
-        &mut remote,
-    );
+    app.handle_server_event(ServerEvent::RetryRollback { attempt: 1, max: 3 }, &mut remote);
     assert_eq!(native_search_rows(&app), 1);
 }

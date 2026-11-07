@@ -508,16 +508,16 @@ fn test_batch_tool_input_preserved() {
 
     let replay_events = timeline_to_replay_events(&events);
 
-    // Verify the ToolInput snapshot contains the batch input
-    let input_snapshot = replay_events.iter().find_map(|(_, e)| match e {
-        ReplayEvent::Server(ServerEvent::ToolInput { snapshot, .. }) => snapshot.clone(),
+    // Verify the ToolInput delta contains the batch input
+    let input_delta = replay_events.iter().find_map(|(_, e)| match e {
+        ReplayEvent::Server(ServerEvent::ToolInput { delta, .. }) => Some(delta.clone()),
         _ => None,
     });
     assert!(
-        input_snapshot.is_some(),
+        input_delta.is_some(),
         "Should have ToolInput with batch params"
     );
-    let parsed = input_snapshot.unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&input_delta.unwrap()).unwrap();
     let tool_calls = parsed.get("tool_calls").and_then(|v| v.as_array());
     assert_eq!(
         tool_calls.map(|a| a.len()),

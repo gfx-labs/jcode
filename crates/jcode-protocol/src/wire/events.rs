@@ -192,20 +192,12 @@ pub enum ServerEvent {
     #[serde(rename = "tool_start")]
     ToolStart { id: String, name: String },
 
-    /// Tool input update (streaming JSON).
-    ///
-    /// `delta` appends to the tool's input buffer. When `snapshot` is present
-    /// it is the authoritative complete input: consumers replace the buffer
-    /// with it first, then append `delta` (snapshot, then delta). Senders of a
-    /// complete input put it in `snapshot` with an empty `delta` and never
-    /// concatenate complete JSON onto earlier deltas.
+    /// Tool input delta (streaming JSON)
     #[serde(rename = "tool_input")]
     ToolInput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         delta: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        snapshot: Option<serde_json::Value>,
     },
 
     /// Tool call ended, now executing

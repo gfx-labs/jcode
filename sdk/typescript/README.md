@@ -230,7 +230,7 @@ login on non-codex models). Otherwise it scrapes locally with the configured
 engines. It needs no SDK code:
 
 - Provider searches stream as ordinary tool rows named `web_search`:
-  `tool_start`, `tool_input_delta` (`snapshot: {"query": ...}`), `tool_exec`, then
+  `tool_start`, `tool_input_delta` (`{"query": ...}`), `tool_exec`, then
   `tool_done` with the result titles and URLs as `output`. No `tool_call` is
   sent, because the provider already ran the search. They also appear in
   `getHistory`.
