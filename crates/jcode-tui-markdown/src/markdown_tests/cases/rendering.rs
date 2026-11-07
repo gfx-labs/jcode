@@ -67,6 +67,48 @@ fn test_code_block() {
 }
 
 #[test]
+fn test_go_code_block_comment_ends_and_tabs_render_as_indentation() {
+    let code = "package main\n\nfunc main() {\n\t// Simulate work.\n\tprintln(\"hello\")\n}\n";
+    let lines = render_markdown(&format!("```go\n{code}```"));
+    let comment = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .find(|span| span.content.contains("Simulate work"))
+        .unwrap();
+    let call = lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .find(|span| span.content.contains("println"))
+        .unwrap();
+    assert_ne!(
+        call.style.fg, comment.style.fg,
+        "line comment leaked into Go code"
+    );
+    let body = lines
+        .iter()
+        .find(|line| line_to_string(line).contains("println"))
+        .unwrap();
+    assert!(line_to_string(body).contains("    println"));
+    assert!(!lines_to_string(&lines).contains('\t'));
+
+    let selected = highlight_file_lines(code, Some("go"), &[4, 5]);
+    let comment = selected[0]
+        .1
+        .iter()
+        .find(|span| span.content.contains("Simulate work"))
+        .unwrap();
+    let call = selected[1]
+        .1
+        .iter()
+        .find(|span| span.content.contains("println"))
+        .unwrap();
+    assert_ne!(
+        call.style.fg, comment.style.fg,
+        "file highlighting leaked comment state"
+    );
+}
+
+#[test]
 fn unicode_display_math_copy_target_yields_latex_source() {
     let lines = math_display_lines(r"\frac{\partial L}{\partial \theta_{17}}");
     let targets = crate::extract_copy_targets_from_rendered_lines(&lines);

@@ -468,7 +468,25 @@ pub(super) fn highlight_code(code: &str, lang: Option<&str>) -> Vec<Line<'static
     let mut highlighter = HighlightLines::new(syntax, theme);
 
     for line in code.lines() {
-        let highlighted = highlighter.highlight_line(line, &SYNTAX_SET);
+        // Ratatui does not expand tabs. Use source-column tab stops before framing.
+        let expanded = if line.contains('\t') {
+            let mut expanded = String::with_capacity(line.len());
+            let mut column = 0;
+            for ch in line.chars() {
+                if ch == '\t' {
+                    let spaces = 4 - column % 4;
+                    expanded.push_str(&" ".repeat(spaces));
+                    column += spaces;
+                } else {
+                    expanded.push(ch);
+                    column += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                }
+            }
+            std::borrow::Cow::Owned(expanded)
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
+        let highlighted = highlighter.highlight_line(&expanded, &SYNTAX_SET);
 
         match highlighted {
             Ok(ranges) => {
@@ -483,7 +501,7 @@ pub(super) fn highlight_code(code: &str, lang: Option<&str>) -> Vec<Line<'static
             Err(_) => {
                 // Fallback to plain text
                 lines.push(Line::from(Span::styled(
-                    line.to_string(),
+                    expanded.into_owned(),
                     Style::default().fg(code_fg()),
                 )));
             }
