@@ -1,6 +1,6 @@
 use super::dispatch;
 use super::provider_init::ProviderChoice;
-use crate::protocol::{Request, ServerEvent};
+use crate::protocol::{Request, ServerEvent, TurnIdentity, TurnStopReason};
 use crate::transport::{ReadHalf, WriteHalf};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
@@ -90,6 +90,7 @@ struct DaemonSession {
     next_request_id: AtomicU64,
     active_prompt_id: Mutex<Option<u64>>,
     prompt_running: AtomicBool,
+    cancel_requested: AtomicBool,
     ui_state: Mutex<SessionUiState>,
     /// Workspace root reported by the ACP client, used to compose the
     /// project-local skill overlay for slash-skill resolution.
@@ -206,6 +207,13 @@ fn prompt_response(stop_reason: &str, usage: &TurnUsage) -> Value {
     response
 }
 
+fn is_provider_refusal(reason: Option<&str>) -> bool {
+    let reason = reason.unwrap_or_default().trim().to_ascii_lowercase();
+    matches!(reason.as_str(), "refusal" | "content_filter" | "safety")
+        || reason.contains("guardrail")
+        || reason.contains("policy_violation")
+}
+
 impl SessionUiState {
     fn from_history_fields(
         provider_name: Option<String>,
@@ -243,6 +251,7 @@ impl DaemonSession {
             next_request_id: AtomicU64::new(next_request_id),
             active_prompt_id: Mutex::new(None),
             prompt_running: AtomicBool::new(false),
+            cancel_requested: AtomicBool::new(false),
             ui_state: Mutex::new(SessionUiState::default()),
             working_dir: None,
             active_skill: Mutex::new(None),
@@ -284,6 +293,12 @@ impl DaemonSession {
     }
 
     async fn read_event(&self) -> Result<ServerEvent> {
+        Ok(super::commands::unwrap_turn_event(
+            self.read_scoped_event().await?,
+        ))
+    }
+
+    async fn read_scoped_event(&self) -> Result<ServerEvent> {
         let mut line = String::new();
         let mut reader = self.reader.lock().await;
         let n = reader.read_line(&mut line).await?;
@@ -292,7 +307,7 @@ impl DaemonSession {
         }
         let event = serde_json::from_str(&line)
             .with_context(|| format!("failed to decode Jcode daemon event: {}", line.trim_end()))?;
-        Ok(super::commands::unwrap_turn_event(event))
+        Ok(event)
     }
 }
 
@@ -608,8 +623,17 @@ impl AcpRuntime {
             sessions.get(&session_id).cloned()
         };
         if let Some(session) = session {
-            let cancel_id = session.next_id();
-            let _ = session.send(&Request::Cancel { id: cancel_id }).await;
+            let active = session.active_prompt_id.lock().await;
+            if session.prompt_running.load(Ordering::SeqCst) {
+                session.cancel_requested.store(true, Ordering::SeqCst);
+                if active.is_some() {
+                    let _ = session
+                        .send(&Request::Cancel {
+                            id: session.next_id(),
+                        })
+                        .await;
+                }
+            }
         }
         if let Some(id) = message.id {
             self.write_result(id, json!({})).await?;
@@ -840,7 +864,7 @@ impl AcpRuntime {
                 supports_pdf_panels: false,
                 supports_user_response: false,
                 supports_server_failover: true,
-                supports_turn_identity: false,
+                supports_turn_identity: true,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: subscribe_id,
@@ -919,7 +943,7 @@ impl AcpRuntime {
                 supports_pdf_panels: false,
                 supports_user_response: false,
                 supports_server_failover: true,
-                supports_turn_identity: false,
+                supports_turn_identity: true,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: resume_id,
@@ -1026,7 +1050,7 @@ impl AcpRuntime {
                 Ok(command) => self.run_session_command(&session, command).await,
                 Err(err) => Err(err),
             };
-            cleanup_prompt_state(&session).await;
+            let cancelled = cleanup_prompt_state(&session).await;
             let response = response?;
             self.write_notification(
                 "session/update",
@@ -1036,8 +1060,14 @@ impl AcpRuntime {
                 }),
             )
             .await?;
-            self.write_result(rpc_id, prompt_response("end_turn", &TurnUsage::default()))
-                .await?;
+            self.write_result(
+                rpc_id,
+                prompt_response(
+                    if cancelled { "cancelled" } else { "end_turn" },
+                    &TurnUsage::default(),
+                ),
+            )
+            .await?;
             return Ok(());
         }
 
@@ -1080,20 +1110,31 @@ impl AcpRuntime {
             .await?;
             if text.trim().is_empty() && images.is_empty() {
                 // Bare `/skill`: select it for the following prompts, like the TUI.
-                cleanup_prompt_state(&session).await;
-                self.write_result(rpc_id, prompt_response("end_turn", &TurnUsage::default()))
-                    .await?;
+                let cancelled = cleanup_prompt_state(&session).await;
+                self.write_result(
+                    rpc_id,
+                    prompt_response(
+                        if cancelled { "cancelled" } else { "end_turn" },
+                        &TurnUsage::default(),
+                    ),
+                )
+                .await?;
                 return Ok(());
             }
         }
         let active_skill = session.active_skill.lock().await.clone();
 
         let prompt_id = session.next_id();
-        {
-            let mut active = session.active_prompt_id.lock().await;
-            *active = Some(prompt_id);
+        // Keep Message, Cancel and cleanup ordered under the active-prompt lock.
+        let mut active = session.active_prompt_id.lock().await;
+        if session.cancel_requested.load(Ordering::SeqCst) {
+            drop(active);
+            cleanup_prompt_state(&session).await;
+            self.write_result(rpc_id, prompt_response("cancelled", &TurnUsage::default()))
+                .await?;
+            return Ok(());
         }
-
+        *active = Some(prompt_id);
         let send_result = session
             .send(&Request::Message {
                 id: prompt_id,
@@ -1104,21 +1145,56 @@ impl AcpRuntime {
                 no_reply: false,
             })
             .await;
+        drop(active);
         if let Err(err) = send_result {
             cleanup_prompt_state(&session).await;
             return Err(err);
         }
 
         let mut mapper = EventMapper::new(session.session_id.clone(), self.profile);
-        let mut stop_reason = "end_turn".to_string();
+        let mut stop_reason = None;
+        let mut turn_identity: Option<TurnIdentity> = None;
+        let mut acknowledged = false;
         let mut turn_usage = TurnUsage::default();
         loop {
-            let event = match session.read_event().await {
+            let event = match session.read_scoped_event().await {
                 Ok(event) => event,
                 Err(err) => {
                     cleanup_prompt_state(&session).await;
                     return Err(err);
                 }
+            };
+            let scoped = matches!(&event, ServerEvent::TurnEvent { .. });
+            let event = match event {
+                ServerEvent::Ack { id } if id == prompt_id => {
+                    acknowledged = true;
+                    continue;
+                }
+                ServerEvent::TurnStarted { identity } => {
+                    if acknowledged && turn_identity.is_none() {
+                        turn_identity = Some(identity);
+                    }
+                    continue;
+                }
+                ServerEvent::TurnEvent { identity, event } => {
+                    if turn_identity.as_ref() != Some(&identity)
+                        || matches!(
+                            *event,
+                            ServerEvent::TurnEvent { .. }
+                                | ServerEvent::TurnStarted { .. }
+                                | ServerEvent::TurnState { .. }
+                        )
+                    {
+                        continue;
+                    }
+                    *event
+                }
+                // Turn-owned outcomes without identity cannot cancel a newer turn.
+                ServerEvent::Interrupted
+                | ServerEvent::TurnStopped { .. }
+                | ServerEvent::ProviderGuardrail { .. }
+                | ServerEvent::MessageEnd { .. } => continue,
+                event => event,
             };
             if self.profile.is_extended() {
                 self.write_jcode_extension_event(&session.session_id, &event)
@@ -1128,12 +1204,65 @@ impl AcpRuntime {
                 ServerEvent::Ack { .. } => {}
                 ServerEvent::Done { id } if id == prompt_id => break,
                 ServerEvent::Interrupted => {
-                    stop_reason = "cancelled".to_string();
+                    stop_reason = Some("cancelled");
+                }
+                ServerEvent::TurnStopped {
+                    reason,
+                    provider_stop_reason: provider_reason,
+                    ..
+                } => {
+                    let reason = match reason {
+                        TurnStopReason::Interrupted => Some("cancelled"),
+                        TurnStopReason::ProviderGuardrail => Some("refusal"),
+                        TurnStopReason::LimitReached => {
+                            let reason = provider_reason
+                                .unwrap_or_default()
+                                .trim()
+                                .to_ascii_lowercase();
+                            Some(match reason.as_str() {
+                                "pause_turn" | "tool_use" | "max_turn_requests" => {
+                                    "max_turn_requests"
+                                }
+                                _ => "max_tokens",
+                            })
+                        }
+                        _ => None,
+                    };
+                    if stop_reason != Some("cancelled") && reason.is_some() {
+                        stop_reason = reason;
+                    }
+                }
+                ServerEvent::ProviderGuardrail {
+                    stop_reason: provider_reason,
+                    ..
+                } => {
+                    if stop_reason.is_none() && is_provider_refusal(provider_reason.as_deref()) {
+                        stop_reason = Some("refusal");
+                    }
                 }
                 ServerEvent::Error { id, message, .. } if id == prompt_id => {
-                    cleanup_prompt_state(&session).await;
-                    self.write_error_value(rpc_id, JSONRPC_SERVER_ERROR, message)
-                        .await?;
+                    let cancelled = cleanup_prompt_state(&session).await;
+                    if cancelled {
+                        stop_reason = Some("cancelled");
+                    }
+                    // An unscoped rejection never acquired the observed turn.
+                    if let Some(reason) = stop_reason.filter(|_| scoped || cancelled) {
+                        if reason != "cancelled" {
+                            self.write_notification(
+                                "session/update",
+                                json!({
+                                    "sessionId": session.session_id,
+                                    "update": agent_message_chunk(format!("\n{message}\n")),
+                                }),
+                            )
+                            .await?;
+                        }
+                        self.write_result(rpc_id, prompt_response(reason, &turn_usage))
+                            .await?;
+                    } else {
+                        self.write_error_value(rpc_id, JSONRPC_SERVER_ERROR, message)
+                            .await?;
+                    }
                     return Ok(());
                 }
                 ServerEvent::KvCacheRequest { .. } | ServerEvent::RetryRollback { .. } => {
@@ -1225,9 +1354,14 @@ impl AcpRuntime {
             }
         }
 
-        cleanup_prompt_state(&session).await;
-        self.write_result(rpc_id, prompt_response(&stop_reason, &turn_usage))
-            .await?;
+        if cleanup_prompt_state(&session).await {
+            stop_reason = Some("cancelled");
+        }
+        self.write_result(
+            rpc_id,
+            prompt_response(stop_reason.unwrap_or("end_turn"), &turn_usage),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1395,12 +1529,12 @@ impl AcpRuntime {
     }
 }
 
-async fn cleanup_prompt_state(session: &DaemonSession) {
-    {
-        let mut active = session.active_prompt_id.lock().await;
-        *active = None;
-    }
+async fn cleanup_prompt_state(session: &DaemonSession) -> bool {
+    let mut active = session.active_prompt_id.lock().await;
+    *active = None;
+    let cancelled = session.cancel_requested.swap(false, Ordering::SeqCst);
     session.prompt_running.store(false, Ordering::SeqCst);
+    cancelled
 }
 
 async fn wait_for_done(session: &DaemonSession, request_id: u64) -> Result<()> {

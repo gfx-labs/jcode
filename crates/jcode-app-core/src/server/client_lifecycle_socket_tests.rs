@@ -384,6 +384,7 @@ async fn sdk_socket_cancel_workflow(
             terminal_provider.finish_first.notify_one();
         }
         let mut interrupted = false;
+        let mut stopped = false;
         let mut active = None;
         let mut scoped_text = false;
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -407,6 +408,12 @@ async fn sdk_socket_cancel_workflow(
                             "every emission belongs to accepted runtime turn"
                         );
                         match *event {
+                            ServerEvent::TurnStopped {
+                                reason: crate::protocol::TurnStopReason::Interrupted,
+                                ..
+                            } => {
+                                stopped = true;
+                            }
                             ServerEvent::TextDelta { ref text } if text == "completed" => {
                                 scoped_text = true
                             }
@@ -414,6 +421,10 @@ async fn sdk_socket_cancel_workflow(
                                 interrupted = true;
                             }
                             ServerEvent::Done { id: 2 } => {
+                                assert!(
+                                    !cancel_first || stopped,
+                                    "scoped cancellation outcome must precede Done"
+                                );
                                 if !cancel_first || interrupted {
                                     break;
                                 }
@@ -422,6 +433,7 @@ async fn sdk_socket_cancel_workflow(
                         }
                     }
                     ServerEvent::TextDelta { .. }
+                    | ServerEvent::TurnStopped { .. }
                     | ServerEvent::Done { id: 2 }
                     | ServerEvent::Error { id: 2, .. } => {
                         panic!("identity client received unscoped turn output")

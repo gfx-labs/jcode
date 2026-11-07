@@ -1,6 +1,231 @@
 use super::*;
 use std::path::Path;
 
+#[tokio::test]
+async fn prompt_outcomes_and_cancellation_stay_with_their_turn() {
+    const CHILD: &str = "JCODE_ACP_OUTCOME_TEST_CHILD";
+    let cases = [
+        ("normal", "end_turn"),
+        ("limit", "max_tokens"),
+        ("request_limit", "max_turn_requests"),
+        ("refusal", "refusal"),
+        ("guardrail_refusal", "refusal"),
+        ("continued", "end_turn"),
+        ("native_tool_end", "end_turn"),
+        ("empty", "end_turn"),
+        ("cancel", "cancelled"),
+        ("after_cancel", "end_turn"),
+        ("external_cancel", "cancelled"),
+        ("cancel_error", "cancelled"),
+        ("limit_error", "max_tokens"),
+        ("ordinary_error", "error"),
+        ("foreign_busy", "error"),
+        ("after_idle_cancel", "end_turn"),
+        ("early_cancel", "cancelled"),
+    ];
+    if std::env::var_os(CHILD).is_none() {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cli::acp::tests::prompt_outcomes_and_cancellation_stay_with_their_turn",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("JCODE_HOME", home.path())
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let responses: Vec<Value> = stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        for (name, reason) in cases {
+            let response = responses.iter().find(|value| value["id"] == name).unwrap();
+            if reason == "error" {
+                assert_eq!(response["error"]["code"], JSONRPC_SERVER_ERROR);
+            } else {
+                assert_eq!(
+                    response["result"]["stopReason"], reason,
+                    "{name}: {response}"
+                );
+            }
+        }
+        assert!(
+            responses
+                .iter()
+                .any(|value| { value["params"]["update"]["content"]["text"] == "\nTurn failed\n" })
+        );
+        let observed = responses
+            .iter()
+            .find(|value| value["observed"].is_array())
+            .unwrap();
+        assert!(
+            !observed["observed"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("early_cancel"))
+        );
+        return;
+    }
+
+    let (client, peer) = crate::transport::stream_pair().unwrap();
+    let (reader, writer) = client.into_split();
+    let session = Arc::new(DaemonSession::new("session".into(), reader, writer, 1));
+    let runtime = AcpRuntime::new(AcpProfile::Standard, ProviderChoice::Claude, None, None);
+    runtime
+        .sessions
+        .lock()
+        .await
+        .insert("session".into(), session.clone());
+    let cancel_ready = Arc::new(tokio::sync::Notify::new());
+    let ready = cancel_ready.clone();
+    let daemon = tokio::spawn(async move {
+        let (reader, mut writer) = peer.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut observed = Vec::new();
+        let mut previous_cancel = None;
+        let mut turn_id = 0;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).await.unwrap() == 0 {
+                return observed;
+            }
+            let request: Request = serde_json::from_str(&line).unwrap();
+            let Request::Message { id, content, .. } = request else {
+                // The real daemon also emits Interrupted for an idle Cancel.
+                assert!(matches!(request, Request::Cancel { .. }));
+                writer
+                    .write_all(b"{\"type\":\"interrupted\"}\n")
+                    .await
+                    .unwrap();
+                continue;
+            };
+            observed.push(content.clone());
+            turn_id += 1;
+            let identity = json!({"runtime_generation": "test", "turn_id": turn_id});
+            let mut events = vec![
+                json!({"type": "ack", "id": id}),
+                json!({"type": "turn_started", "identity": identity}),
+            ];
+            if let Some(old) = previous_cancel.take() {
+                events.push(json!({"type": "turn_event", "identity": old, "event": {"type": "interrupted"}}));
+            }
+            let mut owned = Vec::new();
+            match content.as_str() {
+                "limit" | "request_limit" | "limit_error" => {
+                    owned.push(json!({"type": "turn_stopped", "reason": "limit_reached", "message": "Limit reached", "provider_stop_reason": match content.as_str() {
+                        "request_limit" => Some("pause_turn"),
+                        "limit_error" => None,
+                        _ => Some("max_tokens"),
+                    }}));
+                }
+                "refusal" => {
+                    owned.push(json!({"type": "message_end", "stop_reason": "refusal"}));
+                    owned.push(json!({"type": "provider_guardrail", "stop_reason": "refusal", "message": "Refused"}));
+                }
+                "guardrail_refusal" | "foreign_busy" => owned.push(json!({"type": "provider_guardrail", "stop_reason": "content_filter", "message": "Refused"})),
+                "continued" => {
+                    owned.push(json!({"type": "message_end", "stop_reason": "max_tokens"}));
+                    owned.push(json!({"type": "message_end", "stop_reason": "tool_use"}));
+                    owned.push(json!({"type": "message_end", "stop_reason": "end_turn"}));
+                }
+                "native_tool_end" => owned.push(json!({"type": "message_end", "stop_reason": "tool_use"})),
+                "empty" => {
+                    owned.push(json!({"type": "provider_guardrail", "message": "Empty response"}))
+                }
+                "external_cancel" => owned.push(json!({"type": "turn_stopped", "reason": "interrupted", "message": "Cancelled elsewhere"})),
+                "cancel" | "cancel_error" => {
+                    for event in events.drain(..) {
+                        writer
+                            .write_all(format!("{event}\n").as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                    ready.notify_one();
+                    line.clear();
+                    reader.read_line(&mut line).await.unwrap();
+                    assert!(matches!(
+                        serde_json::from_str::<Request>(&line).unwrap(),
+                        Request::Cancel { .. }
+                    ));
+                    owned.push(json!({"type": "turn_stopped", "reason": "interrupted", "message": "Cancelled"}));
+                    // Cooperative completion can precede the legacy Interrupted.
+                    previous_cancel = Some(identity.clone());
+                }
+                _ => {}
+            }
+            let failed = matches!(
+                content.as_str(),
+                "cancel_error" | "limit_error" | "ordinary_error" | "foreign_busy"
+            );
+            if content == "limit_error" {
+                owned.push(json!({"type": "turn_stopped", "reason": "failure", "message": "Limit reached"}));
+            }
+            let terminal = if failed {
+                json!({"type": "error", "id": id, "message": "Turn failed"})
+            } else {
+                json!({"type": "done", "id": id})
+            };
+            events.extend(
+                owned.into_iter().map(
+                    |event| json!({"type": "turn_event", "identity": identity, "event": event}),
+                ),
+            );
+            events.push(if content == "foreign_busy" {
+                terminal
+            } else {
+                json!({"type": "turn_event", "identity": identity, "event": terminal})
+            });
+            for event in events {
+                writer
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    for (name, _) in cases {
+        let cancel = || JsonRpcMessage {
+            id: None,
+            method: Some("session/cancel".into()),
+            params: json!({"sessionId": "session"}),
+        };
+        if name == "after_idle_cancel" {
+            runtime.handle_session_cancel(cancel()).await.unwrap();
+        }
+        session.prompt_running.store(true, Ordering::SeqCst);
+        if name == "early_cancel" {
+            runtime.handle_session_cancel(cancel()).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (result, ()) = tokio::join!(
+                runtime.run_prompt(json!(name), session.clone(), name.into(), vec![], None),
+                async {
+                    if matches!(name, "cancel" | "cancel_error") {
+                        cancel_ready.notified().await;
+                        runtime.handle_session_cancel(cancel()).await.unwrap();
+                    }
+                }
+            );
+            result.unwrap();
+        })
+        .await
+        .expect(name);
+    }
+    drop(runtime);
+    drop(session);
+    let observed = daemon.await.unwrap();
+    println!("{}", json!({"observed": observed}));
+}
+
 #[test]
 fn output_images_become_native_acp_blocks_without_echoing_user_images() {
     use crate::session::{RenderedImage, RenderedImageSource};
@@ -38,7 +263,7 @@ fn output_images_become_native_acp_blocks_without_echoing_user_images() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn acp_new_and_resumed_sessions_advertise_server_failover() {
+async fn acp_new_and_resumed_sessions_advertise_server_failover_and_turn_identity() {
     for resume in [false, true] {
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let (reader, writer) = client.into_split();
@@ -51,6 +276,7 @@ async fn acp_new_and_resumed_sessions_advertise_server_failover() {
             let Request::Subscribe {
                 id,
                 supports_server_failover,
+                supports_turn_identity,
                 target_session_id,
                 ..
             } = request
@@ -60,6 +286,10 @@ async fn acp_new_and_resumed_sessions_advertise_server_failover() {
             assert!(
                 supports_server_failover,
                 "ACP must delegate account failover to the daemon"
+            );
+            assert!(
+                supports_turn_identity,
+                "ACP must correlate streamed turn outcomes"
             );
             assert_eq!(target_session_id.as_deref(), resume.then_some("existing"));
             // Stop after the subscription, without needing a live provider or daemon.

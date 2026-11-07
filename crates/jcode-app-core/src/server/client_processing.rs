@@ -494,11 +494,11 @@ pub(super) async fn cancel_processing_message(
             *state.task = Some(handle);
             return;
         }
-        let stopped = ServerEvent::TurnStopped {
+        let stopped = scoped(ServerEvent::TurnStopped {
             reason: crate::protocol::TurnStopReason::Interrupted,
             message: "The turn was interrupted by a cancellation request.".into(),
             provider_stop_reason: None,
-        };
+        });
         // Publish before signalling: the worker can finish cooperatively and
         // emit Done immediately after request_cancel.
         if super::super::state::fanout_session_event(swarm.members, &session_label, stopped.clone())
@@ -605,11 +605,11 @@ pub(super) async fn cancel_processing_message(
             }
             return;
         }
-        let stopped = ServerEvent::TurnStopped {
+        let stopped = scoped(ServerEvent::TurnStopped {
             reason: crate::protocol::TurnStopReason::Interrupted,
             message: "The turn was interrupted by a cancellation request.".into(),
             provider_stop_reason: None,
-        };
+        });
         // Publish before signalling: the worker can finish cooperatively and
         // emit Done immediately after request_cancel.
         if super::super::state::fanout_session_event(swarm.members, &session_label, stopped.clone())
