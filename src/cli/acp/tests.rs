@@ -452,28 +452,66 @@ fn initialize_full_advertises_jcode_extension_meta() {
 
 #[test]
 fn event_mapper_maps_tool_lifecycle() {
-    let mut mapper = EventMapper::new("session1".to_string(), AcpProfile::Standard);
-    let start = mapper.map_event(ServerEvent::ToolStart {
-        id: "tool1".to_string(),
-        name: "bash".to_string(),
-    });
-    assert_eq!(start[0]["sessionUpdate"], "tool_call");
-    assert_eq!(start[0]["kind"], "execute");
+    for (intent, expected_title) in [
+        (None, "Running shell command"),
+        (
+            Some(json!("  Validate viewport sizing 界  ")),
+            "Validate viewport sizing 界",
+        ),
+        (Some(json!("")), "Running shell command"),
+        (Some(json!(" \n\t ")), "Running shell command"),
+        (Some(json!(42)), "Running shell command"),
+        (Some(Value::Null), "Running shell command"),
+    ] {
+        let mut mapper = EventMapper::new("session1".to_string(), AcpProfile::Standard);
+        let start = mapper.map_event(ServerEvent::ToolStart {
+            id: "tool1".to_string(),
+            name: "bash".to_string(),
+        });
+        assert_eq!(start[0]["sessionUpdate"], "tool_call");
+        assert_eq!(start[0]["kind"], "execute");
+        assert_eq!(start[0]["title"], "Running shell command");
+        assert!(
+            mapper
+                .map_event(ServerEvent::ToolInput {
+                    id: None,
+                    delta: "{\"command\":\"true\"".to_string(),
+                })
+                .is_empty()
+        );
 
-    let input = mapper.map_event(ServerEvent::ToolInput {
-        id: None,
-        delta: "{\"command\":\"true\"}".to_string(),
-    });
-    assert_eq!(input[0]["rawInput"]["command"], "true");
-
-    let done = mapper.map_event(ServerEvent::ToolDone {
-        id: "tool1".to_string(),
-        name: "bash".to_string(),
-        output: "ok".to_string(),
-        error: None,
-    });
-    assert_eq!(done[0]["status"], "completed");
-    assert_eq!(done[0]["content"][0]["content"]["text"], "ok");
+        let suffix = match &intent {
+            Some(intent) => format!(",\"intent\":{intent}}}"),
+            None => "}".to_string(),
+        };
+        let input = mapper.map_event(ServerEvent::ToolInput {
+            id: None,
+            delta: suffix,
+        });
+        assert_eq!(input[0]["rawInput"]["command"], "true");
+        if let Some(intent) = &intent {
+            assert_eq!(&input[0]["rawInput"]["intent"], intent);
+        }
+        let exec = mapper.map_event(ServerEvent::ToolExec {
+            id: "tool1".to_string(),
+            name: "bash".to_string(),
+        });
+        let done = mapper.map_event(ServerEvent::ToolDone {
+            id: "tool1".to_string(),
+            name: "bash".to_string(),
+            output: "ok".to_string(),
+            error: None,
+        });
+        let mut displayed = start[0].clone();
+        for update in input.iter().chain(&exec).chain(&done) {
+            for (key, value) in update.as_object().unwrap() {
+                displayed[key] = value.clone();
+            }
+            assert_eq!(displayed["title"], expected_title, "intent: {intent:?}");
+        }
+        assert_eq!(displayed["status"], "completed");
+        assert_eq!(displayed["content"][0]["content"]["text"], "ok");
+    }
 }
 
 #[test]
@@ -493,21 +531,28 @@ fn event_mapper_keeps_overlapping_tool_inputs_on_their_call() {
                 .is_empty()
         );
     }
-    for (id, command) in [("a", "true"), ("b", "false")] {
+    for (id, command, intent) in [
+        ("a", "true", "Check successful command"),
+        ("b", "false", "Check failed command"),
+    ] {
         let updates = mapper.map_event(ServerEvent::ToolInput {
             id: Some(id.to_string()),
-            delta: format!("\"{command}\"}}"),
+            delta: format!("\"{command}\",\"intent\":\"{intent}\"}}"),
         });
         assert_eq!(
             updates,
             vec![json!({
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": id,
-                "rawInput": {"command": command},
+                "title": intent,
+                "rawInput": {"command": command, "intent": intent},
             })]
         );
     }
-    for (id, command) in [("a", "true"), ("b", "false")] {
+    for (id, command, intent) in [
+        ("a", "true", "Check successful command"),
+        ("b", "false", "Check failed command"),
+    ] {
         let updates = mapper.map_event(ServerEvent::ToolExec {
             id: id.to_string(),
             name: "bash".to_string(),
@@ -515,7 +560,10 @@ fn event_mapper_keeps_overlapping_tool_inputs_on_their_call() {
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0]["toolCallId"], id);
         assert_eq!(updates[0]["status"], "in_progress");
-        assert_eq!(updates[0]["rawInput"], json!({"command": command}));
+        assert_eq!(
+            updates[0]["rawInput"],
+            json!({"command": command, "intent": intent})
+        );
     }
 }
 

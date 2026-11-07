@@ -1691,18 +1691,23 @@ impl EventMapper {
                 let Some(raw_input) = parse_json_object(buffer) else {
                     return Vec::new();
                 };
-                vec![json!({
+                let intent = crate::message::ToolCall::intent_from_input(&raw_input);
+                let mut update = json!({
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": tool_id,
                     "rawInput": raw_input,
-                })]
+                });
+                if let Some(intent) = intent {
+                    update["title"] = json!(intent);
+                }
+                vec![update]
             }
+            // Status updates retain the initial title or the streamed intent title.
             ServerEvent::ToolExec { id, name } => {
                 self.current_tool_id = Some(id.clone());
                 let mut update = json!({
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": id,
-                    "title": tool_title(&name),
                     "kind": tool_kind(&name),
                     "status": "in_progress",
                 });
@@ -1724,7 +1729,6 @@ impl EventMapper {
             } => vec![json!({
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": id,
-                "title": tool_title(&name),
                 "kind": tool_kind(&name),
                 "status": if error.is_some() { "failed" } else { "completed" },
                 "content": [{
